@@ -228,8 +228,8 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.
   working directory. Verifying a good certificate is not tested here: the test servers have self-signed ones.
 - `LOAD DATA LOCAL INFILE` is off, so a server cannot ask for a file of this machine.
 - The end of the task does not close the connection (unlike SQLite and PostgreSQL): call `Db.close`. The server
-  session and the locks of an open transaction stay until then. Using a connection after `close` is `mysql error: the connection is
-  closed`.
+  session and the locks of an open transaction stay until then. Using a connection after `close` is `mysql error:
+  the connection is closed`.
 - `open`, `query` and `execute` wait for the server on the compute pool: other tasks keep running.
 - Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
   `Task.await(task, ms)` times out, while a query is running, the call still runs to its end and its result is
