@@ -51,22 +51,32 @@ Feature: MySQL and MariaDB
       | mysql://user:h%zzunter2@host/db                | the url has a bad percent escape                        |
       | mysql://user:hunter2@host/db?nope=1            | the url has an unknown parameter                        |
       | mysql://user:hunter2@host/db?ssl_mode=nope     | the url ssl_mode is required or verify                  |
+      | mysql://user:hunter2@host/db?ssl_mode=verify   | the url ssl_mode=verify needs ssl_ca=PATH               |
+      | mysql://user:hunter2@host/db?ssl_ca=x.pem      | the url ssl_ca works only with ssl_mode=verify          |
       | mysql://user:hunter2@host/db?connect_timeout=x | the url connect_timeout is not a number of seconds      |
       | mysql://user:hunter2@host/db/more              | the url path has more than one part                     |
       | mysql://user:hunter2@                          | the url has no host                                     |
       | mysql://user:hunter2@[::1                      | the url has an IPv6 host without a closing bracket      |
 
-  Scenario Outline: The ssl_mode <mode> connects over TLS
+  Scenario: The ssl_mode required connects over TLS
     Given a "mysql" database
-    When I open "[URL]&ssl_mode=<mode>"
-    Then the query "select count(*) as v from information_schema.session_status where variable_name = 'SSL_CIPHER' and variable_value <> ''" returns:
-      | v     |
-      | Int 1 |
+    When I open "[URL]&ssl_mode=required"
+    Then the query "show status like 'Ssl_cipher'" returns:
+      | Variable_name   | Value                      |
+      | Text Ssl_cipher | Text TLS_AES_256_GCM_SHA384 |
 
-    Examples:
-      | mode     |
-      | required |
-      | verify   |
+  # The server of the tests has a self-signed certificate, which no authority of this file vouches for. Without a file
+  # of authorities libmariadb does not verify anything, so the url must name one.
+  Scenario: The ssl_mode verify refuses a server whose certificate the authorities do not vouch for
+    Given a "mysql" database
+    When I open "[URL]&ssl_mode=verify&ssl_ca=fixtures/unrelated-ca.pem"
+    Then it fails with "mysql error 2026: "
+    And the failure never shows "pw"
+
+  Scenario: The ssl_mode verify refuses a file of authorities that is not there
+    Given a "mysql" database
+    When I open "[URL]&ssl_mode=verify&ssl_ca=fixtures/no-such-file.pem"
+    Then it fails with "mysql error "
 
   Scenario: A url with a NUL character is refused before the library sees it
     Given a "mysql" database
@@ -193,7 +203,7 @@ Feature: MySQL and MariaDB
     Then the result is:
       | v                       |
       | Repeat 40000 Text héllo |
-    When I query "select ? as v" with:
+    When I query "select cast(? as binary) as v" with:
       | value                 |
       | Repeat 20000 Blob 255 |
     Then the result is:
@@ -251,7 +261,7 @@ Feature: MySQL and MariaDB
 
   Scenario: Several placeholders are bound in order
     Given a "mysql" database
-    When I query "select ? + ? as n, ? as s" with:
+    When I query "select cast(? as signed) + cast(? as signed) as n, ? as s" with:
       | value  |
       | Int 2  |
       | Int 3  |
@@ -353,6 +363,76 @@ Feature: MySQL and MariaDB
       | a     |
       | Int 1 |
       | Int 2 |
+
+  Scenario: A statement the server does not prepare runs without parameters
+    Given a "mysql" database
+    When I execute "use information_schema"
+    Then the query "select database() as db" returns:
+      | db                      |
+      | Text information_schema |
+    When I execute "use mysql"
+    Then the query "select database() as db" returns:
+      | db         |
+      | Text mysql |
+
+  Scenario: Rows come back from a statement that MySQL does not prepare
+    Given a "mysql" database
+    Then the query "check table mysql.db" returns:
+      | Table         | Op         | Msg_type    | Msg_text |
+      | Text mysql.db | Text check | Text status | Text OK  |
+
+  Scenario: A savepoint and a lock work inside a transaction
+    Given a "mysql" database
+    And I execute "create table if not exists zz_lock_probe (a integer)"
+    And I execute "start transaction"
+    And I execute "savepoint first"
+    And I execute "rollback to savepoint first"
+    And I execute "rollback"
+    And I execute "lock tables zz_lock_probe read"
+    And I execute "unlock tables"
+    When I execute "drop table zz_lock_probe"
+    Then it succeeds
+
+  Scenario: A float column keeps the precision of a float
+    Given a "mysql" database
+    And I execute "create temporary table t (v float)"
+    When I execute "insert into t values (?), (?)" with:
+      | value     |
+      | Float 0.5 |
+      | Float 0.1 |
+    Then the query "select v from t order by v" returns:
+      | v                    |
+      | Float 0.10000000149011612 |
+      | Float 0.5            |
+
+  Scenario: INSERT ON DUPLICATE KEY UPDATE and REPLACE over an existing row count 2
+    Given a "mysql" database
+    And I execute "create temporary table t (a integer primary key, b integer)"
+    And I execute "insert into t values (1, 1)"
+    When I execute "insert into t values (1, 2) on duplicate key update b = 3"
+    Then the changed row count is 2
+    When I execute "replace into t values (1, 4)"
+    Then the changed row count is 2
+    When I execute "replace into t values (2, 4)"
+    Then the changed row count is 1
+    And the query "select a, b from t order by a" returns:
+      | a     | b     |
+      | Int 1 | Int 4 |
+      | Int 2 | Int 4 |
+
+  Scenario: LOAD DATA LOCAL INFILE is refused, so a server cannot read a file of this machine
+    Given a "mysql" database
+    And I execute "create temporary table t (a text)"
+    When I execute "load data local infile '/etc/hostname' into table t"
+    Then it fails with "mysql error "
+    And the query "select count(*) as v from t" returns:
+      | v     |
+      | Int 0 |
+
+  Scenario: A syntax error gives the code 1064 and the message of the server
+    Given a "mysql" database
+    When I query "selec 1"
+    Then it fails with "mysql error 1064: You have an error in your SQL syntax"
 
   Scenario: Using a closed connection is an error
     Given a "mysql" database

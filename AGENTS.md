@@ -21,7 +21,9 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   --steps specs/steps.agc`, and `docker stop agentica-db-pg` when done. For MySQL:
   `docker run -d --rm --name agentica-db-mysql -e MARIADB_ROOT_PASSWORD=pw -p 127.0.0.1:53306:3306 mariadb:11`, then
   `AGENTICA_DB_MYSQL_URL='mysql://root:pw@127.0.0.1:53306/mysql'` (an address, never `localhost`: the client library
-  takes that for the local socket), and `docker stop agentica-db-mysql` when done. Scenarios use temporary tables, so
+  takes that for the local socket), and `docker stop agentica-db-mysql` when done. Run the whole suite against MySQL
+  too (CI does): `-e MYSQL_ROOT_PASSWORD=pw ... mysql:8.4` on another port. The two servers differ (MySQL does not
+  prepare `START TRANSACTION`), so a MySQL change passes on both. Scenarios use temporary tables, so
   they leave nothing behind (`mysql.feature` creates and drops one user).
 
 ## Rules
@@ -40,8 +42,9 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
   `transactions`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one
   adapter promises is in `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on
-  all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`. A new behavior is a scenario first. A value written must
-  read back unchanged.
+  all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and
+  not a temporary table where a statement reads one table twice. A new behavior is a scenario first. A value written
+  must read back unchanged.
 - The steps are in `specs/steps.agc`, few and generic (`a "sqlite" database`, `I execute "sql" with:` and a table of
   typed params, `the query "sql" returns:` and a table, `it fails with "prefix"`). They drive `Db` through
   `specs/driver.agc`, a program under test that holds the connection (a step program cannot keep a connection between

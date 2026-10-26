@@ -35,13 +35,17 @@ FOUND_ROWS = 2
 # file of this machine), as numbered in MariaDB Connector/C 3.x.
 OPT_CONNECT_TIMEOUT = 0
 OPT_LOCAL_INFILE = 8
-# MYSQL_OPT_SSL_VERIFY_SERVER_CERT and MYSQL_OPT_SSL_ENFORCE (use TLS, or fail).
+# MYSQL_OPT_SSL_VERIFY_SERVER_CERT, MYSQL_OPT_SSL_CA (the file of authorities) and MYSQL_OPT_SSL_ENFORCE (use TLS, or
+# fail).
 OPT_SSL_VERIFY_SERVER_CERT = 21
+OPT_SSL_CA = 27
 OPT_SSL_ENFORCE = 38
 # mariadb_value MARIADB_CONNECTION_SERVER_STATUS, and its bit SERVER_STATUS_IN_TRANS.
 INFO_SERVER_STATUS = 30
 # STMT_ATTR_UPDATE_MAX_LENGTH: the result metadata then holds the longest value of each column.
 ATTR_UPDATE_MAX_LENGTH = 0
+# The error of a statement that the server does not prepare.
+UNSUPPORTED_PREPARE = 1295
 # The results of mysql_stmt_fetch.
 FETCH_ERROR = 1
 FETCH_NO_DATA = 100
@@ -68,6 +72,7 @@ TYPE_DOUBLE = 5
 TYPE_NULL = 6
 TYPE_LONGLONG = 8
 TYPE_BLOB = 252
+TYPE_JSON = 245
 TYPE_VAR_STRING = 253
 TYPE_STRING = 254
 # Integer fields (also NULL, which is never read). A bigint unsigned past the range of an Int is the one exception.
@@ -114,6 +119,7 @@ extern "mariadb"
                                  database: C.String, port: C.Int32, socket: C.Pointer,
                                  flags: C.Int64) -> C.Pointer
   def mysql_options(mysql: C.Pointer, option: C.Int32, value: C.Pointer) -> C.Int32
+  def mysql_options_text(mysql: C.Pointer, option: C.Int32, value: C.String) -> C.Int32 = "mysql_options"
   compute def mysql_set_character_set(mysql: C.Pointer, name: C.String) -> C.Int32
   compute def mysql_close(mysql: C.Pointer) -> Void
   def mysql_errno(mysql: C.Pointer) -> C.Int32
@@ -133,6 +139,15 @@ extern "mariadb"
   def mysql_stmt_fetch(stmt: Stmt) -> C.Int32
   def mysql_stmt_errno(stmt: Stmt) -> C.Int32
   def mysql_stmt_error(stmt: Stmt) -> C.String
+  # The text protocol, for the statements that the server does not prepare.
+  compute def mysql_real_query(mysql: C.Pointer, sql: C.String, bytes: C.Int64) -> C.Int32
+  compute def mysql_store_result(mysql: C.Pointer) -> C.Pointer
+  def mysql_field_count(mysql: C.Pointer) -> C.Int32
+  def mysql_affected_rows(mysql: C.Pointer) -> C.Int64
+  def mysql_fetch_row(result: C.Pointer) -> C.Pointer
+  def mysql_fetch_lengths(result: C.Pointer) -> C.Pointer
+  def mysql_more_results(mysql: C.Pointer) -> C.Bool
+  compute def mysql_next_result(mysql: C.Pointer) -> C.Int32
   def mysql_free_result(result: C.Pointer) -> Void
   def mysql_num_fields(result: C.Pointer) -> C.Int32
   def mysql_fetch_field_direct(result: C.Pointer, index: C.Int32) -> C.Pointer
@@ -146,7 +161,12 @@ export def open(url: String) -> Result[Handle]
     return error("mysql error: out of memory")
   end
 
-  configure(mysql, target)
+  configured = configure(mysql, target)
+  if not configured.ok?
+    mysql_close(mysql)
+    return error(configured.message)
+  end
+
   connected = mysql_real_connect(mysql, target.host, target.user, target.password, target.database, target.port,
                                  Native.null(), FOUND_ROWS)
   if Native.null?(connected)
@@ -172,62 +192,95 @@ export def close(handle: Handle) -> Void
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
-## Two columns with one name are an error: alias them.
+## Two columns with one name are an error: alias them. A statement without parameters that the server does not
+## prepare (`START TRANSACTION`, `BEGIN`, `SAVEPOINT`, `USE` and `LOCK TABLES` on MySQL) goes through the text
+## protocol, which is safe because there is nothing to bind.
 export def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
-  conn = try live(handle)
+  mysql = try live(handle)
   statement = try MysqlSql.inspect(sql)
-  stmt = try prepared(conn, statement, sql, params)
-  rows = read_rows(stmt)
-  Native.close(stmt)
-  return rows
+  try check_params(params)
+  try check_begin(mysql, statement.verb)
+  case start(mysql, sql)
+    error(message) if text_only?(message, params) -> return text_query(mysql, sql)
+    error(message) -> return error(message)
+    ok(stmt) ->
+      rows = launch_query(stmt, params)
+      Native.close(stmt)
+      return rows
+  end
 end
 
-## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched) or deleted.
+## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
+## replaced. The text protocol is used as for `query`.
 export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
-  conn = try live(handle)
+  mysql = try live(handle)
   statement = try MysqlSql.inspect(sql)
-  stmt = try prepared(conn, statement, sql, params)
-  drained = drain(stmt)
-  changed = 0
-  if COUNTING_VERBS.include?(statement.verb)
-    changed = mysql_stmt_affected_rows(stmt)
+  try check_params(params)
+  try check_begin(mysql, statement.verb)
+  case start(mysql, sql)
+    error(message) if text_only?(message, params) -> return text_execute(mysql, sql, statement.verb)
+    error(message) -> return error(message)
+    ok(stmt) ->
+      changed = launch_execute(stmt, params, statement.verb)
+      Native.close(stmt)
+      return changed
   end
-
-  Native.close(stmt)
-  try drained
-  return ok(changed)
 end
 
-# Options set before the connection: the connect timeout (0 keeps the library's), the TLS mode (the library's own
-# when the url sets none), and no LOCAL INFILE.
-def configure(mysql: C.Pointer, target: MysqlUrl.Target) -> Void
-  Native.memory_pointer(POINTER_SIZE) do |value|
-    if target.timeout > 0
-      Native.put_int32(value, 0, target.timeout)
-      mysql_options(mysql, OPT_CONNECT_TIMEOUT, value)
-    end
-
-
-    Native.put_int32(value, 0, 0)
-    mysql_options(mysql, OPT_LOCAL_INFILE, value)
+# Options set before the connection: the connect timeout (0 keeps the library's), no LOCAL INFILE, and the TLS mode
+# (the library's own when the url sets none). The library says whether it took an option, and a refused one stops
+# the connection: a TLS option that did nothing would connect without the check that was asked for.
+def configure(mysql: C.Pointer, target: MysqlUrl.Target) -> Result[Void]
+  if target.timeout > 0
+    try set_number(mysql, OPT_CONNECT_TIMEOUT, target.timeout)
   end
 
+  try set_number(mysql, OPT_LOCAL_INFILE, 0)
   case target.tls
-    MysqlUrl.Tls.Default -> return
-    MysqlUrl.Tls.Required -> require_tls(mysql, false)
-    MysqlUrl.Tls.Verify -> require_tls(mysql, true)
+    MysqlUrl.Tls.Default -> return ok()
+    MysqlUrl.Tls.Required -> return require_tls(mysql, "")
+    MysqlUrl.Tls.Verify -> return require_tls(mysql, target.ca)
   end
 end
 
-# Both TLS options take a my_bool, one byte.
-def require_tls(mysql: C.Pointer, verify: Bool) -> Void
-  Native.memory_pointer(1) do |flag|
-    Native.put_int8(flag, 0, 1)
-    mysql_options(mysql, OPT_SSL_ENFORCE, flag)
-    if verify
-      mysql_options(mysql, OPT_SSL_VERIFY_SERVER_CERT, flag)
+# `ca` is empty to accept any certificate, else the PEM file of authorities that the certificate is checked against.
+def require_tls(mysql: C.Pointer, ca: String) -> Result[Void]
+  try set_flag(mysql, OPT_SSL_ENFORCE)
+  if not ca.empty?
+    try set_flag(mysql, OPT_SSL_VERIFY_SERVER_CERT)
+    if mysql_options_text(mysql, OPT_SSL_CA, ca) != 0
+      return error("mysql error: the client library refused the ssl_ca option")
     end
   end
+
+  return ok()
+end
+
+def set_number(mysql: C.Pointer, option: Int, n: Int) -> Result[Void]
+  refused: Bool = Native.memory_pointer(POINTER_SIZE) do |value|
+    Native.put_int32(value, 0, n)
+    mysql_options(mysql, option, value) != 0
+  end
+
+  if refused
+    return error("mysql error: the client library refused a connection option")
+  end
+
+  return ok()
+end
+
+# A my_bool option set to true: one byte.
+def set_flag(mysql: C.Pointer, option: Int) -> Result[Void]
+  refused: Bool = Native.memory_pointer(1) do |flag|
+    Native.put_int8(flag, 0, 1)
+    mysql_options(mysql, option, flag) != 0
+  end
+
+  if refused
+    return error("mysql error: the client library refused a TLS option")
+  end
+
+  return ok()
 end
 
 # Frees the connection when it does not work: a failed connect still holds the error.
@@ -315,10 +368,8 @@ def check_params(params: List[Value]) -> Result[Void]
   return ok()
 end
 
-# A statement that is prepared, bound and executed. The caller closes it.
-def prepared(mysql: C.Pointer, statement: MysqlSql.Statement, sql: String, params: List[Value]) -> Result[Stmt]
-  try check_params(params)
-  try check_begin(mysql, statement.verb)
+# A statement that is prepared. The caller closes it.
+def start(mysql: C.Pointer, sql: String) -> Result[Stmt]
   made = mysql_stmt_init(mysql)
   if not made.ok?
     return error("mysql error: out of memory")
@@ -330,16 +381,44 @@ def prepared(mysql: C.Pointer, statement: MysqlSql.Statement, sql: String, param
     return refuse(stmt, stmt_failure(stmt))
   end
 
+  return ok(stmt)
+end
+
+# True when the server refused to prepare a statement that has nothing to bind (error 1295, "This command is not
+# supported in the prepared statement protocol yet"): it runs through the text protocol. A statement with
+# parameters never does, since its values must be bound.
+def text_only?(message: String, params: List[Value]) -> Bool
+  return params.empty? and message.start_with?("mysql error #{UNSUPPORTED_PREPARE}:")
+end
+
+# Binds and runs a prepared statement, then reads its rows.
+def launch_query(stmt: Stmt, params: List[Value]) -> Result[List[Row]]
+  try launch(stmt, params)
+  return read_rows(stmt)
+end
+
+# Binds and runs a prepared statement, then gives the rows it counts.
+def launch_execute(stmt: Stmt, params: List[Value], verb: String) -> Result[Int]
+  try launch(stmt, params)
+  try drain(stmt)
+  if COUNTING_VERBS.include?(verb)
+    return ok(mysql_stmt_affected_rows(stmt))
+  end
+
+  return ok(0)
+end
+
+def launch(stmt: Stmt, params: List[Value]) -> Result[Void]
   wanted = mysql_stmt_param_count(stmt)
   if wanted != params.size
-    return refuse(stmt, "mysql error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
+    return error("mysql error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
   end
 
   if not send(stmt, params)
-    return refuse(stmt, stmt_failure(stmt))
+    return error(stmt_failure(stmt))
   end
 
-  return ok(stmt)
+  return ok()
 end
 
 # Closes the statement and gives the error.
@@ -475,12 +554,17 @@ def read_rows(stmt: Stmt) -> Result[List[Row]]
 
   columns = describe(meta)
   mysql_free_result(meta)
+  try distinct(columns)
+  return fetch_all(stmt, columns)
+end
+
+def distinct(columns: List[Column]) -> Result[Void]
   names = columns.map do |column| column.name end
   if names.uniq.size != names.size
     return error("mysql error: the result has the column #{repeated_name(names)} twice, alias one of them")
   end
 
-  return fetch_all(stmt, columns)
+  return ok()
 end
 
 def repeated_name(names: List[String]) -> String
@@ -513,6 +597,9 @@ def column_of(name: String, type: Int, flags: Int, charset: Int, longest: Int, w
     return Column(name: name, kind: KIND_INT, size: 8)
   elsif FLOAT_TYPES.include?(type)
     return Column(name: name, kind: KIND_FLOAT, size: 8)
+  elsif type == TYPE_JSON
+    # MySQL gives a json column the binary character set, but it holds text.
+    return Column(name: name, kind: KIND_TEXT, size: longest)
   elsif STRING_TYPES.include?(type) and charset == BINARY_CHARSET
     return Column(name: name, kind: KIND_BLOB, size: longest)
   elsif STRING_TYPES.include?(type)
@@ -650,4 +737,106 @@ def unsigned_value(digits: String) -> Value
     ok(n) -> return Value.Int(n)
     error(_) -> return Value.Text(digits)
   end
+end
+
+# The text protocol. One statement is sent as it is, and every value comes back as text, which is read by the kind
+# of its column. It is for statements without parameters only.
+def text_result(mysql: C.Pointer, sql: String) -> Result[C.Pointer]
+  if mysql_real_query(mysql, sql, sql.to_bytes.size) != 0
+    return error(failure(mysql_errno(mysql), mysql_error(mysql)))
+  end
+
+  # NULL is no result, or a failure when the statement should have had one.
+  res = mysql_store_result(mysql)
+  if Native.null?(res) and mysql_field_count(mysql) > 0
+    return error(failure(mysql_errno(mysql), mysql_error(mysql)))
+  end
+
+  return ok(res)
+end
+
+# A statement that gives several results (a CALL) keeps the connection busy until they are read: the first is the
+# answer, the rest are dropped.
+def drop_results(mysql: C.Pointer) -> Void
+  while mysql_more_results(mysql) and mysql_next_result(mysql) == 0
+    res = mysql_store_result(mysql)
+    if not Native.null?(res)
+      mysql_free_result(res)
+    end
+  end
+end
+
+def text_query(mysql: C.Pointer, sql: String) -> Result[List[Row]]
+  res = try text_result(mysql, sql)
+  if Native.null?(res)
+    drop_results(mysql)
+    return ok([])
+  end
+
+  columns = describe(res)
+  checked = distinct(columns)
+  rows: List[Row] = []
+  if checked.ok?
+    rows = text_rows(res, columns)
+  end
+
+  mysql_free_result(res)
+  drop_results(mysql)
+  try checked
+  return ok(rows)
+end
+
+def text_execute(mysql: C.Pointer, sql: String, verb: String) -> Result[Int]
+  res = try text_result(mysql, sql)
+  if not Native.null?(res)
+    mysql_free_result(res)
+  end
+
+  changed = 0
+  if COUNTING_VERBS.include?(verb)
+    changed = mysql_affected_rows(mysql)
+  end
+
+  drop_results(mysql)
+  return ok(changed)
+end
+
+def text_rows(res: C.Pointer, columns: List[Column]) -> List[Row]
+  rows: List[Row] = []
+  fetched = mysql_fetch_row(res)
+  while not Native.null?(fetched)
+    lengths = mysql_fetch_lengths(res)
+    row: Row = {}
+    for index in 0...columns.size
+      cell = Native.get_pointer(fetched, index * POINTER_SIZE)
+      length = Native.get_int64(lengths, index * POINTER_SIZE)
+      row = row.put(columns[index].name, text_value(columns[index], cell, length))
+    end
+
+    rows = rows.push(row)
+    fetched = mysql_fetch_row(res)
+  end
+
+  return rows
+end
+
+# A number that does not read as one (a float with an exponent) stays text.
+def text_value(column: Column, cell: C.Pointer, length: Int) -> Value
+  if Native.null?(cell)
+    return Value.Null
+  elsif column.kind == KIND_BLOB
+    return Value.Blob(Native.get_bytes(cell, 0, length))
+  end
+
+  text = Native.get_string(cell, 0, length)
+  if column.kind == KIND_INT or column.kind == KIND_UNSIGNED
+    return unsigned_value(text)
+  elsif column.kind == KIND_FLOAT
+    case text.to_f
+      ok(x) -> return Value.Float(x)
+      error(_) -> return Value.Text(text)
+    end
+  end
+
+  return Value.Text(text)
 end

@@ -71,7 +71,7 @@ end
 
 | Function | Gives |
 |---|---|
-| `open(url)` | `Result[Connection]`; `sqlite:PATH` (`sqlite::memory:`), `postgres://...`, `postgresql://...`, `mysql://...` or `mariadb://...` |
+| `open(url)` | `Result[Connection]`; `sqlite:PATH`, `sqlite::memory:`, `postgres://`, `mysql://`, `mariadb://` |
 | `open_sqlite(path)` | `Result[Connection]` |
 | `open_postgres(url)` | `Result[Connection]`, a libpq url or a conninfo string (`host=localhost dbname=app`) |
 | `open_mysql(url)` | `Result[Connection]`, a `mysql://` or `mariadb://` url |
@@ -174,41 +174,56 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Value.Int
   with the code of the client library or the server (`2002` unreachable, `1045` access denied, `1049` unknown
   database); the messages of the library name the user and the host but never the password.
 - The adapter goes through MariaDB Connector/C (`libmariadb.so.3`), which talks to MySQL and MariaDB servers. It is
-  tested with MariaDB 11. The offsets of its `MYSQL_BIND` and `MYSQL_FIELD` structs and the numbers of its options
-  are those of Connector/C 3.x, so `libmysqlclient` cannot take its place.
-- Every statement is prepared (`mysql_stmt_*`): the sql is sent with its `?` placeholders and the values are bound as
+  tested with MariaDB 11 and MySQL 8.4. The offsets of its `MYSQL_BIND` and `MYSQL_FIELD` structs and the numbers of
+  its options are those of Connector/C 3.x, so `libmysqlclient` cannot take its place.
+- Every statement with parameters is prepared (`mysql_stmt_*`): the sql is sent with its `?` placeholders and the
+  values are bound as
   `BIGINT`, `DOUBLE`, strings and blobs. The `?` of a string, a quoted identifier or a comment is not a placeholder:
   the server decides, as always. A NUL in the sql or in a text is a bad input.
-- Types, read and written:
+- Types, read and written. A `float` column has 32 bits, so `0.1` reads back as `0.10000000149011612`: use `double`
+  for exact decimals.
 
   | MySQL | `Value` |
   |---|---|
   | `tinyint`, `smallint`, `mediumint`, `int`, `bigint`, `year`, and the `unsigned` ones that fit an `Int` | `Int` |
-  | `float`, `double` | `Float` (no `NaN` or infinity: a parameter that is one is a bad input) |
+  | `float`, `double` | `Float`; no `NaN` or infinity (a parameter that is one is a bad input) |
   | `boolean` (a `tinyint(1)`) | `Int`: a `Bool` is stored as 1 or 0 and reads back as `Int` |
   | `binary`, `varbinary`, the blobs, `bit`, `geometry` | `Blob` |
   | NULL | `Null` |
-  | `char`, `varchar`, the texts, `json`, `enum`, `set`, and the rest: `decimal`, `date`, `time`, `datetime`, `timestamp`, a `bigint unsigned` past `Int` | `Text` |
+  | `char`, `varchar`, the texts, `json`, `enum`, `set` | `Text` |
+  | the rest: `decimal`, `date`, `time`, `datetime`, `timestamp`, a `bigint unsigned` past `Int` | `Text` |
 
   A `Text` parameter goes into a column of any of those types (`'12.50'` into `decimal`, `'2024-02-29'` into
   `date`). A `datetime` reads as `2024-02-29 13:14:15`. The connection character set is `utf8mb4`.
 - `execute` counts the rows of `INSERT`, `UPDATE`, `DELETE` and `REPLACE` that match (an `UPDATE` that sets a column
-  to the value it has counts the row, as in the other adapters); other statements, `SELECT` too, give 0. `CALL`
-  gives its first result set; the others are dropped. A statement that the server cannot prepare gives its
-  error. The `use` statement is not refused, but it changes the database of the connection for good.
+  to the value it has counts the row, as in the other adapters); other statements, `SELECT` too, give 0.
+  `INSERT ... ON DUPLICATE KEY UPDATE` over an existing row and `REPLACE` over an existing row count 2 (MySQL deletes
+  and inserts, or inserts and updates), a new row counts 1. `CALL` gives its first result set; the others are
+  dropped. The `use` statement changes the database of the connection for good.
+- MySQL does not prepare some statements (`START TRANSACTION`, `BEGIN`, `SAVEPOINT`, `USE`, `LOCK TABLES`,
+  `CHECK TABLE`, `SHOW WARNINGS` on MySQL 8.4; MariaDB prepares more of them). When the server answers `1295` to a
+  statement with no placeholder, the adapter sends it through the text protocol (`mysql_real_query`) and reads the
+  result with the same types. A statement with parameters never does: its values are always bound. A text-protocol
+  float with an exponent (`1e-7`) that does not read as a decimal stays `Text`.
 - The sql is one statement. The scanner knows the strings, the backticks, the `-- `, `#` and `/* */` comments of
   MySQL, and refuses a second statement before the server sees it. So a `CREATE PROCEDURE` with a `BEGIN ... END`
-  body of several statements cannot be sent: create it with the `mysql` client.
+  body of several statements cannot be sent: create it with the `mysql` client. The scanner assumes backslash
+  escapes in strings: with the `NO_BACKSLASH_ESCAPES` sql mode it may refuse valid sql (a string that ends with a
+  backslash).
 - `transaction` starts with `START TRANSACTION`. Transactions do not nest: MySQL would silently commit the open one at
   a `BEGIN`, so `BEGIN` and `START TRANSACTION` fail with `mysql error: a transaction is already in progress` while
   the server reports one open. A statement that fails inside a transaction does not abort it (a `COMMIT` after it
   commits the statements that worked; `Db.transaction` rolls back because the block returned the error). A DDL
   statement (`CREATE TABLE`, `DROP TABLE`, ...) commits the transaction before it runs, as in MySQL itself; `CREATE
   TEMPORARY TABLE` does not.
-- TLS: `?ssl_mode=required` uses TLS and `?ssl_mode=verify` uses it and asks the client library to check the
-  certificate of the server. Without `ssl_mode` the library decides: Connector/C 3.4 (Debian 13) connected without
-  TLS to a MariaDB 11 server. Set `required` or `verify` over any network you do not trust. The adapter has no option for a
-  private authority or a client certificate: put the authority in the system store.
+- TLS: `?ssl_mode=required` uses TLS and accepts any certificate (it hides the traffic, it does not prove the server).
+  `?ssl_mode=verify&ssl_ca=PATH` uses TLS and checks the certificate of the server against the PEM file of authorities
+  at `PATH` (percent-encode the path if needed): libmariadb checks nothing when it has no authority file, so `verify`
+  without `ssl_ca`, and `ssl_ca` without `verify`, are errors. A server whose certificate those authorities do not
+  vouch for fails with `mysql error 2026`. Without `ssl_mode` the library decides: Connector/C 3.4 (Debian 13)
+  connected without TLS to MariaDB 11 and MySQL 8.4. Use `verify` over any network you do not trust. A client
+  certificate is not supported. The path of `ssl_ca` is read by the process, so a relative path is relative to its
+  working directory. Verifying a good certificate is not tested here: the test servers have self-signed ones.
 - `LOAD DATA LOCAL INFILE` is off, so a server cannot ask for a file of this machine.
 - The end of the task does not close the connection, as for PostgreSQL: call `Db.close`. The server session and the
   locks of an open transaction stay until then. Using a connection after `close` is `mysql error: the connection is

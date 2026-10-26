@@ -55,9 +55,8 @@ Feature: Queries and statements
 
   Scenario Outline: A big result set comes back whole on <adapter>
     Given a "<adapter>" database
-    And I execute "create temporary table n (x integer)"
-    And I execute "insert into n values (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)"
-    When I query "select a.x + 10 * b.x + 100 * c.x + 1000 * d.x + 1 as x from n a, n b, n c, n d where a.x + 10 * b.x + 100 * c.x + 1000 * d.x + 1 <= ? order by x" with:
+    # One CTE, read four times: MySQL refuses to open a temporary table twice in one statement.
+    When I query "with n(x) as (select 0 union all select 1 union all select 2 union all select 3 union all select 4 union all select 5 union all select 6 union all select 7 union all select 8 union all select 9) select a.x + 10 * b.x + 100 * c.x + 1000 * d.x + 1 as x from n a, n b, n c, n d where a.x + 10 * b.x + 100 * c.x + 1000 * d.x + 1 <= ? order by x" with:
       | value    |
       | Int 5000 |
     Then the result has 5000 rows, the last being:

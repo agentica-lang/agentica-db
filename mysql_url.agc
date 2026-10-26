@@ -3,9 +3,11 @@
 ## `mysql://user:password@host:3306/database?connect_timeout=5`. The user, the password and the database are
 ## percent-decoded (`%40` is `@`), so a password may hold any character. The host is required (`localhost` uses
 ## the local socket of the client library); an IPv6 host is written `[::1]`. The parameters are
-## `connect_timeout`, in seconds, and `ssl_mode`: `required` (use TLS, whatever the certificate) or `verify` (use
-## TLS and let the client library check the certificate). Without `ssl_mode` the client library decides. An error
-## names the problem and never repeats any part of the url, since a url holds a password.
+## `connect_timeout`, in seconds, `ssl_mode` and `ssl_ca`. `ssl_mode=required` uses TLS and accepts any certificate.
+## `ssl_mode=verify` uses TLS and checks the certificate of the server against the authorities in the PEM file that
+## `ssl_ca=PATH` names: libmariadb checks nothing when it has no authority file, so `verify` without `ssl_ca` (and
+## `ssl_ca` without `verify`) is an error. Without `ssl_mode` the client library decides. An error names the problem
+## and never repeats any part of the url, since a url holds a password.
 
 SCHEMES = ["mysql://", "mariadb://"]
 DEFAULT_PORT = 3306
@@ -37,6 +39,7 @@ export struct Target
   database: String
   timeout: Int = 0
   tls: Tls = Tls.Default
+  ca: String = ""
 end
 
 struct Address
@@ -47,6 +50,7 @@ end
 struct Options
   timeout: Int
   tls: Tls
+  ca: String
 end
 
 ## Reads the url. An error is `mysql error: <message>`.
@@ -77,7 +81,7 @@ export def parse(url: String) -> Result[Target]
   end
 
   return ok(Target(host: address.host, port: address.port, user: user, password: password, database: database,
-                   timeout: options.timeout, tls: options.tls))
+                   timeout: options.timeout, tls: options.tls, ca: options.ca))
 end
 
 # The text before the first `separator` and the text after it (empty when there is none).
@@ -174,9 +178,11 @@ def digits(text: String) -> Result[Int]
   return text.to_i
 end
 
-# The parameters of the url: the connect timeout in seconds (0 when the url sets none) and the TLS mode.
+# The parameters of the url: the connect timeout in seconds (0 when the url sets none), the TLS mode and the file of
+# authorities.
 def read_query(query: String) -> Result[Options]
-  options = Options(timeout: 0, tls: Tls.Default)
+  options = Options(timeout: 0, tls: Tls.Default, ca: "")
+  verify = false
   if query.empty?
     return ok(options)
   end
@@ -194,12 +200,24 @@ def read_query(query: String) -> Result[Options]
       options = options.with(tls: Tls.Required)
     elsif halves[0] == "ssl_mode" and halves[1] == "verify"
       options = options.with(tls: Tls.Verify)
+      verify = true
     elsif halves[0] == "ssl_mode"
       return error("mysql error: the url ssl_mode is required or verify")
+    elsif halves[0] == "ssl_ca" and not halves[1].empty?
+      ca = try decode(halves[1])
+      options = options.with(ca: ca)
     else
-      return error("mysql error: the url has an unknown parameter, the ones that exist are connect_timeout " +
-                     "and ssl_mode")
+      return error("mysql error: the url has an unknown parameter, the ones that exist are connect_timeout, " +
+                   "ssl_mode and ssl_ca")
     end
+  end
+
+  if verify and options.ca.empty?
+    return error("mysql error: the url ssl_mode=verify needs ssl_ca=PATH")
+  end
+
+  if (not verify) and not options.ca.empty?
+    return error("mysql error: the url ssl_ca works only with ssl_mode=verify")
   end
 
   return ok(options)

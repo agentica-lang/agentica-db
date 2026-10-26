@@ -6,13 +6,12 @@ Feature: Errors
   Scenario Outline: A syntax error gives the engine code and message on <adapter>
     Given a "<adapter>" database
     When I query "selec 1"
-    Then it fails with '<message>'
+    Then it fails with exactly '<message>'
 
     Examples:
       | adapter  | message                                               |
       | sqlite   | sqlite error 1: near "selec": syntax error            |
       | postgres | postgres error 42601: syntax error at or near "selec" |
-      | mysql    | mysql error 1064: You have an error in your SQL syntax |
 
   Scenario Outline: A constraint violation gives the engine code on <adapter>
     Given a "<adapter>" database

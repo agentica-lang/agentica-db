@@ -11,13 +11,14 @@ end
 def main() -> Void
   Test.run([
     Test.test("a full url is read into its parts") do
-      found = target_of("mysql://ana:pw@db.example:3307/app?connect_timeout=5&ssl_mode=verify")
+      found = target_of("mysql://ana:pw@db.example:3307/app?connect_timeout=5&ssl_mode=verify&ssl_ca=%2Fetc%2Fca.pem")
       try Test.eq(found.host, "db.example")
       try Test.eq(found.port, 3307)
       try Test.eq(found.user, "ana")
       try Test.eq(found.password, "pw")
       try Test.eq(found.database, "app")
       try Test.eq(found.timeout, 5)
+      try Test.eq(found.ca, "/etc/ca.pem")
       return Test.eq(found.tls, MysqlUrl.Tls.Verify)
     end,
     Test.test("the parts that are missing take their defaults") do
@@ -45,6 +46,10 @@ def main() -> Void
       try refused("mysql://u:hunter2@h/a/b", "the url path has more than one part")
       try refused("mysql://u:h%2@h", "the url has a bad percent escape")
       try refused("mysql://u:%ff@h", "the url has a percent escape that is not UTF-8")
+      try refused("mysql://u:hunter2@h?ssl_mode=verify", "the url ssl_mode=verify needs ssl_ca=PATH")
+      try refused("mysql://u:hunter2@h?ssl_ca=x.pem", "the url ssl_ca works only with ssl_mode=verify")
+      try refused("mysql://u:hunter2@h?ssl_mode=required&ssl_ca=x.pem",
+                  "the url ssl_ca works only with ssl_mode=verify")
       return refused("mysql://u:h%00@h", "the url contains a NUL character")
     end,
   ])
