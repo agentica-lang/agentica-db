@@ -96,7 +96,8 @@ end
 - SQLite keeps its defaults: foreign keys are off until you run `PRAGMA foreign_keys = ON`.
 - `transaction` starts with `BEGIN IMMEDIATE` on SQLite, which needs write access to the database (a read-only
   database cannot open a transaction). A runtime error (a halt) inside the body stops the task
-  and leaves the transaction open until the task ends; closing the connection then rolls it back.
+  and leaves the transaction open; closing the connection rolls it back. For SQLite the end of the task closes it;
+  for PostgreSQL the transaction and its locks stay until `Db.close` or the end of the process.
 - A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it; for SQLite so
   does the end of the task, but for PostgreSQL only `Db.close` does (see below). Using a SQLite connection after
   `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
@@ -111,7 +112,8 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Valu
 - The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`,
   `options`). Set `connect_timeout` (seconds): without it an unreachable host waits as long as the
   operating system does. The client encoding is always UTF8.
-  A connection that cannot open, or a url libpq cannot parse, is `postgres error: <libpq message>`.
+  A connection that cannot open, or a url libpq cannot parse, is `postgres error: <libpq message>`. For a url libpq
+  cannot parse, its message may quote the url, password included: do not log it blindly.
 - Types, read and written (parameters travel as text, and the server infers their types from the sql):
 
   | PostgreSQL | `Value` |

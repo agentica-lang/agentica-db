@@ -13,9 +13,11 @@ import {Row, Value} from "value"
 
 SQLITE_PREFIX = "sqlite:"
 POSTGRES_PREFIXES = ["postgres://", "postgresql://"]
+MAX_SCHEME = 16
 
 ## An open connection, owned by the task that opened it. Close it with `close`. The end of the task closes a SQLite
-## connection, but not a PostgreSQL one (it only frees the handle): the caller must call `close`.
+## connection, but not a PostgreSQL one (it only frees the handle; the server session and its socket stay open): the
+## caller must call `close`.
 export enum Connection
   Sqlite(Sqlite.Handle)
   Postgres(Postgres.Handle)
@@ -81,7 +83,8 @@ end
 
 ## Runs the block between the adapter's BEGIN and COMMIT. An `error` from the block, or a failed COMMIT, rolls back
 ## and gives that error (with the ROLLBACK failure appended, if it failed too). Transactions do not nest. A runtime
-## error in the block stops the task and leaves the transaction open; closing the connection rolls it back.
+## error in the block stops the task and leaves the transaction open; closing the connection rolls it back (for
+## PostgreSQL only `close` or the end of the process does).
 export def transaction(conn: Connection, body: Fn[Connection, Result[Void]]) -> Result[Void]
   try execute(conn, begin_sql(conn), [])
   done = body.call(conn)
@@ -115,11 +118,23 @@ def abandon(conn: Connection, message: String) -> Result[Void]
   end
 end
 
-# The text before the first colon, or a fixed word when there is none (the whole text could be a secret).
+# The text before the first colon when it looks like a url scheme, else a fixed word: any other text (a conninfo
+# string such as `password=a:b`) could hold a secret.
 def scheme(url: String) -> String
   found = url.index_of(":")
   case found
-    ok(at) -> return url.slice(0, at)
+    ok(at) ->
+      name = url.slice(0, at)
+      if at > 0 and at <= MAX_SCHEME and name.to_bytes.all? do |byte| scheme_byte?(byte) end
+        return name
+      end
+      return "(none)"
     error(_) -> return "(none)"
   end
+end
+
+# A letter, a digit, `+`, `-` or `.`.
+def scheme_byte?(byte: Int) -> Bool
+  letter = (byte >= 97 and byte <= 122) or (byte >= 65 and byte <= 90)
+  return letter or (byte >= 48 and byte <= 57) or byte == 43 or byte == 45 or byte == 46
 end

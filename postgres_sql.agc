@@ -104,10 +104,10 @@ end
 def other(bytes: List[Int], scan: Scan) -> Result[Scan]
   at = scan.at
   byte = bytes[at]
+  seen = try with_content(bytes, scan)
   if byte == DOLLAR and digit_after?(bytes, at) and not word_before?(bytes, at)
     return error("postgres error: write ? for a parameter, not a $n placeholder")
   end
-  seen = try with_content(bytes, scan)
   return ok(seen.with(out: seen.out.push(byte), at: at + 1, depth: next_depth(seen.depth, byte)))
 end
 

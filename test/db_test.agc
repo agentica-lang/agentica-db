@@ -140,7 +140,10 @@ def specific() -> List[TestCase]
       try Test.assert(failed.message.include?("ftp"), "error was: #{failed.message}")
       secret = Db.open("pg://user:hunter2@host/db")
       try Test.error?(secret)
-      Test.assert(not secret.message.include?("hunter2"), "the error shows the password: #{secret.message}")
+      try Test.assert(not secret.message.include?("hunter2"), "the error shows the password: #{secret.message}")
+      conninfo = Db.open("host=h password=hunter2:x")
+      try Test.error?(conninfo)
+      Test.assert(not conninfo.message.include?("hunter2"), "the error shows the password: #{conninfo.message}")
     end,
     Test.test("only sqlite:PATH is accepted") do
       for url in ["sqlite:///tmp/x.db", "sqlite:", "sqlite"]
