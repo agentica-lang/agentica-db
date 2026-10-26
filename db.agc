@@ -2,8 +2,8 @@
 ## `transaction` take bound `Value` parameters (`?` placeholders), never values spliced into the sql.
 ##
 ## An error is `error(message)` in one of two shapes. An engine failure is `<adapter> error <code>: <message>`, as in
-## `sqlite error 1: near "from": syntax error`. A bad input, refused before the engine runs, is
-## `<adapter> error: <message>`, as in `sqlite error: the sql has 1 parameters, got 0`. A failure of this module
+## `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs, is
+## `<adapter> error: <message>`, as in `sqlite error: the sql has 1 parameter, got 0`. A failure of this module
 ## itself, such as an unknown url, is `db error: <message>`.
 
 import Sqlite from "sqlite"

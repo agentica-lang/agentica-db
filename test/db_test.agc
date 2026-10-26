@@ -35,6 +35,10 @@ def error_starts_with(result: Result[Int], prefix: String) -> Result[Void]
   return Test.assert(result.message.start_with?(prefix), "error was: #{result.message}")
 end
 
+def vertical_tab_message() -> String
+  return "sqlite error 1: unrecognized token: \"#{String.from_code(11)}\""
+end
+
 def infinity(conn: Db.Connection) -> Result[Float]
   rows = try Db.query(conn, "select 9e999 as v", [])
   case rows[0]["v"]
@@ -50,8 +54,10 @@ def round_trip(conn: Db.Connection, value: Value) -> Result[Value]
   return ok(rows[0]["v"])
 end
 
-def refused(conn: Db.Connection, sql: String, params: List[Value], prefix: String) -> Result[Void]
-  return error_starts_with(Db.execute(conn, sql, params), prefix)
+def refused(conn: Db.Connection, sql: String, params: List[Value], message: String) -> Result[Void]
+  failed = Db.execute(conn, sql, params)
+  try Test.error?(failed)
+  return Test.eq(failed.message, message)
 end
 
 # Runs in a task of its own: the runtime error of a closed handle ends only that task.
@@ -209,16 +215,19 @@ def main() -> Void
     Test.test("bad input is an error, not a halt") do
       conn = try memory()
       nul = String.from_code(0)
-      try refused(conn, "select ?", [], "sqlite error: the sql has 1 parameters, got 0")
+      try refused(conn, "select ?", [], "sqlite error: the sql has 1 parameter, got 0")
       try refused(conn, "select 1", [Value.Int(1)], "sqlite error: the sql has 0 parameters, got 1")
-      try refused(conn, "select ?", [Value.Text("a#{nul}b")], "sqlite error: a text")
-      try refused(conn, "select ?", [Value.Blob([256])], "sqlite error: a blob")
-      try refused(conn, "select 1#{nul}", [], "sqlite error: the sql contains")
+      try refused(conn, "select ?", [Value.Text("a#{nul}b")], "sqlite error: a text parameter contains a NUL character")
+      try refused(conn, "select ?", [Value.Blob([256])], "sqlite error: a blob parameter has an item outside 0..255")
+      try refused(conn, "select 1#{nul}", [], "sqlite error: the sql contains a NUL character")
       try refused(conn, "  -- nothing\n /* here */ ; ", [], "sqlite error: the sql has no statement")
       try refused(conn, "-- only a comment", [], "sqlite error: the sql has no statement")
-      try refused(conn, String.from_code(12), [], "sqlite error")
-      try refused(conn, String.from_code(11), [], "sqlite error")
-      try refused(conn, "select 1; select 2", [], "sqlite error: the sql has more than one")
+      try refused(conn, String.from_code(12), [], "sqlite error: the sql has no statement")
+      try refused(conn, String.from_code(11), [], vertical_tab_message())
+      try refused(conn, "select 1; select 2", [], "sqlite error: the sql has more than one statement")
+      try refused(conn, "select 1; selec 2", [], "sqlite error: the sql has more than one statement")
+      two = "create table t(a); insert into t values (1)"
+      try refused(conn, two, [], "sqlite error: the sql has more than one statement")
       try Test.eq(Db.query(conn, "select 1 as one -- done", []), ok([{"one": Value.Int(1)}]))
       Test.eq(Db.query(conn, "select 1 as one; -- done", []), ok([{"one": Value.Int(1)}]))
     end,
@@ -282,6 +291,15 @@ def main() -> Void
       failed = Db.query(conn, sql, [])
       try Test.error?(failed)
       try Test.assert(failed.message.start_with?("sqlite error 1: "), "error was: #{failed.message}")
+      Test.eq(Db.execute(conn, "drop table t", []), ok(0))
+    end,
+    Test.test("probe statements are finalized, so the table can be dropped") do
+      conn = try memory()
+      try Db.execute(conn, "create table t (a)", [])
+      try Test.error?(Db.query(conn, "select * from t; select 2", []))
+      try Test.error?(Db.query(conn, "-- nothing", []))
+      try Test.error?(Db.execute(conn, "select * from t; selec 2", []))
+      try Test.ok?(Db.query(conn, "select * from t", []))
       Test.eq(Db.execute(conn, "drop table t", []), ok(0))
     end,
     Test.test("a result with a repeated column name is an error") do

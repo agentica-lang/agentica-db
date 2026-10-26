@@ -84,12 +84,11 @@ end
 export def query(conn: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
   stmt = try prepare(conn, sql, params)
   names = column_names(stmt)
-  repeated = names.find do |name| names.select do |other| other == name end.size > 1 end
-  if repeated.ok?
+  if names.uniq.size != names.size
     Native.close(stmt)
-    return error("sqlite error: the result has the column #{repeated.unwrap!} twice, alias one of them")
+    return error("sqlite error: the result has the column #{repeated_name(names)} twice, alias one of them")
   end
-  rows = collect(conn, stmt, names)
+  rows = collect(conn, stmt, names, true)
   Native.close(stmt)
   return rows
 end
@@ -98,11 +97,16 @@ end
 export def execute(conn: Handle, sql: String, params: List[Value]) -> Result[Int]
   stmt = try prepare(conn, sql, params)
   before = sqlite3_total_changes(conn)
-  # No column names: a statement that returns rows is run for its effect, and its rows come out empty.
-  ran = collect(conn, stmt, [])
+  # A statement that returns rows is run for its effect: its rows are stepped over, not read.
+  ran = collect(conn, stmt, [], false)
   Native.close(stmt)
   try ran
   return ok(changes_since(conn, before))
+end
+
+def repeated_name(names: List[String]) -> String
+  counts = names.tally
+  return names.find do |name| counts[name] > 1 end.unwrap_or("")
 end
 
 def changes_since(conn: Handle, before: Int) -> Int
@@ -143,6 +147,9 @@ end
 # SQLite gives a NULL statement for sql that holds only whitespace and comments, which an out resource cannot
 # show (it is a closed resource, and any call on it stops the program). So the sql is prepared first with an out
 # pointer, where NULL can be tested, and the tail is tried the same way to refuse a second statement.
+# A probe is finalized by hand right after its call. The call is a compute def: if the task is cancelled during
+# the parse, the C call still finishes but its result is dropped, so that one probe statement is never finalized
+# (an out C.Pointer is not freed on cancel, unlike an out resource). It is freed when the connection closes.
 def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
   probe = sqlite3_probe(conn, buf, NUL_TERMINATED)
   if probe.result != SQLITE_OK
@@ -156,13 +163,13 @@ def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
     return ok()
   end
   more = sqlite3_probe(conn, probe.tail, NUL_TERMINATED)
-  if more.result != SQLITE_OK
-    return error(failure(conn, more.result))
-  end
-  if Native.null?(more.stmt)
+  # Text after the first statement that is only comments gives a NULL statement: still one statement.
+  if more.result == SQLITE_OK and Native.null?(more.stmt)
     return ok()
   end
-  sqlite3_finalize_pointer(more.stmt)
+  if more.result == SQLITE_OK
+    sqlite3_finalize_pointer(more.stmt)
+  end
   return error("sqlite error: the sql has more than one statement")
 end
 
@@ -189,7 +196,7 @@ end
 def bind_all(conn: Handle, stmt: Stmt, params: List[Value]) -> Result[Void]
   wanted = sqlite3_bind_parameter_count(stmt)
   if wanted != params.size
-    return error("sqlite error: the sql has #{wanted} parameters, got #{params.size}")
+    return error("sqlite error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
   end
   index = 1
   for param in params
@@ -200,6 +207,13 @@ def bind_all(conn: Handle, stmt: Stmt, params: List[Value]) -> Result[Void]
     index += 1
   end
   return ok()
+end
+
+def noun(count: Int) -> String
+  if count == 1
+    return "parameter"
+  end
+  return "parameters"
 end
 
 def bind_value(stmt: Stmt, index: Int, value: Value) -> Int
@@ -232,8 +246,8 @@ def bool_int(flag: Bool) -> Int
   return 0
 end
 
-# The shared step loop: every row, read with the given column names.
-def collect(conn: Handle, stmt: Stmt, names: List[String]) -> Result[List[Row]]
+# The shared step loop: every row read with the given column names, or none when `keep` is false.
+def collect(conn: Handle, stmt: Stmt, names: List[String], keep: Bool) -> Result[List[Row]]
   rows: List[Row] = []
   while true
     code = sqlite3_step(stmt)
@@ -243,7 +257,9 @@ def collect(conn: Handle, stmt: Stmt, names: List[String]) -> Result[List[Row]]
     if code != SQLITE_ROW
       return error(failure(conn, code))
     end
-    rows = rows.push(read_row(stmt, names))
+    if keep
+      rows = rows.push(read_row(stmt, names))
+    end
   end
   return ok(rows)
 end

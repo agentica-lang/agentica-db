@@ -10,5 +10,6 @@ export enum Value
   Bool(Bool)
 end
 
-## One result row: column name to value, in column order. A repeated column name keeps the last value.
+## One result row: column name to value, in column order. The adapters refuse a result with a repeated column
+## name, so each name appears once.
 export type Row = Map[String, Value]

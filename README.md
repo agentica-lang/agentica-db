@@ -78,7 +78,7 @@ end
   program. A list does not expand a placeholder: for `in (...)` build `?, ?, ?` from the list length yourself (only
   the placeholders, never the values) and pass the values as parameters.
 - An error is `error(message)` in one of two shapes. An engine failure is `<adapter> error <code>: <message>`, as in
-  `sqlite error 1: near "from": syntax error`. A bad input, refused before the engine runs (wrong parameter count, a
+  `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs (wrong parameter count, a
   NUL in text, a blob item outside 0..255, no statement, two statements, a repeated result column), is
   `<adapter> error: <message>`. An unknown url is `db error: <message>`.
 - Only the first and only statement of the string runs; two statements are an error. A result with two columns of
@@ -87,7 +87,8 @@ end
   MySQL types such as numeric, date or uuid). SQLite has no boolean: `Value.Bool` is stored as 0 or 1 and reads
   back as `Value.Int`. NaN is stored as NULL.
 - SQLite keeps its defaults: foreign keys are off until you run `PRAGMA foreign_keys = ON`.
-- `transaction` starts with `BEGIN IMMEDIATE` on SQLite. A runtime error (a halt) inside the body stops the task
+- `transaction` starts with `BEGIN IMMEDIATE` on SQLite, which needs write access to the database (a read-only
+  database cannot open a transaction). A runtime error (a halt) inside the body stops the task
   and leaves the transaction open until the task ends; closing the connection then rolls it back.
 - A connection belongs to the task that opened it. `close` ends it; so does the end of the task. Using it after
   `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
