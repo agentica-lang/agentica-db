@@ -15,7 +15,7 @@ Feature: Errors
 
   Scenario Outline: A constraint violation gives the engine code on <adapter>
     Given a "<adapter>" database
-    And I execute "create temp table users (name text not null unique)"
+    And I execute "create temporary table users (name varchar(50) not null unique)"
     And I execute "insert into users (name) values ('ana')"
     When I execute "insert into users (name) values ('ana')"
     Then it fails with "<prefix>"
@@ -24,6 +24,7 @@ Feature: Errors
       | adapter  | prefix                                                               |
       | sqlite   | sqlite error 19: UNIQUE constraint failed                            |
       | postgres | postgres error 23505: duplicate key value violates unique constraint |
+      | mysql    | mysql error 1062: Duplicate entry 'ana' for key |
 
   Scenario Outline: The wrong number of parameters is an error on <adapter>
     Given a "<adapter>" database
@@ -38,6 +39,7 @@ Feature: Errors
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: A parameter the database cannot take is an error on <adapter>: <value>
     Given a "<adapter>" database
@@ -51,7 +53,9 @@ Feature: Errors
       | sqlite   | Text a[NUL]b | a text parameter contains a NUL character   |
       | sqlite   | Blob 256     | a blob parameter has an item outside 0..255 |
       | postgres | Text a[NUL]b | a text parameter contains a NUL character   |
+      | mysql    | Text a[NUL]b | a text parameter contains a NUL character   |
       | postgres | Blob 256     | a blob parameter has an item outside 0..255 |
+      | mysql    | Blob 256     | a blob parameter has an item outside 0..255 |
 
   Scenario Outline: A sql with a NUL character is an error on <adapter>
     Given a "<adapter>" database
@@ -62,6 +66,7 @@ Feature: Errors
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: A sql without a statement is an error on <adapter>: <sql>
     Given a "<adapter>" database
@@ -74,5 +79,8 @@ Feature: Errors
       | sqlite   | -- only a comment                |
       | sqlite   |                                  |
       | postgres | [LF] -- nothing[LF] /* here */ ; |
+      | mysql    | [LF] -- nothing[LF] /* here */ ; |
       | postgres | -- only a comment                |
+      | mysql    | -- only a comment                |
       | postgres |                                  |
+      | mysql    |                                  |

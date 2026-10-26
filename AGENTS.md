@@ -1,7 +1,8 @@
 # agentica-db
 
 One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc`, `postgres.agc`
-with its placeholder scanner `postgres_sql.agc`), all through the C FFI. No C code of ours.
+with its placeholder scanner `postgres_sql.agc`, `mysql.agc` with its statement scanner `mysql_sql.agc` and its url
+reader `mysql_url.agc`), all through the C FFI. No C code of ours.
 
 ## Commands
 
@@ -11,13 +12,19 @@ with its placeholder scanner `postgres_sql.agc`), all through the C FFI. No C co
   `agentica test --steps specs/steps.agc`: the features of `specs/` and the unit tests of `test/`. Always give
   `--steps`: without it every step is undefined. SQLite needs no server. `--only TEXT` keeps the scenarios and tests
   whose name contains `TEXT`.
-- The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`. Without it they
-  fail, locally and in CI: there is no skipped scenario. Without a server run only the SQLite ones:
+- The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
+  a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
+  and in CI: there is no skipped scenario. Without a server run only the SQLite ones:
   `agentica test --steps specs/steps.agc --only "on sqlite"` (every SQLite scenario has "on sqlite" in its name).
   Locally: `docker run -d --rm --name agentica-db-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:17`,
   then `AGENTICA_DB_POSTGRES_URL='postgres://postgres:pw@127.0.0.1:55432/postgres?sslmode=disable' agentica test
-  --steps specs/steps.agc`, and `docker stop agentica-db-pg` when done. Scenarios use temporary tables, so they
-  leave nothing behind.
+  --steps specs/steps.agc`, and `docker stop agentica-db-pg` when done. For MySQL:
+  `docker run -d --rm --name agentica-db-mysql -e MARIADB_ROOT_PASSWORD=pw -p 127.0.0.1:53306:3306 mariadb:11`, then
+  `AGENTICA_DB_MYSQL_URL='mysql://root:pw@127.0.0.1:53306/mysql'` (an address, never `localhost`: the client library
+  takes that for the local socket), and `docker stop agentica-db-mysql` when done. Run the whole suite against MySQL
+  too (CI does): `-e MYSQL_ROOT_PASSWORD=pw ... mysql:8.4` on another port. The two servers differ (MySQL does not
+  prepare `START TRANSACTION`), so a MySQL change passes on both. Scenarios use temporary tables, so
+  they leave nothing behind (`mysql.feature` creates and drops one user).
 
 ## Rules
 
@@ -25,25 +32,29 @@ with its placeholder scanner `postgres_sql.agc`), all through the C FFI. No C co
 - An adapter keeps its `extern` block private and exports only the wrapper (`wrapping` guide of the Agentica
   site: `library/io-and-system/native/wrapping`). An adapter has the same four functions as `db.agc`:
   `open`, `close`, `query`, `execute`. `db.agc` dispatches on `Connection`; `transaction` stays in `db.agc`.
-- Placeholders are `?` in the API. An adapter translates them (`$1` for PostgreSQL) and always binds; no value is
-  ever spliced into sql.
+- Placeholders are `?` in the API. An adapter translates them (`$1` for PostgreSQL; MySQL takes `?` natively) and
+  always binds (`mysql_stmt_*` for MySQL); no value is ever spliced into sql.
 - A failure is `error(message)` in one of two shapes: an engine failure `<adapter> error <code>: <message>`, a
   bad input `<adapter> error: <message>`; the module's own `db error: <message>`. A bad input is an error, not a
   halt.
 - An adapter exports its own `BEGIN_SQL`; `transaction` in `db.agc` uses it.
 - Tests are BDD-first: behavior is a Gherkin scenario in `specs/*.feature`, run by `agentica test`, not a test file.
   The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
-  `transactions`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`); what only one adapter
-  promises is in `sqlite.feature` or `postgres.feature`. A new behavior is a scenario first. A value written must
-  read back unchanged.
+  `transactions`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one
+  adapter promises is in `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on
+  all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and
+  not a temporary table where a statement reads one table twice. A new behavior is a scenario first. A value written
+  must read back unchanged.
 - The steps are in `specs/steps.agc`, few and generic (`a "sqlite" database`, `I execute "sql" with:` and a table of
   typed params, `the query "sql" returns:` and a table, `it fails with "prefix"`). They drive `Db` through
   `specs/driver.agc`, a program under test that holds the connection (a step program cannot keep a connection between
   steps), with the requests of `specs/protocol.agc` and the typed cells of `specs/cells.agc`. A table cell is a
   `Value` as text: `Int 31`, `Float -0.25`, `Text ana`, `Blob 0,1,255`, `Bool true`, `Null`, `Repeat 5000 Blob 7`;
   `[NUL]`, `[LF]`, `[TAB]`, `[VT]`, `[FF]`, `[CR]` and `[SP]` stand for characters a cell cannot hold. In a step text,
-  `[URL]` is the PostgreSQL url (`[URL]&name=value` adds a libpq parameter), `[SERVER]` is it without its scheme, and
-  `[SCRATCH]` is a folder under `tmp/`. A feature that uses a marker says so in its description.
+  `[URL]` is the url of the server of the adapter in the scenario, PostgreSQL or MySQL (`[URL]&name=value` adds a url
+  parameter), `[SERVER]` is it without its scheme, `[ADDRESS]` is its host and port only, and `[SCRATCH]` is a folder
+  under `tmp/`. A feature that uses a marker says so in its description. A step has a budget of one million VM steps,
+  so a `Repeat` cell of more than about 40000 items stops the driver.
 - Add a step only when no step can say it. Lines of 119 characters at most, except a step line that holds a long sql.
 - A statement that fails must be checked by the next `Then` (`it fails with ...`): the driver refuses any new request
   while the last failure is unchecked, so a failing setup step fails the scenario. The last step of a scenario is a

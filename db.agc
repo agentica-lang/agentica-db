@@ -7,24 +7,27 @@
 ## `<adapter> error: <message>`, as in `sqlite error: the sql has 1 parameter, got 0`. A failure of this module
 ## itself, such as an unknown url, is `db error: <message>`.
 
+import Mysql from "mysql"
 import Postgres from "postgres"
 import Sqlite from "sqlite"
 import {Row, Value} from "value"
 
 SQLITE_PREFIX = "sqlite:"
 POSTGRES_PREFIXES = ["postgres://", "postgresql://"]
+MYSQL_PREFIXES = ["mysql://", "mariadb://"]
 MAX_SCHEME = 16
 
 ## An open connection, owned by the task that opened it. Close it with `close`. The end of the task closes a SQLite
-## connection, but not a PostgreSQL one (it only frees the handle; the server session and its socket stay open): the
-## caller must call `close`.
+## connection, but not a PostgreSQL or MySQL one (it only frees the handle; the server session and its socket stay
+## open): the caller must call `close`.
 export enum Connection
   Sqlite(Sqlite.Handle)
   Postgres(Postgres.Handle)
+  Mysql(Mysql.Handle)
 end
 
 ## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database), or
-## `postgres://` and `postgresql://` urls, which libpq parses.
+## `postgres://` and `postgresql://` urls, which libpq parses, or `mysql://` and `mariadb://` urls.
 export def open(url: String) -> Result[Connection]
   # Errors name the scheme only: a url can hold a password.
   if url.start_with?("sqlite://")
@@ -44,8 +47,12 @@ export def open(url: String) -> Result[Connection]
     return open_postgres(url)
   end
 
-  return error("db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory: " +
-               "or postgres://")
+  if MYSQL_PREFIXES.any? do |prefix| url.start_with?(prefix) end
+    return open_mysql(url)
+  end
+
+  return error("db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory:, " +
+               "postgres:// or mysql://")
 end
 
 ## Opens a SQLite database file, or `:memory:`.
@@ -61,11 +68,18 @@ export def open_postgres(url: String) -> Result[Connection]
   return ok(Connection.Postgres(handle))
 end
 
+## Opens a MySQL or MariaDB database from a `mysql://user:password@host:3306/database` url (also `mariadb://`).
+export def open_mysql(url: String) -> Result[Connection]
+  handle = try Mysql.open(url)
+  return ok(Connection.Mysql(handle))
+end
+
 ## Closes the connection; closing it again does nothing.
 export def close(conn: Connection) -> Void
   case conn
     Connection.Sqlite(handle) -> Sqlite.close(handle)
     Connection.Postgres(handle) -> Postgres.close(handle)
+    Connection.Mysql(handle) -> Mysql.close(handle)
   end
 end
 
@@ -74,6 +88,7 @@ export def query(conn: Connection, sql: String, params: List[Value]) -> Result[L
   case conn
     Connection.Sqlite(handle) -> return Sqlite.query(handle, sql, params)
     Connection.Postgres(handle) -> return Postgres.query(handle, sql, params)
+    Connection.Mysql(handle) -> return Mysql.query(handle, sql, params)
   end
 end
 
@@ -82,6 +97,7 @@ export def execute(conn: Connection, sql: String, params: List[Value]) -> Result
   case conn
     Connection.Sqlite(handle) -> return Sqlite.execute(handle, sql, params)
     Connection.Postgres(handle) -> return Postgres.execute(handle, sql, params)
+    Connection.Mysql(handle) -> return Mysql.execute(handle, sql, params)
   end
 end
 
@@ -110,6 +126,7 @@ def begin_sql(conn: Connection) -> String
   case conn
     Connection.Sqlite(_) -> return Sqlite.BEGIN_SQL
     Connection.Postgres(_) -> return Postgres.BEGIN_SQL
+    Connection.Mysql(_) -> return Mysql.BEGIN_SQL
   end
 end
 

@@ -11,6 +11,7 @@ Feature: Opening and closing a database
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: An unknown url scheme is a db error: <url> (on sqlite, no server)
     When I open "<url>"

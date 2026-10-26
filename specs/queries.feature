@@ -5,7 +5,7 @@ Feature: Queries and statements
 
   Scenario Outline: A null reads back as null and matches is null on <adapter>
     Given a "<adapter>" database
-    And I execute "create temp table users (name text not null unique, age integer)"
+    And I execute "create temporary table users (name varchar(50) not null unique, age integer)"
     And I execute "insert into users (name, age) values (?, ?)" with:
       | value    |
       | Text ana |
@@ -25,10 +25,11 @@ Feature: Queries and statements
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: Rows come in order with their columns in order on <adapter>
     Given a "<adapter>" database
-    And I execute "create temp table users (name text not null unique, age integer)"
+    And I execute "create temporary table users (name varchar(50) not null unique, age integer)"
     And I execute "insert into users (name, age) values ('zed', 1), ('amy', 2)"
     Then the query "select age, name as who, 7 as seven from users order by name desc" returns:
       | age   | who      | seven |
@@ -39,20 +40,23 @@ Feature: Queries and statements
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: A statement without a result gives no rows on <adapter>
     Given a "<adapter>" database
-    Then the query "create temp table t (x integer)" returns:
+    Then the query "create temporary table t (x integer)" returns:
       | x |
 
     Examples:
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: A big result set comes back whole on <adapter>
     Given a "<adapter>" database
-    When I query "with recursive c(x) as (select 1 union all select x + 1 from c where x < cast(? as integer)) select x from c" with:
+    # One CTE, read four times: MySQL refuses to open a temporary table twice in one statement.
+    When I query "with n(x) as (select 0 union all select 1 union all select 2 union all select 3 union all select 4 union all select 5 union all select 6 union all select 7 union all select 8 union all select 9) select a.x + 10 * b.x + 100 * c.x + 1000 * d.x + 1 as x from n a, n b, n c, n d where a.x + 10 * b.x + 100 * c.x + 1000 * d.x + 1 <= ? order by x" with:
       | value    |
       | Int 5000 |
     Then the result has 5000 rows, the last being:
@@ -63,10 +67,11 @@ Feature: Queries and statements
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: Execute counts the rows a statement changed on <adapter>
     Given a "<adapter>" database
-    And I execute "create temp table users (name text not null unique, age integer)"
+    And I execute "create temporary table users (name varchar(50) not null unique, age integer)"
     When I execute "insert into users (name, age) values ('a', 1)"
     Then the changed row count is 1
     When I execute "insert into users (name, age) values ('b', 1), ('c', 2)"
@@ -79,7 +84,7 @@ Feature: Queries and statements
       | value   |
       | Int 100 |
     Then the changed row count is 0
-    When I execute "create temp table other (x integer)"
+    When I execute "create temporary table other (x integer)"
     Then the changed row count is 0
     When I execute "delete from users"
     Then the changed row count is 3
@@ -88,10 +93,11 @@ Feature: Queries and statements
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: Parameters are values, never sql on <adapter>
     Given a "<adapter>" database
-    And I execute "create temp table users (name text not null unique, age integer)"
+    And I execute "create temporary table users (name varchar(50) not null unique, age integer)"
     When I execute "insert into users (name) values (?)" with:
       | value                         |
       | Text x'); drop table users;-- |
@@ -103,6 +109,7 @@ Feature: Queries and statements
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |
 
   Scenario Outline: Only the first and only statement runs on <adapter>: <sql>
     Given a "<adapter>" database
@@ -113,10 +120,13 @@ Feature: Queries and statements
       | adapter  | sql                                              |
       | sqlite   | select 1; select 2                               |
       | sqlite   | select 1; selec 2                                |
-      | sqlite   | create temp table t(a); insert into t values (1) |
+      | sqlite   | create temporary table t(a); insert into t values (1) |
       | postgres | select 1; select 2                               |
+      | mysql    | select 1; select 2                               |
       | postgres | select 1; selec 2                                |
-      | postgres | create temp table t(a); insert into t values (1) |
+      | mysql    | select 1; selec 2                                |
+      | postgres | create temporary table t(a); insert into t values (1) |
+      | mysql    | create temporary table t(a); insert into t values (1) |
 
   Scenario Outline: A trailing comment or semicolon is not a second statement on <adapter>: <sql>
     Given a "<adapter>" database
@@ -129,7 +139,9 @@ Feature: Queries and statements
       | sqlite   | select 1 as one -- done  |
       | sqlite   | select 1 as one; -- done |
       | postgres | select 1 as one -- done  |
+      | mysql    | select 1 as one -- done  |
       | postgres | select 1 as one; -- done |
+      | mysql    | select 1 as one; -- done |
 
   Scenario Outline: A result with a repeated column name is an error on <adapter>
     Given a "<adapter>" database
@@ -140,3 +152,4 @@ Feature: Queries and statements
       | adapter  |
       | sqlite   |
       | postgres |
+      | mysql    |

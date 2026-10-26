@@ -5,7 +5,7 @@ Feature: Values
 
   Scenario Outline: Every kind of value is written with parameters and read back on <adapter>
     Given a "<adapter>" database
-    And I execute "create temp table t (i bigint, f double precision, s text, b <blob type>, n text, flag boolean)"
+    And I execute "create temporary table t (i bigint, f double precision, s text, b <blob type>, n text, flag boolean)"
     When I execute "insert into t values (?, ?, ?, ?, ?, ?)" with:
       | value                   |
       | Int 9223372036854775807 |
@@ -23,6 +23,7 @@ Feature: Values
       | adapter  | flag      | blob type |
       | sqlite   | Int 1     | blob      |
       | postgres | Bool true | bytea     |
+      | mysql    | Int 1     | longblob  |
 
   Scenario Outline: Values read back unchanged on <adapter>
     Given a "<adapter>" database
@@ -36,8 +37,6 @@ Feature: Values
       | double precision | Float 0.1                         |
       | double precision | Float 1000000000000000000000000.5 |
       | double precision | Float -123456.789                 |
-      | double precision | Float Infinity                    |
-      | double precision | Float -Infinity                   |
       | text             | Text                              |
       | text             | Text quote ' and " and ? and ;    |
       | text             | Text line[LF]break[TAB]tab ünï 🚀 |
@@ -52,3 +51,17 @@ Feature: Values
       | adapter  | blob type |
       | sqlite   | blob      |
       | postgres | bytea     |
+      | mysql    | longblob  |
+
+  # MySQL has no infinity: its adapter refuses one (see mysql.feature).
+  Scenario Outline: Infinities read back unchanged on <adapter>
+    Given a "<adapter>" database
+    Then each value reads back unchanged in a column of its type:
+      | column type      | value           |
+      | double precision | Float Infinity  |
+      | double precision | Float -Infinity |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
