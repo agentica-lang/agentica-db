@@ -71,7 +71,7 @@ end
 
 | Function | Gives |
 |---|---|
-| `open(url)` | `Result[Connection]`; `sqlite:PATH`, `sqlite::memory:`, `postgres://`, `mysql://`, `mariadb://` |
+| `open(url)` | `Result[Connection]`; `sqlite:PATH` (`sqlite::memory:`), `postgres[ql]://`, `mysql://`, `mariadb://` |
 | `open_sqlite(path)` | `Result[Connection]` |
 | `open_postgres(url)` | `Result[Connection]`, a libpq url or a conninfo string (`host=localhost dbname=app`) |
 | `open_mysql(url)` | `Result[Connection]`, a `mysql://` or `mariadb://` url |
@@ -181,7 +181,8 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Value.Int
   `BIGINT`, `DOUBLE`, strings and blobs. The `?` of a string, a quoted identifier or a comment is not a placeholder:
   the server decides, as always. A NUL in the sql or in a text is a bad input.
 - Types, read and written. A `float` column has 32 bits, so `0.1` reads back as `0.10000000149011612`: use `double`
-  for exact decimals.
+  for exact decimals. A statement the server does not prepare comes back through the text protocol, where it reads
+  `0.1`.
 
   | MySQL | `Value` |
   |---|---|

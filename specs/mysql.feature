@@ -57,7 +57,9 @@ Feature: MySQL and MariaDB
       | mysql://user:hunter2@host/db/more              | the url path has more than one part                     |
       | mysql://user:hunter2@                          | the url has no host                                     |
       | mysql://user:hunter2@[::1                      | the url has an IPv6 host without a closing bracket      |
+      | mysql://user:hunter2@host/db?ssl_mode=verify&ssl_ca=x.pem&ssl_mode=required | the url sets ssl_mode twice |
 
+  # The cipher is the TLS 1.3 default of both test images; a new image may pick another suite.
   Scenario: The ssl_mode required connects over TLS
     Given a "mysql" database
     When I open "[URL]&ssl_mode=required"
@@ -70,13 +72,20 @@ Feature: MySQL and MariaDB
   Scenario: The ssl_mode verify refuses a server whose certificate the authorities do not vouch for
     Given a "mysql" database
     When I open "[URL]&ssl_mode=verify&ssl_ca=fixtures/unrelated-ca.pem"
-    Then it fails with "mysql error 2026: "
+    Then it fails with "mysql error 2026: TLS/SSL error: self-signed certificate"
     And the failure never shows "pw"
 
   Scenario: The ssl_mode verify refuses a file of authorities that is not there
     Given a "mysql" database
     When I open "[URL]&ssl_mode=verify&ssl_ca=fixtures/no-such-file.pem"
-    Then it fails with "mysql error "
+    Then it fails with "mysql error 2026: TLS/SSL error: No such file"
+
+  Scenario: A statement with parameters never takes the text protocol
+    Given a "mysql" database
+    When I execute "start transaction" with:
+      | value |
+      | Int 1 |
+    Then it fails with "mysql error"
 
   Scenario: A url with a NUL character is refused before the library sees it
     Given a "mysql" database

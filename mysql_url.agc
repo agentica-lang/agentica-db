@@ -183,6 +183,7 @@ end
 def read_query(query: String) -> Result[Options]
   options = Options(timeout: 0, tls: Tls.Default, ca: "")
   verify = false
+  mode_seen = false
   if query.empty?
     return ok(options)
   end
@@ -196,11 +197,15 @@ def read_query(query: String) -> Result[Options]
       end
 
       options = options.with(timeout: seconds.unwrap_or(0))
+    elsif halves[0] == "ssl_mode" and mode_seen
+      return error("mysql error: the url sets ssl_mode twice")
     elsif halves[0] == "ssl_mode" and halves[1] == "required"
       options = options.with(tls: Tls.Required)
+      mode_seen = true
     elsif halves[0] == "ssl_mode" and halves[1] == "verify"
       options = options.with(tls: Tls.Verify)
       verify = true
+      mode_seen = true
     elsif halves[0] == "ssl_mode"
       return error("mysql error: the url ssl_mode is required or verify")
     elsif halves[0] == "ssl_ca" and not halves[1].empty?
