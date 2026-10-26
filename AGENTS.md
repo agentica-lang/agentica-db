@@ -7,12 +7,17 @@ with its placeholder scanner `postgres_sql.agc`), all through the C FFI. No C co
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`.
-- `agentica check FILE.agc` for every `.agc` file, then `agentica test`. SQLite needs no server.
-- The PostgreSQL tests (`test/postgres_test.agc`) need a server and libpq (`libpq5`) and read
-  `AGENTICA_DB_POSTGRES_URL`; without it they are skipped (one passing test says so, and fails when `CI=true`).
+- `for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done`, then
+  `agentica test --steps specs/steps.agc`: the features of `specs/` and the unit tests of `test/`. Always give
+  `--steps`: without it every step is undefined. SQLite needs no server. `--only TEXT` keeps the scenarios and tests
+  whose name contains `TEXT`; the adapter outlines end their name with `on <adapter>`, so `--only "on sqlite"` runs the
+  SQLite rows of the contract.
+- The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`. Without it they
+  are skipped (they pass without doing anything: see "Skipped scenarios" in the rules) and, when `CI=true`, they fail.
   Locally: `docker run -d --rm --name agentica-db-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:17`,
-  then `AGENTICA_DB_POSTGRES_URL='postgres://postgres:pw@127.0.0.1:55432/postgres?sslmode=disable' agentica test`,
-  and `docker stop agentica-db-pg` when done. Tests use temporary tables, so they leave nothing behind.
+  then `AGENTICA_DB_POSTGRES_URL='postgres://postgres:pw@127.0.0.1:55432/postgres?sslmode=disable' agentica test
+  --steps specs/steps.agc`, and `docker stop agentica-db-pg` when done. Scenarios use temporary tables, so they
+  leave nothing behind.
 
 ## Rules
 
@@ -26,8 +31,26 @@ with its placeholder scanner `postgres_sql.agc`), all through the C FFI. No C co
   bad input `<adapter> error: <message>`; the module's own `db error: <message>`. A bad input is an error, not a
   halt.
 - An adapter exports its own `BEGIN_SQL`; `transaction` in `db.agc` uses it.
-- Tests check behavior through `Db`, in `test/*_test.agc`. A value written must read back unchanged. What every
-  adapter must do is in `test/shared.agc` (`Shared.cases(flavor)`); an adapter's own tests go in its file.
+- Tests are BDD-first: behavior is a Gherkin scenario in `specs/*.feature`, run by `agentica test`, not a test file.
+  The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
+  `transactions`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`); what only one adapter
+  promises is in `sqlite.feature` or `postgres.feature`. A new behavior is a scenario first. A value written must
+  read back unchanged.
+- The steps are in `specs/steps.agc`, few and generic (`a "sqlite" database`, `I execute "sql" with:` and a table of
+  typed params, `the query "sql" returns:` and a table, `it fails with "prefix"`). They drive `Db` through
+  `specs/driver.agc`, a program under test that holds the connection (a step program cannot keep a connection between
+  steps), with the requests of `specs/protocol.agc` and the typed cells of `specs/cells.agc`. A table cell is a
+  `Value` as text: `Int 31`, `Float -0.25`, `Text ana`, `Blob 0,1,255`, `Bool true`, `Null`, `Repeat 5000 Blob 7`;
+  `[NUL]`, `[LF]`, `[TAB]`, `[VT]`, `[FF]`, `[CR]` and `[SP]` stand for characters a cell cannot hold. In a step text,
+  `[URL]`, `[SERVER]` and `[SCRATCH]` are the PostgreSQL url, the same without its scheme, and a folder of the
+  scenario under `tmp/`.
+- Add a step only when no step can say it. Lines of 119 characters at most, except a step line that holds a long sql.
+- Skipped scenarios: `agentica test` has no skip, so the step `a "postgres" database` marks the scenario and every
+  later step does nothing and passes. A scenario of PostgreSQL always starts with that step.
+- `test/*_test.agc` is only for a pure helper that needs no connection: the placeholder scanner
+  (`test/postgres_sql_test.agc`). Anything that opens a connection is a scenario.
 - Ruby forms first (`start_with?`, `each`, `Value.Text(...)`); style: `agentica-code-guidelines` of the Agentica
   repository. Lines are at most 119 characters.
 - Every user-visible change adds a line under `## [Unreleased]` of `CHANGELOG.md`.
+- A line that is only `end` is followed by an empty line, except before another `end`, `else`, `elsif`, a closing `)`
+  or `]`, or the end of the file.

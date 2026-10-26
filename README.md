@@ -155,12 +155,20 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Valu
 
 ## Development
 
+The behavior of the API is written as Gherkin scenarios in `specs/`, run by `agentica test`; read them as the
+specification. `specs/*.feature` hold the contract that every adapter meets (open and close, query and execute,
+value round trips, transactions, errors), each scenario run against SQLite and PostgreSQL, and `sqlite.feature` and
+`postgres.feature` hold what only one adapter promises. `specs/steps.agc` has the steps. Only a pure helper, the
+placeholder scanner, has a unit test (`test/postgres_sql_test.agc`).
+
 ```sh
-for file in *.agc test/*.agc; do agentica check "$file"; done
-agentica test
+for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done
+agentica test --steps specs/steps.agc
 ```
 
-SQLite needs no server. The PostgreSQL tests run when `AGENTICA_DB_POSTGRES_URL` is set (CI always sets it), and
-`test/postgres_sql_test.agc`, the placeholder scanner, needs no server. See `AGENTS.md`.
+`--steps specs/steps.agc` is always needed. SQLite needs no server. The PostgreSQL scenarios run when
+`AGENTICA_DB_POSTGRES_URL` is set; without it they are skipped, and they fail when `CI=true` (CI always sets the
+variable). `--only TEXT` runs the scenarios whose name contains `TEXT`, for example `--only "on sqlite"`. See
+`AGENTS.md`.
 
 License: Apache-2.0.
