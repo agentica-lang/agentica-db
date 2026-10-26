@@ -9,7 +9,7 @@ import Protocol from "protocol"
 import {Request} from "protocol"
 import {Row, Value} from "../value"
 
-URL_VARIABLE = "AGENTICA_DB_POSTGRES_URL"
+URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 SQLITE_MEMORY = "sqlite::memory:"
 SCRATCH_ROOT = "../tmp"
 CARRY_ON = "carry on"
@@ -119,10 +119,10 @@ def failed(state: State, message: String) -> State
   return recorded(state, Outcome.Failed(message))
 end
 
-# The server url is the variable of the postgres adapter; the step reports a missing variable.
+# The server url is the variable of the adapter; the step reports a missing variable.
 def server_url(adapter: String) -> String
-  if adapter == "postgres"
-    return System.env(URL_VARIABLE).unwrap_or("")
+  if URL_VARIABLES.key?(adapter)
+    return System.env(URL_VARIABLES[adapter]).unwrap_or("")
   end
 
   return SQLITE_MEMORY
@@ -130,7 +130,7 @@ end
 
 # The `open` request of the first step: the adapter by name. A database that does not open ends the scenario.
 def opened(state: State, adapter: String) -> Handled
-  if adapter != "sqlite" and adapter != "postgres"
+  if adapter != "sqlite" and not URL_VARIABLES.key?(adapter)
     return Handled(state: state, reply: "unknown adapter #{adapter.inspect}")
   end
 
@@ -154,9 +154,9 @@ def open_at(state: State, adapter: String, url: String) -> State
   end
 end
 
-# The markers of a step text. `[URL]` is the server url of the adapter, and `[URL]&name=value` adds a libpq parameter
-# with the right separator; `[SERVER]` is the url without its scheme; `[SCRATCH]` is a folder under
-# tmp/, for the files of a SQLite database.
+# The markers of a step text. `[URL]` is the server url of the adapter, and `[URL]&name=value` adds a url parameter
+# with the right separator; `[SERVER]` is the url without its scheme; `[ADDRESS]` is its host and port, without the
+# user, the password and the path; `[SCRATCH]` is a folder under tmp/, for the files of a SQLite database.
 def expand(state: State, text: String) -> String
   url = server_url(state.adapter)
   without_scheme = url
@@ -173,7 +173,14 @@ def expand(state: State, text: String) -> String
   expanded = expanded.replace("[URL]&", "#{url}#{separator}")
   expanded = expanded.replace("[URL]", url)
   expanded = expanded.replace("[SERVER]", without_scheme)
+  expanded = expanded.replace("[ADDRESS]", address(without_scheme))
   return expanded.replace("[SCRATCH]", scratch_dir())
+end
+
+# The host and port of a url without its scheme: after the last `@`, up to the first `/` or `?`.
+def address(without_scheme: String) -> String
+  host = without_scheme.split("@").last
+  return host.split("/")[0].split("?")[0]
 end
 
 def scratch_dir() -> String
@@ -338,7 +345,7 @@ end
 
 # The empty string when the value came back the same.
 def round_trip(conn: Db.Connection, kind: String, value: Value) -> String
-  created = Db.execute(conn, "create temp table rt (v #{kind})", [])
+  created = Db.execute(conn, "create temporary table rt (v #{kind})", [])
   if not created.ok?
     return created.message
   end

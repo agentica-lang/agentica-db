@@ -1,13 +1,14 @@
 ## The steps of the features. They drive `Db` through `driver.agc`, which holds the connection (see `protocol.agc`).
 ##
-## A scenario that needs PostgreSQL needs `AGENTICA_DB_POSTGRES_URL`; without it the step `a "postgres" database`
-## fails. Run without a server with `--only "on sqlite"`.
+## A scenario that needs a server needs its variable, `AGENTICA_DB_POSTGRES_URL` or `AGENTICA_DB_MYSQL_URL`; without
+## it the step `a "postgres" database` (or `a "mysql" database`) fails. Run without a server with
+## `--only "on sqlite"`.
 
 import BDD from "std/bdd"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
-URL_VARIABLE = "AGENTICA_DB_POSTGRES_URL"
+URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 REPLY_MS = 60_000
 
 def main() -> Void
@@ -68,8 +69,9 @@ end
 
 def open_database(ctx: BDD.Context, args: List[String]) -> BDD.Context
   adapter = args[0]
-  missing = adapter == "postgres" and not System.env(URL_VARIABLE).ok?
-  message = "#{URL_VARIABLE} is not set: set it, or run only the SQLite scenarios with --only \"on sqlite\""
+  variable = URL_VARIABLES.get(adapter, "")
+  missing = not variable.empty? and not System.env(variable).ok?
+  message = "#{variable} is not set: set it, or run only the SQLite scenarios with --only \"on sqlite\""
   checked = BDD.assert(ctx, not missing, message)
   return send(checked, Request(op: "open", text: adapter))
 end

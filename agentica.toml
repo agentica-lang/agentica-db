@@ -13,3 +13,11 @@ windows = { system = "winsqlite3.dll" }
 linux = { system = "libpq.so.5" }
 macos = { system = "libpq.5.dylib" }
 windows = { system = "libpq.dll" }
+
+# The system MariaDB Connector/C (`libmariadb.so.3`), which speaks to MySQL and MariaDB servers; `extern "mariadb"`
+# in mysql.agc opens the entry of the running system. A macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH
+# only: with Homebrew's mariadb-connector-c, run with DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib".
+[native.mariadb]
+linux = { system = "libmariadb.so.3" }
+macos = { system = "libmariadb.3.dylib" }
+windows = { system = "libmariadb.dll" }

@@ -28,11 +28,22 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: pw
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install SQLite and libpq
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0 libpq5
+      - name: Install SQLite, libpq and libmariadb
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0 libpq5 libmariadb3
 
       - name: Install the pinned Agentica release
         run: |
@@ -48,9 +59,11 @@ jobs:
           agentica --version
           for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done
 
-      # The features of specs/ and the unit tests of test/. The variable points the postgres scenarios at the service
-      # container; without it they fail.
+      # The features of specs/ and the unit tests of test/. The variables point the postgres and mysql scenarios at the
+      # service containers; without them they fail. The mysql host is an address: `localhost` means the local socket
+      # to the client library.
       - name: Test
         env:
           AGENTICA_DB_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
+          AGENTICA_DB_MYSQL_URL: mysql://root:pw@127.0.0.1:3306/mysql
         run: agentica test --steps specs/steps.agc
