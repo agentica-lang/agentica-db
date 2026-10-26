@@ -7,8 +7,9 @@ import Cells from "cells"
 import Db from "../db"
 import Protocol from "protocol"
 import {Request} from "protocol"
-import {Row, Value} from "../value"
 
+SESSIONS_SQL = "select count(*) as n from pg_stat_activity where application_name = ?"
+SESSION_POLL_MS = 50
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 SQLITE_MEMORY = "sqlite::memory:"
 SCRATCH_ROOT = "../tmp"
@@ -23,7 +24,7 @@ enum Outcome
   Nothing
   Failed(String)
   Counted(Int)
-  Rows(List[Row])
+  Rows(List[Db.Row])
   Done
 end
 
@@ -45,6 +46,12 @@ end
 struct Job
   conn: Db.Connection
   sql: String
+end
+
+# A connection that a task opens and leaves open, named so that the server shows its session.
+struct Leave
+  url: String
+  name: String
 end
 
 # A statement run in a task on a connection of its own.
@@ -103,6 +110,7 @@ def act(state: State, req: Request) -> Handled
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
     "keep_running" -> return keep_running(state, req.text, req.number)
+    "leave_open" -> return leave_open(state, req.text, req.number)
     _ -> return Handled(state: state, reply: "unknown op #{req.op.inspect}")
   end
 end
@@ -196,14 +204,14 @@ def with_conn(state: State, run: Fn[Db.Connection, State]) -> State
   return run.call(state.conns[0])
 end
 
-def with_params(state: State, req: Request, run: Fn[State, String, List[Value], State]) -> State
+def with_params(state: State, req: Request, run: Fn[State, String, List[Db.Value], State]) -> State
   case Cells.parse_all(req.cells)
     error(message) -> return failed(state, message)
     ok(params) -> return run.call(state, Cells.expand(req.text), params)
   end
 end
 
-def execute(state: State, sql: String, params: List[Value]) -> State
+def execute(state: State, sql: String, params: List[Db.Value]) -> State
   return with_conn(state) do |conn|
     case Db.execute(conn, sql, params)
       error(message) -> return failed(state, message)
@@ -212,7 +220,7 @@ def execute(state: State, sql: String, params: List[Value]) -> State
   end
 end
 
-def query(state: State, sql: String, params: List[Value]) -> State
+def query(state: State, sql: String, params: List[Db.Value]) -> State
   return with_conn(state) do |conn|
     case Db.query(conn, sql, params)
       error(message) -> return failed(state, message)
@@ -273,7 +281,7 @@ def execute_in_task(state: State, sql: String) -> State
   end
 end
 
-def fresh_query(job: Fresh) -> Result[List[Row]]
+def fresh_query(job: Fresh) -> Result[List[Db.Row]]
   conn = try Db.open(job.url)
   found = Db.query(conn, job.sql, [])
   Db.close(conn)
@@ -285,6 +293,53 @@ def query_in_new_task(state: State, sql: String) -> State
   case Task.await(Task.spawn(&fresh_query, job))
     error(message) -> return failed(state, message)
     ok(rows) -> return recorded(state, Outcome.Rows(rows))
+  end
+end
+
+# The task opens a connection and ends without closing it. It gives the sessions that the server shows under the name
+# while the connection is open, since a session that never showed would pass the check of its end.
+def open_and_leave(job: Leave) -> Result[Int]
+  conn = try Db.open(job.url)
+  return sessions(conn, job.name)
+end
+
+def sessions(conn: Db.Connection, name: String) -> Result[Int]
+  rows = try Db.query(conn, SESSIONS_SQL, [Db.Value.Text(name)])
+  case rows[0]["n"]
+    Db.Value.Int(count) -> return ok(count)
+    _ -> return error("the session count is not an Int")
+  end
+end
+
+# The end of the task that opened a connection closes it: the server drops the session within `limit_ms`.
+def leave_open(state: State, name: String, limit_ms: Int) -> Handled
+  if state.conns.empty?
+    return Handled(state: state, reply: NO_DATABASE)
+  end
+
+  url = expand(state, "[URL]&application_name=#{name}")
+  seen = Task.await(Task.spawn(&open_and_leave, Leave(url: url, name: name)))
+  case seen
+    error(message) -> return Handled(state: state, reply: "the task failed: #{message}")
+    ok(count) if count != 1 ->
+      return Handled(state: state, reply: "the task saw #{count} sessions named #{name}, not 1")
+    ok(_) -> return reply_ok_when_gone(state, name, limit_ms)
+  end
+end
+
+def reply_ok_when_gone(state: State, name: String, limit_ms: Int) -> Handled
+  started = Time.monotonic_ms()
+  left = sessions(state.conns[0], name)
+  while left.ok? and left.unwrap_or(0) > 0 and Time.monotonic_ms() - started < limit_ms
+    Task.sleep(SESSION_POLL_MS)
+    left = sessions(state.conns[0], name)
+  end
+
+  case left
+    error(message) -> return Handled(state: state, reply: "counting the sessions failed: #{message}")
+    ok(0) -> return reply_ok(state)
+    ok(count) ->
+      return Handled(state: state, reply: "#{count} sessions named #{name} stayed open after #{limit_ms} ms")
   end
 end
 
@@ -344,7 +399,7 @@ def round_trips(state: State, table: List[List[String]]) -> Handled
 end
 
 # The empty string when the value came back the same.
-def round_trip(conn: Db.Connection, kind: String, value: Value) -> String
+def round_trip(conn: Db.Connection, kind: String, value: Db.Value) -> String
   created = Db.execute(conn, "create temporary table rt (v #{kind})", [])
   if not created.ok?
     return created.message
@@ -378,7 +433,7 @@ def float_oracle(state: State, literal: String) -> Handled
       sql = "select (?::float8)::text = ('#{literal}'::float8)::text as v"
       case Db.query(conn, sql, [rows[0]["v"]])
         error(message) -> return Handled(state: state, reply: "sending #{literal} back failed: #{message}")
-        ok(same) if Cells.same?(same[0]["v"], Value.Bool(true)) -> return reply_ok(state)
+        ok(same) if Cells.same?(same[0]["v"], Db.Value.Bool(true)) -> return reply_ok(state)
         ok(_) ->
           read = Cells.show(rows[0]["v"])
           return Handled(state: state, reply: "#{literal} was read as #{read}, which the server does not take for it")
@@ -459,7 +514,7 @@ def judge_last(last: Outcome, size: Int, table: List[List[String]]) -> String
 end
 
 # The first table row names the columns, in order; the others are the rows, in order.
-def compare_rows(rows: List[Row], table: List[List[String]]) -> String
+def compare_rows(rows: List[Db.Row], table: List[List[String]]) -> String
   header = table[0]
   wanted = table.drop(1)
   if rows.size != wanted.size
@@ -486,6 +541,6 @@ def compare_rows(rows: List[Row], table: List[List[String]]) -> String
   return ""
 end
 
-def shown(rows: List[Row]) -> String
+def shown(rows: List[Db.Row]) -> String
   return rows.map do |row| "{#{Cells.show_row(row)}}" end.join(", ")
 end

@@ -1,8 +1,7 @@
 ## The PostgreSQL adapter, through the system libpq.
 ##
-## `open` gives a `Handle`, which the task that opened it owns. Close it with `close`: the end of the task frees the
-## handle but does not close the connection (libpq's PQfinish cannot be the free function of a resource, because
-## Agentica reads a name that starts with a capital letter as a type). A closed handle gives
+## `open` gives a `Handle`, which the task that opened it owns. Close it with `close`, or the end of the task closes
+## it (PQfinish, the free function of the connection resource). A closed handle gives
 ## `postgres error: the connection is closed`.
 ##
 ## An engine failure is `postgres error <sqlstate>: <message>`, with the five character SQLSTATE of the server
@@ -35,6 +34,8 @@ POINTER_SIZE = 8
 BYTE_MAX = 255
 RESULT_AS_TEXT = 0
 CELL_OFFSET = 0
+CLOSED_SIZE = 1
+CLOSED = 1
 CLIENT_ENCODING_SET = 0
 IS_NULL = 1
 COPY_BLOCKING = 0
@@ -51,8 +52,44 @@ HEX_DIGITS = "0123456789abcdef"
 # Far past the range of a double: a decimal string this long reads as infinity or zero.
 EXPONENT_LIMIT = 400
 
-## An open connection: an owned cell that holds the PGconn pointer, which `close` sets to NULL.
-export type Handle = C.Pointer
+# The libpq names start with a capital letter, which a def name cannot, so each def says its C name.
+extern "pq"
+  resource Conn, free: PQfinish
+  compute def pq_connectdb(conninfo: C.String) -> Conn = "PQconnectdb"
+  def pq_status(conn: Conn) -> C.Int32 = "PQstatus"
+  def pq_transaction_status(conn: Conn) -> C.Int32 = "PQtransactionStatus"
+  def pq_error_message(conn: Conn) -> C.String = "PQerrorMessage"
+  # The two calls below wait for the server, so they are compute.
+  compute def pq_set_client_encoding(conn: Conn, encoding: C.String) -> C.Int32 = "PQsetClientEncoding"
+  compute def pq_exec_params(conn: Conn, command: C.String, count: C.Int32, types: C.Pointer,
+                             values: C.Pointer, lengths: C.Pointer, formats: C.Pointer,
+                             format: C.Int32) -> C.Pointer = "PQexecParams"
+  def pq_clear(res: C.Pointer) -> Void = "PQclear"
+  def pq_result_status(res: C.Pointer) -> C.Int32 = "PQresultStatus"
+  def pq_result_error_field(res: C.Pointer, field: C.Int32) -> C.String = "PQresultErrorField"
+  def pq_cmd_status(res: C.Pointer) -> C.String = "PQcmdStatus"
+  def pq_cmd_tuples(res: C.Pointer) -> C.String = "PQcmdTuples"
+  def pq_nfields(res: C.Pointer) -> C.Int32 = "PQnfields"
+  def pq_ntuples(res: C.Pointer) -> C.Int32 = "PQntuples"
+  def pq_fname(res: C.Pointer, col: C.Int32) -> C.String = "PQfname"
+  # An Oid is unsigned 32 bits; read as C.Int32, one above 2^31 is negative and matches no type here, so it is text.
+  def pq_ftype(res: C.Pointer, col: C.Int32) -> C.Int32 = "PQftype"
+  def pq_getisnull(res: C.Pointer, row: C.Int32, col: C.Int32) -> C.Int32 = "PQgetisnull"
+  def pq_getvalue(res: C.Pointer, row: C.Int32, col: C.Int32) -> C.Pointer = "PQgetvalue"
+  def pq_unescape_bytea(text: C.Pointer, out length: C.Int64) -> C.Pointer = "PQunescapeBytea"
+  def pq_freemem(memory: C.Pointer) -> Void = "PQfreemem"
+  # The calls that leave a COPY that a statement started.
+  def pq_put_copy_end(conn: Conn, message: C.String) -> C.Int32 = "PQputCopyEnd"
+  compute def pq_get_copy_data(conn: Conn, out data: C.Pointer, async: C.Int32) -> C.Int32 = "PQgetCopyData"
+  compute def pq_get_result(conn: Conn) -> C.Pointer = "PQgetResult"
+end
+
+## An open connection. `closed` is an owned cell that `close` sets: a closed resource cannot be asked, and a call
+## with it stops the program, so the cell is what turns a use after `close` into an error.
+export struct Handle
+  conn: Conn
+  closed: C.Pointer
+end
 
 ## Connects with a `postgres://` or `postgresql://` url, which libpq parses (`?sslmode=disable`, `connect_timeout`
 ## and the other parameters of the url work as in libpq). The client encoding is set to UTF8.
@@ -61,23 +98,19 @@ export def open(url: String) -> Result[Handle]
     return error("postgres error: the url contains a NUL character")
   end
 
-  conn = pq_connectdb(url)
-  if Native.null?(conn)
-    return error("postgres error: out of memory")
+  case pq_connectdb(url)
+    error(_) -> return error("postgres error: out of memory")
+    ok(conn) ->
+      try check_connection(conn)
+      return ok(Handle(conn: conn, closed: Native.memory_pointer(CLOSED_SIZE)))
   end
-
-  try check_connection(conn)
-  handle = Native.memory_pointer(POINTER_SIZE)
-  Native.put_pointer(handle, CELL_OFFSET, conn)
-  return ok(handle)
 end
 
 ## Closes the connection; closing it again does nothing.
 export def close(handle: Handle) -> Void
-  conn = Native.get_pointer(handle, CELL_OFFSET)
-  if not Native.null?(conn)
-    pq_finish(conn)
-    Native.put_pointer(handle, CELL_OFFSET, Native.null())
+  if not closed?(handle)
+    Native.put_int8(handle.closed, CELL_OFFSET, CLOSED)
+    Native.close(handle.conn)
   end
 end
 
@@ -105,7 +138,7 @@ export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[I
 end
 
 # Frees the connection when it does not work: a failed connect still gives a PGconn that holds the error.
-def check_connection(conn: C.Pointer) -> Result[Void]
+def check_connection(conn: Conn) -> Result[Void]
   if pq_status(conn) != CONNECTION_OK
     return abandon(conn)
   end
@@ -118,9 +151,9 @@ def check_connection(conn: C.Pointer) -> Result[Void]
   return ok()
 end
 
-def abandon(conn: C.Pointer) -> Result[Void]
+def abandon(conn: Conn) -> Result[Void]
   message = pq_error_message(conn).strip
-  pq_finish(conn)
+  Native.close(conn)
   return error("postgres error: #{message}")
 end
 
@@ -129,13 +162,16 @@ def repeated_name(names: List[String]) -> String
   return names.find do |name| counts[name] > 1 end.unwrap_or("")
 end
 
-def live(handle: Handle) -> Result[C.Pointer]
-  conn = Native.get_pointer(handle, CELL_OFFSET)
-  if Native.null?(conn)
+def live(handle: Handle) -> Result[Conn]
+  if closed?(handle)
     return error("postgres error: the connection is closed")
   end
 
-  return ok(conn)
+  return ok(handle.conn)
+end
+
+def closed?(handle: Handle) -> Bool
+  return Native.get_int8(handle.closed, CELL_OFFSET) == CLOSED
 end
 
 # The result of a statement that succeeded. The caller clears it.
@@ -160,7 +196,7 @@ end
 
 # PostgreSQL only warns about a BEGIN inside a transaction, and the inner COMMIT would then end the outer one:
 # transactions do not nest here, as in the other adapters.
-def check_begin(conn: C.Pointer, verb: String) -> Result[Void]
+def check_begin(conn: Conn, verb: String) -> Result[Void]
   status = pq_transaction_status(conn)
   if (verb == "begin" or verb == "start") and (status == PQTRANS_INTRANS or status == PQTRANS_INERROR)
     return error("postgres error #{ACTIVE_TRANSACTION_SQLSTATE}: a transaction is already in progress")
@@ -203,7 +239,7 @@ end
 # Parameters travel as text and the server infers their types from the sql. A NULL entry of the value array is
 # the SQL NULL. The value array goes away with its block, and the text buffers are freed right after the call, on
 # every path: nothing between the allocation and the free can return.
-def exec_params(conn: C.Pointer, sql: String, params: List[Value]) -> C.Pointer
+def exec_params(conn: Conn, sql: String, params: List[Value]) -> C.Pointer
   null = Native.null()
   res: C.Pointer = Native.memory_pointer(max_one(params.size) * POINTER_SIZE) do |values|
     owned = fill_values(values, params)
@@ -282,7 +318,7 @@ def bytea_text(bytes: List[Int]) -> String
 end
 
 # Gives the result of a statement that succeeded; any other result is cleared and becomes the error.
-def accept(conn: C.Pointer, res: C.Pointer, verb: String) -> Result[C.Pointer]
+def accept(conn: Conn, res: C.Pointer, verb: String) -> Result[C.Pointer]
   status = pq_result_status(res)
   if status == PGRES_COMMAND_OK or status == PGRES_TUPLES_OK
     return check_commit(res, verb)
@@ -316,7 +352,7 @@ def check_commit(res: C.Pointer, verb: String) -> Result[C.Pointer]
 end
 
 # The code is the SQLSTATE of the server; a failure that libpq makes itself has none.
-def failure(conn: C.Pointer, res: C.Pointer) -> String
+def failure(conn: Conn, res: C.Pointer) -> String
   code = pq_result_error_field(res, PG_DIAG_SQLSTATE)
   message = pq_result_error_field(res, PG_DIAG_MESSAGE_PRIMARY)
   if code == ""
@@ -327,7 +363,7 @@ def failure(conn: C.Pointer, res: C.Pointer) -> String
 end
 
 # A statement that starts a COPY leaves the connection in copy mode: end it, then read the results that follow.
-def leave_copy(conn: C.Pointer, status: Int) -> Void
+def leave_copy(conn: Conn, status: Int) -> Void
   if status == PGRES_COPY_IN
     pq_put_copy_end(conn, "copy is not supported")
   else
@@ -341,7 +377,7 @@ def leave_copy(conn: C.Pointer, status: Int) -> Void
   end
 end
 
-def skip_copy_data(conn: C.Pointer) -> Void
+def skip_copy_data(conn: Conn) -> Void
   while true
     read = pq_get_copy_data(conn, COPY_BLOCKING)
     if read.result <= NO_MORE_COPY_DATA
@@ -516,36 +552,4 @@ end
 # A NUL ends a C.String early, and the VM stops the program at the call (RUNTIME-INVALID-CHARACTER).
 def has_nul?(text: String) -> Bool
   return text.include?(String.from_code(0))
-end
-
-# The libpq names start with a capital letter, which a def name cannot, so each def says its C name.
-extern "pq"
-  compute def pq_connectdb(conninfo: C.String) -> C.Pointer = "PQconnectdb"
-  def pq_finish(conn: C.Pointer) -> Void = "PQfinish"
-  def pq_status(conn: C.Pointer) -> C.Int32 = "PQstatus"
-  def pq_transaction_status(conn: C.Pointer) -> C.Int32 = "PQtransactionStatus"
-  def pq_error_message(conn: C.Pointer) -> C.String = "PQerrorMessage"
-  # The two calls below wait for the server, so they are compute.
-  compute def pq_set_client_encoding(conn: C.Pointer, encoding: C.String) -> C.Int32 = "PQsetClientEncoding"
-  compute def pq_exec_params(conn: C.Pointer, command: C.String, count: C.Int32, types: C.Pointer,
-                             values: C.Pointer, lengths: C.Pointer, formats: C.Pointer,
-                             format: C.Int32) -> C.Pointer = "PQexecParams"
-  def pq_clear(res: C.Pointer) -> Void = "PQclear"
-  def pq_result_status(res: C.Pointer) -> C.Int32 = "PQresultStatus"
-  def pq_result_error_field(res: C.Pointer, field: C.Int32) -> C.String = "PQresultErrorField"
-  def pq_cmd_status(res: C.Pointer) -> C.String = "PQcmdStatus"
-  def pq_cmd_tuples(res: C.Pointer) -> C.String = "PQcmdTuples"
-  def pq_nfields(res: C.Pointer) -> C.Int32 = "PQnfields"
-  def pq_ntuples(res: C.Pointer) -> C.Int32 = "PQntuples"
-  def pq_fname(res: C.Pointer, col: C.Int32) -> C.String = "PQfname"
-  # An Oid is unsigned 32 bits; read as C.Int32, one above 2^31 is negative and matches no type here, so it is text.
-  def pq_ftype(res: C.Pointer, col: C.Int32) -> C.Int32 = "PQftype"
-  def pq_getisnull(res: C.Pointer, row: C.Int32, col: C.Int32) -> C.Int32 = "PQgetisnull"
-  def pq_getvalue(res: C.Pointer, row: C.Int32, col: C.Int32) -> C.Pointer = "PQgetvalue"
-  def pq_unescape_bytea(text: C.Pointer, out length: C.Int64) -> C.Pointer = "PQunescapeBytea"
-  def pq_freemem(memory: C.Pointer) -> Void = "PQfreemem"
-  # The calls that leave a COPY that a statement started.
-  def pq_put_copy_end(conn: C.Pointer, message: C.String) -> C.Int32 = "PQputCopyEnd"
-  compute def pq_get_copy_data(conn: C.Pointer, out data: C.Pointer, async: C.Int32) -> C.Int32 = "PQgetCopyData"
-  compute def pq_get_result(conn: C.Pointer) -> C.Pointer = "PQgetResult"
 end

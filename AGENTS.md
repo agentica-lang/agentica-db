@@ -31,6 +31,8 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
 - An adapter keeps its `extern` block private and exports only the wrapper (`wrapping` guide of the Agentica
   site: `library/io-and-system/native/wrapping`). An adapter has the same four functions as `db.agc`:
   `open`, `close`, `query`, `execute`. `db.agc` dispatches on `Connection`; `transaction` stays in `db.agc`.
+  `db.agc` also re-exports `Value` and `Row` of `value.agc` (`export V.Value`), so a user imports `Db` only. The
+  PostgreSQL connection is a native resource (`PQfinish`), like SQLite's.
 - Placeholders are `?` in the API. An adapter translates them (`$1` for PostgreSQL; MySQL takes `?` natively) and
   always binds (`mysql_stmt_*` for MySQL); no value is ever spliced into sql.
 - A failure is `error(message)` in one of two shapes: an engine failure `<adapter> error <code>: <message>`, a

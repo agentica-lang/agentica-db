@@ -6,11 +6,16 @@
 ## `postgres error 42601: syntax error at end of input`. A bad input, refused before the statement runs, is
 ## `<adapter> error: <message>`, as in `sqlite error: the sql has 1 parameter, got 0`. A failure of this module
 ## itself, such as an unknown url, is `db error: <message>`.
+##
+## One import is enough: `Db.Value` and `Db.Row` are the types of `value.agc`.
 
 import Mysql from "mysql"
 import Postgres from "postgres"
 import Sqlite from "sqlite"
-import {Row, Value} from "value"
+import V from "value"
+
+export V.Row
+export V.Value
 
 SQLITE_PREFIX = "sqlite:"
 POSTGRES_PREFIXES = ["postgres://", "postgresql://"]
@@ -18,7 +23,7 @@ MYSQL_PREFIXES = ["mysql://", "mariadb://"]
 MAX_SCHEME = 16
 
 ## An open connection, owned by the task that opened it. Close it with `close`. The end of the task closes a SQLite
-## connection, but not a PostgreSQL or MySQL one (it only frees the handle; the server session and its socket stay
+## or PostgreSQL connection, but not a MySQL one (it only frees the handle; the server session and its socket stay
 ## open): the caller must call `close`.
 export enum Connection
   Sqlite(Sqlite.Handle)
@@ -84,7 +89,7 @@ export def close(conn: Connection) -> Void
 end
 
 ## Runs a statement and gives its rows, in column order; a statement without a result gives none.
-export def query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
+export def query(conn: Connection, sql: String, params: List[V.Value]) -> Result[List[V.Row]]
   case conn
     Connection.Sqlite(handle) -> return Sqlite.query(handle, sql, params)
     Connection.Postgres(handle) -> return Postgres.query(handle, sql, params)
@@ -93,7 +98,7 @@ export def query(conn: Connection, sql: String, params: List[Value]) -> Result[L
 end
 
 ## Runs a statement and gives the number of rows it inserted, updated or deleted.
-export def execute(conn: Connection, sql: String, params: List[Value]) -> Result[Int]
+export def execute(conn: Connection, sql: String, params: List[V.Value]) -> Result[Int]
   case conn
     Connection.Sqlite(handle) -> return Sqlite.execute(handle, sql, params)
     Connection.Postgres(handle) -> return Postgres.execute(handle, sql, params)
@@ -104,7 +109,7 @@ end
 ## Runs the block between the adapter's BEGIN and COMMIT. An `error` from the block, or a failed COMMIT, rolls back
 ## and gives that error (with the ROLLBACK failure appended, if it failed too). Transactions do not nest. A runtime
 ## error in the block stops the task and leaves the transaction open; closing the connection rolls it back (for
-## PostgreSQL only `close` or the end of the process does).
+## MySQL only `close` or the end of the process does).
 export def transaction(conn: Connection, body: Fn[Connection, Result[Void]]) -> Result[Void]
   try execute(conn, begin_sql(conn), [])
   done = body.call(conn)
