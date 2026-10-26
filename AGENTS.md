@@ -23,7 +23,7 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   takes that for the local socket), and `docker stop agentica-db-mysql` when done. Run the whole suite against MySQL
   too (CI does): `-e MYSQL_ROOT_PASSWORD=pw ... mysql:8.4` on another port. The two servers differ (MySQL does not
   prepare `START TRANSACTION`), so a MySQL change passes on both. Scenarios use temporary tables, so
-  they leave nothing behind (`mysql.feature` creates and drops one user).
+  they leave nothing behind.
 
 ## Rules
 
@@ -61,8 +61,11 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   while the last failure is unchecked, so a failing setup step fails the scenario. The last step of a scenario is a
   `Then`, since nothing comes after it to refuse.
 - Scenario names are unique: put a column of the Examples in the title of an outline with several rows.
-- `test/*_test.agc` is only for a pure helper that needs no connection: the placeholder scanner
-  (`test/postgres_sql_test.agc`). Anything that opens a connection is a scenario.
+- `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would
+  say badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`) and the url reader
+  (`test/mysql_url_test.agc`). Anything that opens a connection is a scenario. A behavior is proven once: a common
+  scenario has one row per adapter, not one per variant of the input, and a case a unit test proves is not repeated
+  in a feature.
 - Ruby forms first (`start_with?`, `each`, `Value.Text(...)`); style: `agentica-code-guidelines` of the Agentica
   repository. Lines are at most 119 characters.
 - Every user-visible change adds a line under `## [Unreleased]` of `CHANGELOG.md`.

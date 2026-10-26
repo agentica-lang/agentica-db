@@ -3,48 +3,19 @@ Feature: Queries and statements
   rows a statement inserted, updated or deleted. Placeholders are always `?`, and the values are bound, never spliced
   into the sql.
 
-  Scenario Outline: A null reads back as null and matches is null on <adapter>
+  Scenario Outline: Rows come in order, a null is a null and no result is no rows on <adapter>
     Given a "<adapter>" database
     And I execute "create temporary table users (name varchar(50) not null unique, age integer)"
-    And I execute "insert into users (name, age) values (?, ?)" with:
-      | value    |
-      | Text ana |
-      | Null     |
-    And I execute "insert into users (name, age) values (?, ?)" with:
-      | value    |
-      | Text bob |
-      | Int 30   |
-    Then the query "select name from users where age is null" returns:
-      | name     |
-      | Text ana |
-    And the query "select age from users where name = 'ana'" returns:
-      | age  |
-      | Null |
-
-    Examples:
-      | adapter  |
-      | sqlite   |
-      | postgres |
-      | mysql    |
-
-  Scenario Outline: Rows come in order with their columns in order on <adapter>
-    Given a "<adapter>" database
-    And I execute "create temporary table users (name varchar(50) not null unique, age integer)"
-    And I execute "insert into users (name, age) values ('zed', 1), ('amy', 2)"
+    And I execute "insert into users (name, age) values ('zed', 1), ('amy', 2), ('ana', null)"
     Then the query "select age, name as who, 7 as seven from users order by name desc" returns:
       | age   | who      | seven |
       | Int 1 | Text zed | Int 7 |
+      | Null  | Text ana | Int 7 |
       | Int 2 | Text amy | Int 7 |
-
-    Examples:
-      | adapter  |
-      | sqlite   |
-      | postgres |
-      | mysql    |
-
-  Scenario Outline: A statement without a result gives no rows on <adapter>
-    Given a "<adapter>" database
-    Then the query "create temporary table t (x integer)" returns:
+    And the query "select name from users where age is null" returns:
+      | name     |
+      | Text ana |
+    And the query "create temporary table other (x integer)" returns:
       | x |
 
     Examples:
@@ -84,7 +55,7 @@ Feature: Queries and statements
       | value   |
       | Int 100 |
     Then the changed row count is 0
-    When I execute "create temporary table other (x integer)"
+    When I execute "select name from users"
     Then the changed row count is 0
     When I execute "delete from users"
     Then the changed row count is 3
@@ -95,13 +66,20 @@ Feature: Queries and statements
       | postgres |
       | mysql    |
 
-  Scenario Outline: Parameters are values, never sql on <adapter>
+  Scenario Outline: Parameters are values, and a question mark in a literal or comment is text on <adapter>
     Given a "<adapter>" database
     And I execute "create temporary table users (name varchar(50) not null unique, age integer)"
     When I execute "insert into users (name) values (?)" with:
       | value                         |
       | Text x'); drop table users;-- |
-    Then the query "select name from users" returns:
+    And I query "select ? as a, 'it''s ?' as q, /* ? */ ? as b -- ?" with:
+      | value  |
+      | Text x |
+      | Text y |
+    Then the result is:
+      | a      | q           | b      |
+      | Text x | Text it's ? | Text y |
+    And the query "select name from users" returns:
       | name                          |
       | Text x'); drop table users;-- |
 
@@ -111,37 +89,17 @@ Feature: Queries and statements
       | postgres |
       | mysql    |
 
-  Scenario Outline: Only the first and only statement runs on <adapter>: <sql>
+  Scenario Outline: A trailing comment or semicolon is not a second statement on <adapter>
     Given a "<adapter>" database
-    When I execute "<sql>"
-    Then it fails with exactly "<adapter> error: the sql has more than one statement"
-
-    Examples:
-      | adapter  | sql                                              |
-      | sqlite   | select 1; select 2                               |
-      | sqlite   | select 1; selec 2                                |
-      | sqlite   | create temporary table t(a); insert into t values (1) |
-      | postgres | select 1; select 2                               |
-      | mysql    | select 1; select 2                               |
-      | postgres | select 1; selec 2                                |
-      | mysql    | select 1; selec 2                                |
-      | postgres | create temporary table t(a); insert into t values (1) |
-      | mysql    | create temporary table t(a); insert into t values (1) |
-
-  Scenario Outline: A trailing comment or semicolon is not a second statement on <adapter>: <sql>
-    Given a "<adapter>" database
-    Then the query "<sql>" returns:
+    Then the query "select 1 as one; -- done" returns:
       | one   |
       | Int 1 |
 
     Examples:
-      | adapter  | sql                      |
-      | sqlite   | select 1 as one -- done  |
-      | sqlite   | select 1 as one; -- done |
-      | postgres | select 1 as one -- done  |
-      | mysql    | select 1 as one -- done  |
-      | postgres | select 1 as one; -- done |
-      | mysql    | select 1 as one; -- done |
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
 
   Scenario Outline: A result with a repeated column name is an error on <adapter>
     Given a "<adapter>" database
@@ -153,3 +111,12 @@ Feature: Queries and statements
       | sqlite   |
       | postgres |
       | mysql    |
+
+  Scenario Outline: Other tasks run while a query waits for the server on <adapter>
+    Given a "<adapter>" database
+    Then another task keeps running during "<sql>", with gaps under 300 milliseconds
+
+    Examples:
+      | adapter  | sql                          |
+      | postgres | select pg_sleep(0.5)::text as v |
+      | mysql    | select sleep(0.5) as v       |

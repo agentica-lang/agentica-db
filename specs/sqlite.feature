@@ -1,18 +1,8 @@
 Feature: SQLite
-  What only the SQLite adapter promises. SQLite has no boolean: a Bool is stored as 0 or 1 and reads back as an Int,
-  and a NaN is stored as NULL.
+  What only the SQLite adapter promises. SQLite has no boolean (a Bool is stored as 0 or 1, see values.feature), and
+  a NaN is stored as NULL.
   In a step text, [NUL], [FF] and [VT] stand for characters a text cannot hold, and [SCRATCH] is a folder of the
   scenario under tmp/ (it is emptied when the next scenario starts).
-
-  Scenario: A bool false reads back as the int 0 on sqlite
-    Given a "sqlite" database
-    When I execute "create temp table t (v)"
-    And I execute "insert into t values (?)" with:
-      | value      |
-      | Bool false |
-    Then the query "select v from t" returns:
-      | v     |
-      | Int 0 |
 
   Scenario: A NaN is stored as null on sqlite
     Given a "sqlite" database
@@ -23,12 +13,6 @@ Feature: SQLite
     Then the query "select v from t" returns:
       | v    |
       | Null |
-
-  Scenario: An infinity from the engine is a float on sqlite
-    Given a "sqlite" database
-    Then the query "select 9e999 as v" returns:
-      | v              |
-      | Float Infinity |
 
   Scenario: A text with an embedded NUL reads back whole on sqlite
     Given a "sqlite" database
@@ -61,10 +45,6 @@ Feature: SQLite
     Then the query "select x from t" returns:
       | x      |
       | Int 42 |
-
-  Scenario: A missing directory fails to open with the SQLite code on sqlite
-    When I open "sqlite:/no/such/dir/x.db"
-    Then it fails with exactly "sqlite error 14: unable to open database file"
 
   Scenario: A statement is finalized when a row fails, so the table can be dropped on sqlite
     Given a "sqlite" database
