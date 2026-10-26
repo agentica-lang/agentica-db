@@ -217,7 +217,8 @@ def main() -> Void
       nul = String.from_code(0)
       try refused(conn, "select ?", [], "sqlite error: the sql has 1 parameter, got 0")
       try refused(conn, "select 1", [Value.Int(1)], "sqlite error: the sql has 0 parameters, got 1")
-      try refused(conn, "select ?", [Value.Text("a#{nul}b")], "sqlite error: a text parameter contains a NUL character")
+      text_nul = "sqlite error: a text parameter contains a NUL character"
+      try refused(conn, "select ?", [Value.Text("a#{nul}b")], text_nul)
       try refused(conn, "select ?", [Value.Blob([256])], "sqlite error: a blob parameter has an item outside 0..255")
       try refused(conn, "select 1#{nul}", [], "sqlite error: the sql contains a NUL character")
       try refused(conn, "  -- nothing\n /* here */ ; ", [], "sqlite error: the sql has no statement")
