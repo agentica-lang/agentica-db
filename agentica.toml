@@ -5,3 +5,11 @@ name = "db"
 linux = { system = "libsqlite3.so.0" }
 macos = { system = "libsqlite3.dylib" }
 windows = { system = "winsqlite3.dll" }
+
+# The system libpq (PostgreSQL client); `extern "pq"` in postgres.agc opens the entry of the running system. A
+# macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH only: with Homebrew's libpq, run with
+# DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib".
+[native.pq]
+linux = { system = "libpq.so.5" }
+macos = { system = "libpq.5.dylib" }
+windows = { system = "libpq.dll" }

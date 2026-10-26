@@ -2,21 +2,26 @@
 ## `transaction` take bound `Value` parameters (`?` placeholders), never values spliced into the sql.
 ##
 ## An error is `error(message)` in one of two shapes. An engine failure is `<adapter> error <code>: <message>`, as in
-## `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs, is
+## `sqlite error 1: near "from": syntax error`; the code of PostgreSQL is its SQLSTATE, as in
+## `postgres error 42601: syntax error at end of input`. A bad input, refused before the statement runs, is
 ## `<adapter> error: <message>`, as in `sqlite error: the sql has 1 parameter, got 0`. A failure of this module
 ## itself, such as an unknown url, is `db error: <message>`.
 
+import Postgres from "postgres"
 import Sqlite from "sqlite"
 import {Row, Value} from "value"
 
 SQLITE_PREFIX = "sqlite:"
+POSTGRES_PREFIXES = ["postgres://", "postgresql://"]
 
 ## An open connection. Its task owns it: close it with `close`, or the end of the task closes it.
 export enum Connection
   Sqlite(Sqlite.Handle)
+  Postgres(Postgres.Handle)
 end
 
-## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database).
+## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database), or
+## `postgres://` and `postgresql://` urls, which libpq parses.
 export def open(url: String) -> Result[Connection]
   if url.start_with?("sqlite://")
     return error("db error: unsupported database url #{url}: write sqlite:PATH, without //")
@@ -28,7 +33,10 @@ export def open(url: String) -> Result[Connection]
     end
     return open_sqlite(path)
   end
-  return error("db error: unsupported database url #{url}: expected sqlite:PATH or sqlite::memory:")
+  if POSTGRES_PREFIXES.any? do |prefix| url.start_with?(prefix) end
+    return open_postgres(url)
+  end
+  return error("db error: unsupported database url #{url}: expected sqlite:PATH, sqlite::memory: or postgres://")
 end
 
 ## Opens a SQLite database file, or `:memory:`.
@@ -37,10 +45,17 @@ export def open_sqlite(path: String) -> Result[Connection]
   return ok(Connection.Sqlite(handle))
 end
 
+## Opens a PostgreSQL database from a libpq url.
+export def open_postgres(url: String) -> Result[Connection]
+  handle = try Postgres.open(url)
+  return ok(Connection.Postgres(handle))
+end
+
 ## Closes the connection; closing it again does nothing.
 export def close(conn: Connection) -> Void
   case conn
     Connection.Sqlite(handle) -> Sqlite.close(handle)
+    Connection.Postgres(handle) -> Postgres.close(handle)
   end
 end
 
@@ -48,6 +63,7 @@ end
 export def query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
   case conn
     Connection.Sqlite(handle) -> return Sqlite.query(handle, sql, params)
+    Connection.Postgres(handle) -> return Postgres.query(handle, sql, params)
   end
 end
 
@@ -55,6 +71,7 @@ end
 export def execute(conn: Connection, sql: String, params: List[Value]) -> Result[Int]
   case conn
     Connection.Sqlite(handle) -> return Sqlite.execute(handle, sql, params)
+    Connection.Postgres(handle) -> return Postgres.execute(handle, sql, params)
   end
 end
 
@@ -81,6 +98,7 @@ end
 def begin_sql(conn: Connection) -> String
   case conn
     Connection.Sqlite(_) -> return Sqlite.BEGIN_SQL
+    Connection.Postgres(_) -> return Postgres.BEGIN_SQL
   end
 end
 
