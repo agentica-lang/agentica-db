@@ -10,7 +10,8 @@ with one adapter per database, all through the C FFI (no C code of ours).
 | MySQL | `libmariadb` / `libmysqlclient` | planned |
 
 Needs Agentica 0.10.0 or later and the system SQLite library (`libsqlite3.so.0` on Linux, `libsqlite3.dylib`
-on macOS, `winsqlite3.dll` on Windows).
+on macOS, `winsqlite3.dll` on Windows). CI runs on Linux only; the macOS and Windows library names are declared but
+not tested yet.
 
 ## Install
 
@@ -21,6 +22,7 @@ In your `agentica.toml`:
 db = { git = "https://github.com/sonic182/agentica-db", tag = "v0.1.0" }
 ```
 
+`v0.1.0` is a placeholder: there is no release yet, so pin a commit with `--ref COMMIT` until the first tag.
 Then `agentica add db https://github.com/sonic182/agentica-db --tag v0.1.0` (or `agentica install` for a manifest
 you edited) writes `agentica.lock` and `deps/db/`.
 
@@ -72,13 +74,23 @@ end
 `value.agc` (`import {Value} from "pkg/db/value"`): `Value.Null`, `Value.Int(Int)`, `Value.Float(Float)`,
 `Value.Text(String)`, `Value.Blob(List[Int])`, `Value.Bool(Bool)`.
 
-- Placeholders are `?`, always bound; values are never spliced into the sql.
-- An error is `error(message)` and the message starts with the adapter and its code:
-  `sqlite error 1: near "from": syntax error`. Bad input (wrong parameter count, a NUL in text) is an error too.
-- SQLite has no boolean: `Value.Bool` is stored as 0 or 1 and reads back as `Value.Int`. NaN is stored as NULL.
-- A statement runs alone: two statements in one string are an error.
-- A connection belongs to the task that opened it, which closes it at its end. Using it after `close` is a runtime
-  error (`RUNTIME-NATIVE-CLOSED`).
+- Placeholders are `?`, always bound; values are never spliced into the sql. The sql text is a constant of your
+  program. A list does not expand a placeholder: for `in (...)` build `?, ?, ?` from the list length yourself (only
+  the placeholders, never the values) and pass the values as parameters.
+- An error is `error(message)` in one of two shapes. An engine failure is `<adapter> error <code>: <message>`, as in
+  `sqlite error 1: near "from": syntax error`. A bad input, refused before the engine runs (wrong parameter count, a
+  NUL in text, a blob item outside 0..255, no statement, two statements, a repeated result column), is
+  `<adapter> error: <message>`. An unknown url is `db error: <message>`.
+- Only the first and only statement of the string runs; two statements are an error. A result with two columns of
+  one name is an error: alias them.
+- Types: a database type without a `Value` variant comes back as `Value.Text` (the contract for PostgreSQL and
+  MySQL types such as numeric, date or uuid). SQLite has no boolean: `Value.Bool` is stored as 0 or 1 and reads
+  back as `Value.Int`. NaN is stored as NULL.
+- SQLite keeps its defaults: foreign keys are off until you run `PRAGMA foreign_keys = ON`.
+- `transaction` starts with `BEGIN IMMEDIATE` on SQLite. A runtime error (a halt) inside the body stops the task
+  and leaves the transaction open until the task ends; closing the connection then rolls it back.
+- A connection belongs to the task that opened it. `close` ends it; so does the end of the task. Using it after
+  `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
 
 ## Development
 

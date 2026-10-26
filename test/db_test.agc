@@ -35,12 +35,27 @@ def error_starts_with(result: Result[Int], prefix: String) -> Result[Void]
   return Test.assert(result.message.start_with?(prefix), "error was: #{result.message}")
 end
 
+def infinity(conn: Db.Connection) -> Result[Float]
+  rows = try Db.query(conn, "select 9e999 as v", [])
+  case rows[0]["v"]
+    Value.Float(x) -> return ok(x)
+    _ -> return error("not a float")
+  end
+end
+
+def round_trip(conn: Db.Connection, value: Value) -> Result[Value]
+  try Db.execute(conn, "delete from t", [])
+  try Db.execute(conn, "insert into t values (?)", [value])
+  rows = try Db.query(conn, "select v from t", [])
+  return ok(rows[0]["v"])
+end
+
 def refused(conn: Db.Connection, sql: String, params: List[Value], prefix: String) -> Result[Void]
   return error_starts_with(Db.execute(conn, sql, params), prefix)
 end
 
 # Runs in a task of its own: the runtime error of a closed handle ends only that task.
-def count_users(conn: Db.Connection) -> Result[Int]
+def select_one(conn: Db.Connection) -> Result[Int]
   return Db.execute(conn, "select 1", [])
 end
 
@@ -163,15 +178,22 @@ def main() -> Void
       try Test.assert(done.message.start_with?("sqlite error 19: "), "error was: #{done.message}")
       Test.eq(names(conn), ok(["dup"]))
     end,
-    Test.test("transactions do not nest") do
+    Test.test("transactions do not nest, and a new one works after the refusal") do
       conn = try users()
       done = Db.transaction(conn) do |tx|
+        try add_user(tx, "inner", Value.Null)
         Db.transaction(tx) do |inner|
           ok()
         end
       end
       try Test.error?(done)
-      Test.eq(Db.execute(conn, "insert into users (name) values ('after')", []), ok(1))
+      try Test.eq(names(conn), ok([]))
+      again = Db.transaction(conn) do |tx|
+        try add_user(tx, "later", Value.Null)
+        ok()
+      end
+      try Test.ok?(again)
+      Test.eq(names(conn), ok(["later"]))
     end,
     Test.test("a syntax error gives the sqlite code and message") do
       conn = try memory()
@@ -193,7 +215,11 @@ def main() -> Void
       try refused(conn, "select ?", [Value.Blob([256])], "sqlite error: a blob")
       try refused(conn, "select 1#{nul}", [], "sqlite error: the sql contains")
       try refused(conn, "  -- nothing\n /* here */ ; ", [], "sqlite error: the sql has no statement")
+      try refused(conn, "-- only a comment", [], "sqlite error: the sql has no statement")
+      try refused(conn, String.from_code(12), [], "sqlite error")
+      try refused(conn, String.from_code(11), [], "sqlite error")
       try refused(conn, "select 1; select 2", [], "sqlite error: the sql has more than one")
+      try Test.eq(Db.query(conn, "select 1 as one -- done", []), ok([{"one": Value.Int(1)}]))
       Test.eq(Db.query(conn, "select 1 as one; -- done", []), ok([{"one": Value.Int(1)}]))
     end,
     Test.test("parameters are values, never sql") do
@@ -210,7 +236,7 @@ def main() -> Void
     Test.test("using a closed connection ends only the task that used it") do
       conn = try memory()
       Db.close(conn)
-      task = Task.spawn(&count_users, conn)
+      task = Task.spawn(&select_one, conn)
       failed = Task.await(task)
       try Test.error?(failed)
       Test.assert(failed.message.include?("RUNTIME-NATIVE-CLOSED"), "error was: #{failed.message}")
@@ -236,7 +262,50 @@ def main() -> Void
     Test.test("an unknown url scheme is an error") do
       failed = Db.open("ftp://host/db")
       try Test.error?(failed)
+      try Test.assert(failed.message.start_with?("db error: "), "error was: #{failed.message}")
       Test.assert(failed.message.include?("ftp://host/db"), "error was: #{failed.message}")
+    end,
+    Test.test("only sqlite:PATH is accepted") do
+      for url in ["sqlite:///tmp/x.db", "sqlite:", "sqlite"]
+        failed = Db.open(url)
+        try Test.error?(failed)
+        try Test.assert(failed.message.start_with?("db error: "), "error was: #{failed.message}")
+      end
+      return ok()
+    end,
+    Test.test("a statement is finalized when a row fails, so the table can be dropped") do
+      conn = try memory()
+      try Db.execute(conn, "create table t (x integer)", [])
+      try Db.execute(conn, "insert into t values (1), (2), (3), (4)", [])
+      # abs(min int) is an integer overflow, raised on the third row.
+      sql = "select case when x = 3 then abs(-9223372036854775807 - 1) else x end as y from t order by x"
+      failed = Db.query(conn, sql, [])
+      try Test.error?(failed)
+      try Test.assert(failed.message.start_with?("sqlite error 1: "), "error was: #{failed.message}")
+      Test.eq(Db.execute(conn, "drop table t", []), ok(0))
+    end,
+    Test.test("a result with a repeated column name is an error") do
+      conn = try memory()
+      failed = Db.query(conn, "select 1 as a, 2 as a", [])
+      try Test.error?(failed)
+      Test.eq(failed.message, "sqlite error: the result has the column a twice, alias one of them")
+    end,
+    Test.test("text with an embedded NUL reads back whole") do
+      conn = try memory()
+      nul = String.from_code(0)
+      rows = Db.query(conn, "select 'a' || char(0) || 'b' as s", [])
+      Test.eq(rows, ok([{"s": Value.Text("a#{nul}b")}]))
+    end,
+    Test.test("bool false, the smallest int, infinity and NaN") do
+      conn = try memory()
+      try Db.execute(conn, "create table t (v)", [])
+      inf = try infinity(conn)
+      try Test.eq(round_trip(conn, Value.Bool(false)), ok(Value.Int(0)))
+      smallest = -9_223_372_036_854_775_807 - 1
+      try Test.eq(round_trip(conn, Value.Int(smallest)), ok(Value.Int(smallest)))
+      try Test.eq(round_trip(conn, Value.Float(inf)), ok(Value.Float(inf)))
+      # SQLite stores NaN as NULL.
+      Test.eq(round_trip(conn, Value.Float(inf - inf)), ok(Value.Null))
     end,
   ])
 end

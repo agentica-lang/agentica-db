@@ -1,10 +1,16 @@
 ## The SQLite adapter, through the system libsqlite3.
 ##
 ## `open` gives a `Handle`, which the task that opened it owns: close it with `close`, or the end of the task
-## closes it. Using a closed handle is a runtime error (`RUNTIME-NATIVE-CLOSED`).
+## closes it (a transaction still open is rolled back). Using a closed handle is a runtime error
+## (`RUNTIME-NATIVE-CLOSED`). SQLite's own defaults stay: foreign keys are off until `PRAGMA foreign_keys = ON`.
+##
+## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
 import {Row, Value} from "value"
 
+## The statement that starts a transaction: IMMEDIATE takes the write lock at once, so a busy database fails at
+## BEGIN, not in the middle of the body.
+export BEGIN_SQL = "BEGIN IMMEDIATE"
 SQLITE_OK = 0
 SQLITE_ROW = 100
 SQLITE_DONE = 101
@@ -14,16 +20,26 @@ SQLITE_TEXT = 3
 SQLITE_BLOB = 4
 BUSY_TIMEOUT_MS = 5_000
 BYTE_MAX = 255
+# The length argument that means "up to the NUL" for sql and text.
+NUL_TERMINATED = -1
+# The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
+TRANSIENT_DESTRUCTOR = -1
 
 extern "sqlite3"
+  ## An open database.
   export resource Handle, free: sqlite3_close_v2
   resource Stmt, free: sqlite3_finalize
   compute def sqlite3_open(filename: C.String, out db: Handle) -> C.Int32
   def sqlite3_busy_timeout(db: Handle, ms: C.Int32) -> C.Int32
   def sqlite3_errmsg(db: Handle) -> C.String
+  def sqlite3_errstr(code: C.Int32) -> C.String
   def sqlite3_changes(db: Handle) -> C.Int32
   def sqlite3_total_changes(db: Handle) -> C.Int32
-  def sqlite3_prepare_v2(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: Stmt, out tail: C.Pointer) -> C.Int32
+  # Prepare is compute too: a big schema makes it slow. The probe is the same C function with an out pointer.
+  compute def sqlite3_prepare_v2(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: Stmt,
+                                 out tail: C.Pointer) -> C.Int32
+  compute def sqlite3_probe(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
+                            out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
   compute def sqlite3_step(stmt: Stmt) -> C.Int32
   def sqlite3_bind_parameter_count(stmt: Stmt) -> C.Int32
   def sqlite3_bind_null(stmt: Stmt, index: C.Int32) -> C.Int32
@@ -49,24 +65,31 @@ export def open(path: String) -> Result[Handle]
   end
   opened = sqlite3_open(path)
   if opened.result != SQLITE_OK
-    message = failure(opened.db, opened.result)
-    # A failed open may still give a live handle, which only this function sees.
+    # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
     Native.close(opened.db)
-    return error(message)
+    return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
   sqlite3_busy_timeout(opened.db, BUSY_TIMEOUT_MS)
   return ok(opened.db)
 end
 
-## Closes the handle; closing it again does nothing.
+## Closes the handle; closing it again does nothing. Closing the last connection of a WAL database checkpoints
+## it, which can take a while: this call blocks the task meanwhile.
 export def close(conn: Handle) -> Void
   Native.close(conn)
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
+## Two columns with one name are an error: alias them.
 export def query(conn: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
   stmt = try prepare(conn, sql, params)
-  rows = collect(conn, stmt)
+  names = column_names(stmt)
+  repeated = names.find do |name| names.select do |other| other == name end.size > 1 end
+  if repeated.ok?
+    Native.close(stmt)
+    return error("sqlite error: the result has the column #{repeated.unwrap!} twice, alias one of them")
+  end
+  rows = collect(conn, stmt, names)
   Native.close(stmt)
   return rows
 end
@@ -75,50 +98,72 @@ end
 export def execute(conn: Handle, sql: String, params: List[Value]) -> Result[Int]
   stmt = try prepare(conn, sql, params)
   before = sqlite3_total_changes(conn)
-  done = run(conn, stmt)
+  # No column names: a statement that returns rows is run for its effect, and its rows come out empty.
+  ran = collect(conn, stmt, [])
+  Native.close(stmt)
+  try ran
+  return ok(changes_since(conn, before))
+end
+
+def changes_since(conn: Handle, before: Int) -> Int
   # sqlite3_changes keeps the count of the last row-changing statement, so a statement that changed nothing
   # (a CREATE TABLE after an INSERT) must not report it.
-  changed = 0
-  if sqlite3_total_changes(conn) != before
-    changed = sqlite3_changes(conn)
+  if sqlite3_total_changes(conn) == before
+    return 0
   end
-  Native.close(stmt)
-  case done
-    Result.Ok(_) -> return ok(changed)
-    Result.Err(message) -> return error(message)
-  end
+  return sqlite3_changes(conn)
 end
 
 def prepare(conn: Handle, sql: String, params: List[Value]) -> Result[Stmt]
   if has_nul?(sql)
     return error("sqlite error: the sql contains a NUL character")
   end
-  if blank_sql?(sql)
-    return error("sqlite error: the sql has no statement")
-  end
   try check_params(params)
   # The sql goes through an owned buffer, not a C.String: SQLite points `tail` into its copy, and a C.String copy
   # lives only during the call.
   made: Result[Stmt] = Native.memory_pointer(sql.to_bytes.size + 1) do |buf|
     Native.put_string(buf, 0, sql)
-    prepared = sqlite3_prepare_v2(conn, buf, -1)
+    try single_statement(conn, buf)
+    prepared = sqlite3_prepare_v2(conn, buf, NUL_TERMINATED)
     if prepared.result != SQLITE_OK
       return error(failure(conn, prepared.result))
-    end
-    if not blank_sql?(Native.get_string(prepared.tail, 0))
-      Native.close(prepared.stmt)
-      return error("sqlite error: the sql has more than one statement")
     end
     ok(prepared.stmt)
   end
   stmt = try made
   bound = bind_all(conn, stmt, params)
   case bound
-    Result.Ok(_) -> return ok(stmt)
-    Result.Err(message) ->
+    ok(_) -> return ok(stmt)
+    error(message) ->
       Native.close(stmt)
       return error(message)
   end
+end
+
+# SQLite gives a NULL statement for sql that holds only whitespace and comments, which an out resource cannot
+# show (it is a closed resource, and any call on it stops the program). So the sql is prepared first with an out
+# pointer, where NULL can be tested, and the tail is tried the same way to refuse a second statement.
+def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
+  probe = sqlite3_probe(conn, buf, NUL_TERMINATED)
+  if probe.result != SQLITE_OK
+    return error(failure(conn, probe.result))
+  end
+  if Native.null?(probe.stmt)
+    return error("sqlite error: the sql has no statement")
+  end
+  sqlite3_finalize_pointer(probe.stmt)
+  if Native.get_string(probe.tail, 0) == ""
+    return ok()
+  end
+  more = sqlite3_probe(conn, probe.tail, NUL_TERMINATED)
+  if more.result != SQLITE_OK
+    return error(failure(conn, more.result))
+  end
+  if Native.null?(more.stmt)
+    return ok()
+  end
+  sqlite3_finalize_pointer(more.stmt)
+  return error("sqlite error: the sql has more than one statement")
 end
 
 def check_params(params: List[Value]) -> Result[Void]
@@ -158,12 +203,11 @@ def bind_all(conn: Handle, stmt: Stmt, params: List[Value]) -> Result[Void]
 end
 
 def bind_value(stmt: Stmt, index: Int, value: Value) -> Int
-  transient = Native.pointer(-1)
   case value
     Value.Null -> return sqlite3_bind_null(stmt, index)
     Value.Int(n) -> return sqlite3_bind_int64(stmt, index, n)
     Value.Float(x) -> return sqlite3_bind_double(stmt, index, x)
-    Value.Text(text) -> return sqlite3_bind_text(stmt, index, text, -1, transient)
+    Value.Text(text) -> return sqlite3_bind_text(stmt, index, text, NUL_TERMINATED, transient())
     Value.Blob(bytes) -> return bind_blob(stmt, index, bytes)
     Value.Bool(flag) -> return sqlite3_bind_int64(stmt, index, bool_int(flag))
   end
@@ -174,7 +218,11 @@ def bind_blob(stmt: Stmt, index: Int, bytes: List[Int]) -> Int
   if bytes.empty?
     return sqlite3_bind_zeroblob(stmt, index, 0)
   end
-  return sqlite3_bind_blob(stmt, index, bytes, bytes.size, Native.pointer(-1))
+  return sqlite3_bind_blob(stmt, index, bytes, bytes.size, transient())
+end
+
+def transient() -> C.Pointer
+  return Native.pointer(TRANSIENT_DESTRUCTOR)
 end
 
 def bool_int(flag: Bool) -> Int
@@ -184,8 +232,8 @@ def bool_int(flag: Bool) -> Int
   return 0
 end
 
-def collect(conn: Handle, stmt: Stmt) -> Result[List[Row]]
-  names = column_names(stmt)
+# The shared step loop: every row, read with the given column names.
+def collect(conn: Handle, stmt: Stmt, names: List[String]) -> Result[List[Row]]
   rows: List[Row] = []
   while true
     code = sqlite3_step(stmt)
@@ -198,20 +246,6 @@ def collect(conn: Handle, stmt: Stmt) -> Result[List[Row]]
     rows = rows.push(read_row(stmt, names))
   end
   return ok(rows)
-end
-
-def run(conn: Handle, stmt: Stmt) -> Result[Void]
-  while true
-    code = sqlite3_step(stmt)
-    if code == SQLITE_DONE
-      return ok()
-    end
-    # A statement that returns rows is run for its effect: the rows are dropped.
-    if code != SQLITE_ROW
-      return error(failure(conn, code))
-    end
-  end
-  return ok()
 end
 
 def column_names(stmt: Stmt) -> List[String]
@@ -260,41 +294,8 @@ def has_nul?(text: String) -> Bool
   return text.include?(String.from_code(0))
 end
 
-# SQLite gives no statement (a NULL out resource, which a program cannot test) for text that holds only
-# whitespace, semicolons and comments, so those are refused before the call.
-def blank_sql?(sql: String) -> Bool
-  size = sql.length
-  i = 0
-  while i < size
-    c = sql.at(i)
-    if c == " " or c == "\t" or c == "\n" or c == "\r" or c == ";" or c == String.from_code(12)
-      i += 1
-    elsif c == "-" and i + 1 < size and sql.at(i + 1) == "-"
-      i = line_comment_end(sql, i + 2)
-    elsif c == "/" and i + 1 < size and sql.at(i + 1) == "*"
-      i = block_comment_end(sql, i + 2)
-    else
-      return false
-    end
-  end
-  return true
-end
-
-def line_comment_end(sql: String, from: Int) -> Int
-  i = from
-  while i < sql.length and sql.at(i) != "\n"
-    i += 1
-  end
-  return i
-end
-
-def block_comment_end(sql: String, from: Int) -> Int
-  i = from
-  while i < sql.length
-    if sql.at(i) == "*" and i + 1 < sql.length and sql.at(i + 1) == "/"
-      return i + 2
-    end
-    i += 1
-  end
-  return i
+# A second block, because a probe statement is finalized through its pointer and the free function of the first
+# block's Stmt cannot be declared there. The probe is finalized once, here, and never becomes a resource.
+extern "sqlite3"
+  def sqlite3_finalize_pointer(stmt: C.Pointer) -> C.Int32 = "sqlite3_finalize"
 end

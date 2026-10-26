@@ -1,8 +1,10 @@
 ## One API over the databases of this package. A connection comes from `open`; `query`, `execute` and
 ## `transaction` take bound `Value` parameters (`?` placeholders), never values spliced into the sql.
 ##
-## An error is `error(message)`, and the message starts with the adapter and its code, as in
-## `sqlite error 1: near "from": syntax error`.
+## An error is `error(message)` in one of two shapes. An engine failure is `<adapter> error <code>: <message>`, as in
+## `sqlite error 1: near "from": syntax error`. A bad input, refused before the engine runs, is
+## `<adapter> error: <message>`, as in `sqlite error: the sql has 1 parameters, got 0`. A failure of this module
+## itself, such as an unknown url, is `db error: <message>`.
 
 import Sqlite from "sqlite"
 import {Row, Value} from "value"
@@ -16,10 +18,17 @@ end
 
 ## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database).
 export def open(url: String) -> Result[Connection]
-  if url.start_with?(SQLITE_PREFIX)
-    return open_sqlite(url.slice(SQLITE_PREFIX.length, url.length - SQLITE_PREFIX.length))
+  if url.start_with?("sqlite://")
+    return error("db error: unsupported database url #{url}: write sqlite:PATH, without //")
   end
-  return error("unsupported database url #{url}: expected sqlite:PATH")
+  if url.start_with?(SQLITE_PREFIX)
+    path = url.slice(SQLITE_PREFIX.length, url.length - SQLITE_PREFIX.length)
+    if path.empty?
+      return error("db error: unsupported database url #{url}: the path is empty")
+    end
+    return open_sqlite(path)
+  end
+  return error("db error: unsupported database url #{url}: expected sqlite:PATH or sqlite::memory:")
 end
 
 ## Opens a SQLite database file, or `:memory:`.
@@ -49,27 +58,37 @@ export def execute(conn: Connection, sql: String, params: List[Value]) -> Result
   end
 end
 
-## Runs the block between BEGIN and COMMIT. An `error` from the block, or a failed COMMIT, rolls back and gives
-## that error. Transactions do not nest.
+## Runs the block between the adapter's BEGIN and COMMIT. An `error` from the block, or a failed COMMIT, rolls back
+## and gives that error (with the ROLLBACK failure appended, if it failed too). Transactions do not nest. A runtime
+## error in the block stops the task and leaves the transaction open; closing the connection rolls it back.
 export def transaction(conn: Connection, body: Fn[Connection, Result[Void]]) -> Result[Void]
-  try execute(conn, "BEGIN", [])
+  try execute(conn, begin_sql(conn), [])
   done = body.call(conn)
   case done
-    Result.Ok(_) -> return commit(conn)
-    Result.Err(message) -> return abandon(conn, message)
+    ok(_) -> return commit(conn)
+    error(message) -> return abandon(conn, message)
   end
 end
 
 def commit(conn: Connection) -> Result[Void]
   committed = execute(conn, "COMMIT", [])
   case committed
-    Result.Ok(_) -> return ok()
-    Result.Err(message) -> return abandon(conn, message)
+    ok(_) -> return ok()
+    error(message) -> return abandon(conn, message)
   end
 end
 
-# The original error wins over a failed ROLLBACK, which only says the transaction is already gone.
+def begin_sql(conn: Connection) -> String
+  case conn
+    Connection.Sqlite(_) -> return Sqlite.BEGIN_SQL
+  end
+end
+
+# The original error wins; a failed ROLLBACK is appended, since the transaction may still be open.
 def abandon(conn: Connection, message: String) -> Result[Void]
-  _ = execute(conn, "ROLLBACK", [])
-  return error(message)
+  rolled = execute(conn, "ROLLBACK", [])
+  case rolled
+    ok(_) -> return error(message)
+    error(rollback_message) -> return error("#{message}; rollback failed: #{rollback_message}")
+  end
 end
