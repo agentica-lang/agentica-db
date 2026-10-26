@@ -1,6 +1,7 @@
 import MysqlSql from "../mysql_sql"
 
 MORE_THAN_ONE = "mysql error: the sql has more than one statement"
+NO_STATEMENT = "mysql error: the sql has no statement"
 
 def verb_of(sql: String, verb: String) -> Result[Void]
   done = MysqlSql.inspect(sql)
@@ -35,6 +36,9 @@ def main() -> Void
       try refused("select 'a'; 'b'", MORE_THAN_ONE)
       # `--` without a space after it is two minus signs, not a comment.
       return refused("select 1; --1", MORE_THAN_ONE)
+    end,
+    Test.test("sql with only a # comment, which only MySQL has, has no statement") do
+      return refused("# only a comment", NO_STATEMENT)
     end,
   ])
 end

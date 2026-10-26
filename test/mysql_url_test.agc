@@ -37,7 +37,7 @@ def main() -> Void
       return Test.eq(target_of("mysql://u:p@ss@h").password, "p@ss")
     end,
     Test.test("a bad url is an error that repeats no part of it") do
-      try refused("mysql://u:hunter2@h:notaport/d", "the url port is not a number from 1 to 65535")
+      try refused("mysql://u:hunter2@h:0/d", "the url port is not a number from 1 to 65535")
       try refused("mysql://u:hunter2@h:65536/d", "the url port is not a number from 1 to 65535")
       try refused("mysql://u:hunter2@/d", "the url has no host")
       try refused("mysql://u:hunter2@h/a/b", "the url path has more than one part")
@@ -47,7 +47,8 @@ def main() -> Void
       try refused("mysql://u:hunter2@h?ssl_ca=x.pem", "the url ssl_ca works only with ssl_mode=verify")
       try refused("mysql://u:hunter2@h?ssl_mode=required&ssl_ca=x.pem",
                   "the url ssl_ca works only with ssl_mode=verify")
-      try refused("mysql://u:hunter2@h?nope=1", "the url has an unknown parameter, the ones that exist are connect_timeout, ssl_mode and ssl_ca")
+      try refused("mysql://u:hunter2@h?nope=1",
+                  "the url has an unknown parameter, the ones that exist are connect_timeout, ssl_mode and ssl_ca")
       try refused("mysql://u:hunter2@h?ssl_mode=nope", "the url ssl_mode is required or verify")
       try refused("mysql://u:hunter2@h?connect_timeout=x", "the url connect_timeout is not a number of seconds")
       try refused("mysql://u:hunter2@[::1", "the url has an IPv6 host without a closing bracket")

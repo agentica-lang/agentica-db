@@ -3,17 +3,17 @@ Feature: MySQL and MariaDB
   with a user, a password, a host, a port and a database, such as `mysql://root:pw@127.0.0.1:3306/mysql`).
   The first step of each opens the connection. Placeholders are `?`, which MySQL takes natively, and the values are
   always bound by the prepared statement API.
-  In a step text, [LF], [TAB], [SP] and [NUL] stand for characters a text cannot hold, [URL] is the url of the server
-  (`[URL]&name=value` adds a url parameter), [SERVER] is that url without its scheme and [ADDRESS] is its host and
-  port only.
+  In a step text, [URL] is the url of the server (`[URL]&name=value` adds a url parameter), [SERVER] is that url
+  without its scheme and [ADDRESS] is its host and port only.
 
-  Scenario: A mariadb:// url works too
+  Scenario: A mariadb:// url works too, and the database of the url is the current one
     Given a "mysql" database
-    When I open "mariadb://[SERVER]"
-    Then the query "select 1 as v" returns:
-      | v     |
-      | Int 1 |
+    When I open "mariadb://root:pw@[ADDRESS]/information_schema"
+    Then the query "select database() as db" returns:
+      | db                      |
+      | Text information_schema |
 
+  # The cipher is the TLS 1.3 default of both test images; a new image may pick another suite.
   Scenario: The ssl_mode required connects over TLS
     Given a "mysql" database
     When I open "[URL]&ssl_mode=required"

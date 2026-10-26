@@ -239,10 +239,11 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.
 
 The behavior of the API is written as Gherkin scenarios in `specs/`, run by `agentica test`; read them as the
 specification. `specs/*.feature` hold the contract that every adapter meets (open and close, query and execute,
-value round trips, transactions, errors), each scenario run against SQLite, PostgreSQL and MySQL, and
-`sqlite.feature`, `postgres.feature` and `mysql.feature` hold what only one adapter promises. `specs/steps.agc` has
-the steps. Only the pure helpers, the scanners and the url reader, have unit tests (`test/postgres_sql_test.agc`,
-`test/mysql_sql_test.agc`, `test/mysql_url_test.agc`).
+value round trips, transactions, errors), each scenario an outline with one row per adapter that the behavior
+applies to, and `sqlite.feature`, `postgres.feature` and `mysql.feature` hold what only one adapter promises.
+`specs/steps.agc` has the steps. Only the edge cases of the pure helpers, the scanners and the url reader, have unit
+tests (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`, `test/mysql_url_test.agc`); a feature repeats one of
+them only as the single integration row per adapter (a bad url, a NUL in the sql).
 
 ```sh
 for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done

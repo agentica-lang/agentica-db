@@ -2,7 +2,7 @@ Feature: PostgreSQL
   What only the PostgreSQL adapter promises. These scenarios need a server: set AGENTICA_DB_POSTGRES_URL.
   The first step of each opens the connection. Parameters travel as text and the server infers their types from
   the sql, so a type comes from the context of the placeholder or from a cast.
-  In a step text, [LF], [TAB], [SP] and [NUL] stand for characters a text cannot hold, [URL] is the url of the server
+  In a step text, [SP] stands for a space a text cell cannot end with, [URL] is the url of the server
   (`[URL]&name=value` adds a libpq parameter) and [SERVER] is that url without its scheme.
 
   Scenario: Values read back unchanged in columns of the integer, float, text, boolean and null types

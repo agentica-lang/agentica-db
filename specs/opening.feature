@@ -35,14 +35,14 @@ Feature: Opening and closing a database
     And the failure never shows "hunter2"
 
     Examples:
-      | adapter  | url                                                        | failure                         |
-      | sqlite   | sqlite:/no/such/dir/x.db                                   | sqlite error 14: unable to open |
-      | postgres | postgres://u:hunter2@localhost:notaport/db                 | postgres error: |
-      | postgres | postgres://nobody:hunter2@127.0.0.1:1/none?connect_timeout=2 | postgres error: |
-      | postgres | postgres://u:hunter2@localhost/db[NUL]                     | postgres error: the url contains |
-      | mysql    | mysql://u:hunter2@host:notaport/db                         | mysql error: the url port is not |
-      | mysql    | mysql://nobody:hunter2@127.0.0.1:1/none?connect_timeout=2  | mysql error 2002: |
-      | mysql    | mysql://u:hunter2@localhost/db[NUL]                        | mysql error: the url contains |
+      | adapter  | url                                                     | failure                                 |
+      | sqlite   | sqlite:/no/such/dir/x.db                                | sqlite error 14: unable to open         |
+      | postgres | postgres://u:hunter2@localhost:notaport/db              | postgres error: invalid integer value   |
+      | postgres | postgres://u:hunter2@127.0.0.1:1/none?connect_timeout=2 | postgres error: connection to server at |
+      | postgres | postgres://u:hunter2@localhost/db[NUL]                  | postgres error: the url contains        |
+      | mysql    | mysql://u:hunter2@host:notaport/db                      | mysql error: the url port is not        |
+      | mysql    | mysql://u:hunter2@127.0.0.1:1/none?connect_timeout=2    | mysql error 2002:                       |
+      | mysql    | mysql://u:hunter2@localhost/db[NUL]                     | mysql error: the url contains           |
 
   Scenario Outline: Using a closed connection is an error on <adapter>
     Given a "<adapter>" database
@@ -55,7 +55,7 @@ Feature: Opening and closing a database
       | postgres |
       | mysql    |
 
-  Scenario Outline: A connection is used by the task that opened it on <adapter>
+  Scenario Outline: A task opens its own connection and queries it on <adapter>
     Given a "<adapter>" database
     When another task opens its own connection and queries "select 42 as v"
     Then the result is:

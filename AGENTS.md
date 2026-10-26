@@ -64,8 +64,9 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
 - `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would
   say badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`) and the url reader
   (`test/mysql_url_test.agc`). Anything that opens a connection is a scenario. A behavior is proven once: a common
-  scenario has one row per adapter, not one per variant of the input, and a case a unit test proves is not repeated
-  in a feature.
+  scenario is an outline with one row per adapter that the behavior applies to, not one per variant of the input, and a
+  case a unit test proves is not repeated in a feature, except the one integration row per adapter that shows the
+  helper is wired in (a bad url, a NUL in the sql).
 - Ruby forms first (`start_with?`, `each`, `Value.Text(...)`); style: `agentica-code-guidelines` of the Agentica
   repository. Lines are at most 119 characters.
 - Every user-visible change adds a line under `## [Unreleased]` of `CHANGELOG.md`.

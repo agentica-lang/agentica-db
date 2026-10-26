@@ -94,6 +94,9 @@ Feature: Queries and statements
     Then the query "select 1 as one; -- done" returns:
       | one   |
       | Int 1 |
+    And the query "select 1 as one -- done" returns:
+      | one   |
+      | Int 1 |
 
     Examples:
       | adapter  |
