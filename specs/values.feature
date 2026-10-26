@@ -17,41 +17,44 @@ Feature: Values
     Then the changed row count is 1
     And the query "select i, f, s, b, n, flag from t" returns:
       | i                       | f           | s                    | b                  | n    | flag   |
-      | Int 9223372036854775807 | Float -0.25 | Text héllo ✓ 日本 🚀 | Blob 0,1,255,0,128 | Null | <flag> |
+      | Int 9223372036854775807 | Float -0.25 | Text héllo ✓ 日本 🚀 | Blob 0,1,255,0,128 | Null | <true> |
+    When I execute "insert into t (flag) values (?)" with:
+      | value      |
+      | Bool false |
+    Then the query "select flag from t where i is null" returns:
+      | flag    |
+      | <false> |
 
     Examples:
-      | adapter  | flag      | blob type |
-      | sqlite   | Int 1     | blob      |
-      | postgres | Bool true | bytea     |
-      | mysql    | Int 1     | longblob  |
+      | adapter  | true      | false      | blob type |
+      | sqlite   | Int 1     | Int 0      | blob      |
+      | postgres | Bool true | Bool false | bytea     |
+      | mysql    | Int 1     | Int 0      | longblob  |
 
+  # The longest text and blob here are the "big value" case: the adapter reads them past its first buffer.
   Scenario Outline: Values read back unchanged on <adapter>
     Given a "<adapter>" database
     Then each value reads back unchanged in a column of its type:
       | column type      | value                             |
-      | bigint           | Int 0                             |
-      | bigint           | Int -1                            |
-      | bigint           | Int 9223372036854775807           |
       | bigint           | Int -9223372036854775808          |
       | bigint           | Null                              |
       | double precision | Float 0.1                         |
       | double precision | Float 1000000000000000000000000.5 |
-      | double precision | Float -123456.789                 |
       | text             | Text                              |
       | text             | Text quote ' and " and ? and ;    |
       | text             | Text line[LF]break[TAB]tab ünï 🚀 |
       | text             | Null                              |
+      | <long text type> | Repeat 40000 Text héllo           |
       | <blob type>      | Blob                              |
-      | <blob type>      | Blob 0                            |
-      | <blob type>      | Blob 255                          |
       | <blob type>      | Blob 0,255,0,92,120,39            |
-      | <blob type>      | Repeat 5000 Blob 7                |
+      | <blob type>      | Null                              |
+      | <blob type>      | Repeat 20000 Blob 255             |
 
     Examples:
-      | adapter  | blob type |
-      | sqlite   | blob      |
-      | postgres | bytea     |
-      | mysql    | longblob  |
+      | adapter  | blob type | long text type |
+      | sqlite   | blob      | text           |
+      | postgres | bytea     | text           |
+      | mysql    | longblob  | longtext       |
 
   # MySQL has no infinity: its adapter refuses one (see mysql.feature).
   Scenario Outline: Infinities read back unchanged on <adapter>

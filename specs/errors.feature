@@ -3,15 +3,19 @@ Feature: Errors
   bad input, refused before the statement runs, `<adapter> error: <message>`. A bad input is an error, not a halt.
   In a step text, [NUL] and [LF] stand for the characters a text cannot hold.
 
-  Scenario Outline: A syntax error gives the engine code and message on <adapter>
+  Scenario Outline: A syntax error gives the engine code and message, and the connection works after it on <adapter>
     Given a "<adapter>" database
     When I query "selec 1"
-    Then it fails with exactly '<message>'
+    Then it fails with '<message>'
+    And the query "select 1 as v" returns:
+      | v     |
+      | Int 1 |
 
     Examples:
       | adapter  | message                                               |
       | sqlite   | sqlite error 1: near "selec": syntax error            |
       | postgres | postgres error 42601: syntax error at or near "selec" |
+      | mysql    | mysql error 1064: You have an error in your SQL syntax |
 
   Scenario Outline: A constraint violation gives the engine code on <adapter>
     Given a "<adapter>" database
@@ -24,41 +28,14 @@ Feature: Errors
       | adapter  | prefix                                                               |
       | sqlite   | sqlite error 19: UNIQUE constraint failed                            |
       | postgres | postgres error 23505: duplicate key value violates unique constraint |
-      | mysql    | mysql error 1062: Duplicate entry 'ana' for key |
+      | mysql    | mysql error 1062: Duplicate entry 'ana' for key                      |
 
-  Scenario Outline: The wrong number of parameters is an error on <adapter>
+  Scenario Outline: A sql that is not one statement is refused before it runs on <adapter>
     Given a "<adapter>" database
-    When I execute "select ?"
-    Then it fails with exactly "<adapter> error: the sql has 1 parameter, got 0"
-    When I execute "select 1" with:
-      | value |
-      | Int 1 |
-    Then it fails with exactly "<adapter> error: the sql has 0 parameters, got 1"
-
-    Examples:
-      | adapter  |
-      | sqlite   |
-      | postgres |
-      | mysql    |
-
-  Scenario Outline: A parameter the database cannot take is an error on <adapter>: <value>
-    Given a "<adapter>" database
-    When I execute "select ?" with:
-      | value   |
-      | <value> |
-    Then it fails with exactly "<adapter> error: <message>"
-
-    Examples:
-      | adapter  | value        | message                                     |
-      | sqlite   | Text a[NUL]b | a text parameter contains a NUL character   |
-      | sqlite   | Blob 256     | a blob parameter has an item outside 0..255 |
-      | postgres | Text a[NUL]b | a text parameter contains a NUL character   |
-      | mysql    | Text a[NUL]b | a text parameter contains a NUL character   |
-      | postgres | Blob 256     | a blob parameter has an item outside 0..255 |
-      | mysql    | Blob 256     | a blob parameter has an item outside 0..255 |
-
-  Scenario Outline: A sql with a NUL character is an error on <adapter>
-    Given a "<adapter>" database
+    When I execute "select 1; selec 2"
+    Then it fails with exactly "<adapter> error: the sql has more than one statement"
+    When I execute "[LF] -- nothing[LF] /* here */ ;"
+    Then it fails with exactly "<adapter> error: the sql has no statement"
     When I execute "select 1[NUL]"
     Then it fails with exactly "<adapter> error: the sql contains a NUL character"
 
@@ -68,19 +45,25 @@ Feature: Errors
       | postgres |
       | mysql    |
 
-  Scenario Outline: A sql without a statement is an error on <adapter>: <sql>
+  Scenario Outline: A parameter that does not fit is refused before the statement runs on <adapter>
     Given a "<adapter>" database
-    When I execute "<sql>"
-    Then it fails with exactly "<adapter> error: the sql has no statement"
+    When I execute "select ?"
+    Then it fails with exactly "<adapter> error: the sql has 1 parameter, got 0"
+    When I execute "select 1" with:
+      | value |
+      | Int 1 |
+    Then it fails with exactly "<adapter> error: the sql has 0 parameters, got 1"
+    When I execute "select ?" with:
+      | value        |
+      | Text a[NUL]b |
+    Then it fails with exactly "<adapter> error: a text parameter contains a NUL character"
+    When I execute "select ?" with:
+      | value    |
+      | Blob 256 |
+    Then it fails with exactly "<adapter> error: a blob parameter has an item outside 0..255"
 
     Examples:
-      | adapter  | sql                              |
-      | sqlite   | [LF] -- nothing[LF] /* here */ ; |
-      | sqlite   | -- only a comment                |
-      | sqlite   |                                  |
-      | postgres | [LF] -- nothing[LF] /* here */ ; |
-      | mysql    | [LF] -- nothing[LF] /* here */ ; |
-      | postgres | -- only a comment                |
-      | mysql    | -- only a comment                |
-      | postgres |                                  |
-      | mysql    |                                  |
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |

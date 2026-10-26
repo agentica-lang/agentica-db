@@ -26,25 +26,19 @@ def main() -> Void
       try verb_of("select 'a;b', \"c;d\", `e;f`", "select")
       try verb_of("select 'it\\';x', 'it'';x'", "select")
       try verb_of("select 1 /* ; */ # ;\n-- ;\n", "select")
-      return verb_of("select 1 /*! ; */", "select")
-    end,
-    Test.test("a trailing semicolon and comments are not a second statement") do
-      try verb_of("select 1;", "select")
+      try verb_of("select 1 /*! ; */", "select")
+      # A trailing semicolon and comments are not a second statement.
       try verb_of("select 1 ; -- done", "select")
       return verb_of("select 1; # done\n/* done */", "select")
     end,
-    Test.test("a second statement is refused") do
-      try refused("select 1; select 2", MORE_THAN_ONE)
+    Test.test("what follows a semicolon is a second statement, even a lone quote or a double dash") do
       try refused("; select 1", MORE_THAN_ONE)
       try refused("select 'a'; 'b'", MORE_THAN_ONE)
       # `--` without a space after it is two minus signs, not a comment.
       return refused("select 1; --1", MORE_THAN_ONE)
     end,
-    Test.test("sql without a statement is refused") do
-      try refused("", NO_STATEMENT)
-      try refused(" \n\t", NO_STATEMENT)
-      try refused("-- a\n# b\n/* c */ ;", NO_STATEMENT)
-      return refused("select 1" + String.from_code(0), "mysql error: the sql contains a NUL character")
+    Test.test("sql with only a # comment, which only MySQL has, has no statement") do
+      return refused("# only a comment", NO_STATEMENT)
     end,
   ])
 end

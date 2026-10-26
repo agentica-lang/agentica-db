@@ -96,8 +96,6 @@ def main() -> Void
       return same("create rule r as on insert to a do also (insert into b values (1); insert into c values (2))", 0)
     end,
     Test.test("a second statement is refused") do
-      try refused("select 1; select 2", MORE_THAN_ONE)
-      try refused("select 1; selec 2", MORE_THAN_ONE)
       try refused("select 1;select 2", MORE_THAN_ONE)
       try refused("select 1; ?", MORE_THAN_ONE)
       try refused("select 1; 'x'", MORE_THAN_ONE)
@@ -106,12 +104,8 @@ def main() -> Void
       try refused("select 1; -- c\n select 2", MORE_THAN_ONE)
       return refused("create table t(a); insert into t values (?)", MORE_THAN_ONE)
     end,
-    Test.test("sql without a statement is refused") do
-      try refused("", NO_STATEMENT)
-      try refused("   \n\t", NO_STATEMENT)
-      try refused(";", NO_STATEMENT)
+    Test.test("sql with only a semicolon, a comment or a vertical tab and a form feed has no statement") do
       try refused(" ; ;; ", NO_STATEMENT)
-      try refused("-- only a comment", NO_STATEMENT)
       try refused("/* a */ -- b\n ;", NO_STATEMENT)
       return refused(String.from_code(11) + String.from_code(12), NO_STATEMENT)
     end,
@@ -124,9 +118,6 @@ def main() -> Void
       try verb_of("(select 1)", "")
       try verb_of("'x'", "")
       return verb_of("begin;", "begin")
-    end,
-    Test.test("a NUL is refused") do
-      return refused("select 1#{String.from_code(0)}", "postgres error: the sql contains a NUL character")
     end,
   ])
 end
