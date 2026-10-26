@@ -16,11 +16,23 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install SQLite
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0
+      - name: Install SQLite and libpq
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0 libpq5
 
       - name: Install the pinned Agentica release
         run: |
@@ -36,5 +48,8 @@ jobs:
           agentica --version
           for file in *.agc test/*.agc; do agentica check "$file"; done
 
+      # The variable makes the postgres tests run against the service container; without it they fail under CI=true.
       - name: Test
+        env:
+          AGENTICA_DB_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
         run: agentica test
