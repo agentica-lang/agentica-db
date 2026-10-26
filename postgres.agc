@@ -60,10 +60,12 @@ export def open(url: String) -> Result[Handle]
   if has_nul?(url)
     return error("postgres error: the url contains a NUL character")
   end
+
   conn = pq_connectdb(url)
   if Native.null?(conn)
     return error("postgres error: out of memory")
   end
+
   try check_connection(conn)
   handle = Native.memory_pointer(POINTER_SIZE)
   Native.put_pointer(handle, CELL_OFFSET, conn)
@@ -88,6 +90,7 @@ export def query(handle: Handle, sql: String, params: List[Value]) -> Result[Lis
     pq_clear(res)
     return error("postgres error: the result has the column #{repeated_name(names)} twice, alias one of them")
   end
+
   rows = read_rows(res, names)
   pq_clear(res)
   return rows
@@ -106,10 +109,12 @@ def check_connection(conn: C.Pointer) -> Result[Void]
   if pq_status(conn) != CONNECTION_OK
     return abandon(conn)
   end
+
   # Text results are read as UTF-8 whatever the server or the environment default to.
   if pq_set_client_encoding(conn, "UTF8") != CLIENT_ENCODING_SET
     return abandon(conn)
   end
+
   return ok()
 end
 
@@ -129,6 +134,7 @@ def live(handle: Handle) -> Result[C.Pointer]
   if Native.null?(conn)
     return error("postgres error: the connection is closed")
   end
+
   return ok(conn)
 end
 
@@ -140,6 +146,7 @@ def run(handle: Handle, sql: String, params: List[Value]) -> Result[C.Pointer]
     wanted = translated.count
     return error("postgres error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
   end
+
   try check_params(params)
   verb = translated.verb
   try check_begin(conn, verb)
@@ -147,6 +154,7 @@ def run(handle: Handle, sql: String, params: List[Value]) -> Result[C.Pointer]
   if Native.null?(res)
     return error("postgres error: #{pq_error_message(conn).strip}")
   end
+
   return accept(conn, res, verb)
 end
 
@@ -157,6 +165,7 @@ def check_begin(conn: C.Pointer, verb: String) -> Result[Void]
   if (verb == "begin" or verb == "start") and (status == PQTRANS_INTRANS or status == PQTRANS_INERROR)
     return error("postgres error #{ACTIVE_TRANSACTION_SQLSTATE}: a transaction is already in progress")
   end
+
   return ok()
 end
 
@@ -164,6 +173,7 @@ def noun(count: Int) -> String
   if count == 1
     return "parameter"
   end
+
   return "parameters"
 end
 
@@ -174,16 +184,19 @@ def check_params(params: List[Value]) -> Result[Void]
         if has_nul?(text)
           return error("postgres error: a text parameter contains a NUL character")
         end
+
       Value.Blob(bytes) ->
         if bytes.any? do |byte| byte < 0 or byte > BYTE_MAX end
           return error("postgres error: a blob parameter has an item outside 0..255")
         end
+
       Value.Null -> next
       Value.Int(_) -> next
       Value.Float(_) -> next
       Value.Bool(_) -> next
     end
   end
+
   return ok()
 end
 
@@ -198,8 +211,10 @@ def exec_params(conn: C.Pointer, sql: String, params: List[Value]) -> C.Pointer
     for buffer in owned
       Native.free(buffer)
     end
+
     sent
   end
+
   return res
 end
 
@@ -207,6 +222,7 @@ def max_one(count: Int) -> Int
   if count < 1
     return 1
   end
+
   return count
 end
 
@@ -222,8 +238,10 @@ def fill_values(values: C.Pointer, params: List[Value]) -> List[C.Pointer]
       Value.Blob(bytes) -> owned = owned.push(put_text(values, index, bytea_text(bytes)))
       Value.Bool(flag) -> owned = owned.push(put_text(values, index, bool_text(flag)))
     end
+
     index += 1
   end
+
   return owned
 end
 
@@ -238,6 +256,7 @@ def bool_text(flag: Bool) -> String
   if flag
     return "t"
   end
+
   return "f"
 end
 
@@ -251,6 +270,7 @@ def float_text(x: Float) -> String
   elsif text == "+nan.0"
     return "NaN"
   end
+
   return text
 end
 
@@ -267,15 +287,18 @@ def accept(conn: C.Pointer, res: C.Pointer, verb: String) -> Result[C.Pointer]
   if status == PGRES_COMMAND_OK or status == PGRES_TUPLES_OK
     return check_commit(res, verb)
   end
+
   if status == PGRES_EMPTY_QUERY
     pq_clear(res)
     return error("postgres error: the sql has no statement")
   end
+
   if status == PGRES_COPY_IN or status == PGRES_COPY_OUT
     pq_clear(res)
     leave_copy(conn, status)
     return error("postgres error: COPY is not supported")
   end
+
   message = failure(conn, res)
   pq_clear(res)
   return error(message)
@@ -288,6 +311,7 @@ def check_commit(res: C.Pointer, verb: String) -> Result[C.Pointer]
     pq_clear(res)
     return error("postgres error #{ABORTED_COMMIT_SQLSTATE}: the transaction failed, COMMIT rolled it back")
   end
+
   return ok(res)
 end
 
@@ -298,6 +322,7 @@ def failure(conn: C.Pointer, res: C.Pointer) -> String
   if code == ""
     return "postgres error: #{pq_error_message(conn).strip}"
   end
+
   return "postgres error #{code}: #{message}"
 end
 
@@ -308,6 +333,7 @@ def leave_copy(conn: C.Pointer, status: Int) -> Void
   else
     skip_copy_data(conn)
   end
+
   res = pq_get_result(conn)
   while not Native.null?(res)
     pq_clear(res)
@@ -321,6 +347,7 @@ def skip_copy_data(conn: C.Pointer) -> Void
     if read.result <= NO_MORE_COPY_DATA
       return
     end
+
     pq_freemem(read.data)
   end
 end
@@ -331,10 +358,12 @@ def changed_rows(res: C.Pointer) -> Result[Int]
   if not COUNTING_TAGS.include?(verb)
     return ok(0)
   end
+
   counted = pq_cmd_tuples(res)
   if counted == ""
     return ok(0)
   end
+
   return counted.to_i
 end
 
@@ -343,6 +372,7 @@ def column_names(res: C.Pointer) -> List[String]
   for col in 0...pq_nfields(res)
     names = names.push(pq_fname(res, col))
   end
+
   return names
 end
 
@@ -351,6 +381,7 @@ def column_types(res: C.Pointer) -> List[Int]
   for col in 0...pq_nfields(res)
     types = types.push(pq_ftype(res, col))
   end
+
   return types
 end
 
@@ -363,8 +394,10 @@ def read_rows(res: C.Pointer, names: List[String]) -> Result[List[Row]]
       value = try read_value(res, line, col, types[col])
       row = row.put(names[col], value)
     end
+
     rows = rows.push(row)
   end
+
   return ok(rows)
 end
 
@@ -372,11 +405,13 @@ def read_value(res: C.Pointer, line: Int, col: Int, oid: Int) -> Result[Value]
   if pq_getisnull(res, line, col) == IS_NULL
     return ok(Value.Null)
   end
+
   cell = pq_getvalue(res, line, col)
   if oid == BYTEA_OID
     bytes = try read_bytea(cell)
     return ok(Value.Blob(bytes))
   end
+
   text = Native.get_string(cell, 0)
   if oid == INT2_OID or oid == INT4_OID or oid == INT8_OID
     n = try text.to_i
@@ -387,6 +422,7 @@ def read_value(res: C.Pointer, line: Int, col: Int, oid: Int) -> Result[Value]
   elsif oid == BOOL_OID
     return ok(Value.Bool(text == "t"))
   end
+
   return ok(Value.Text(text))
 end
 
@@ -396,6 +432,7 @@ def read_bytea(cell: C.Pointer) -> Result[List[Int]]
   if Native.null?(unescaped.result)
     return error("postgres error: out of memory")
   end
+
   bytes = Native.get_bytes(unescaped.result, 0, unescaped.length)
   pq_freemem(unescaped.result)
   return ok(bytes)
@@ -412,12 +449,23 @@ def parse_float(text: String) -> Result[Float]
   elsif text == "NaN"
     return ok(infinity() - infinity())
   end
+
   parts = text.downcase.split("e")
   if parts.size == 1
+    return read_decimal(text)
+  end
+
+  exponent = try parts[1].to_i
+  return read_decimal(shift_point(parts[0], exponent))
+end
+
+# String#to_f reads integer text such as `-0` as 0.0; with a fraction it keeps the sign of zero.
+def read_decimal(text: String) -> Result[Float]
+  if text.include?(".")
     return text.to_f
   end
-  exponent = try parts[1].to_i
-  return shift_point(parts[0], exponent).to_f
+
+  return "#{text}.0".to_f
 end
 
 def infinity() -> Float
@@ -433,12 +481,14 @@ def shift_point(mantissa: String, exponent: Int) -> String
   if halves.size > 1
     fraction = halves[1]
   end
+
   digits = whole + fraction
   point = clamp(whole.length + exponent, 0 - EXPONENT_LIMIT, EXPONENT_LIMIT)
   shifted = place_point(digits, point)
   if negative
     return "-" + shifted
   end
+
   return shifted
 end
 
@@ -448,6 +498,7 @@ def clamp(n: Int, low: Int, high: Int) -> Int
   elsif n > high
     return high
   end
+
   return n
 end
 
@@ -458,6 +509,7 @@ def place_point(digits: String, point: Int) -> String
   elsif point >= digits.length
     return digits + List.repeat("0", point - digits.length).join("") + ".0"
   end
+
   return digits.slice(0, point) + "." + digits.slice(point, digits.length - point)
 end
 

@@ -30,16 +30,20 @@ export def open(url: String) -> Result[Connection]
   if url.start_with?("sqlite://")
     return error("db error: unsupported database url with scheme sqlite://: write sqlite:PATH, without //")
   end
+
   if url.start_with?(SQLITE_PREFIX)
     path = url.slice(SQLITE_PREFIX.length, url.length - SQLITE_PREFIX.length)
     if path.empty?
       return error("db error: unsupported database url with scheme sqlite: the path is empty")
     end
+
     return open_sqlite(path)
   end
+
   if POSTGRES_PREFIXES.any? do |prefix| url.start_with?(prefix) end
     return open_postgres(url)
   end
+
   return error("db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory: " +
                "or postgres://")
 end
@@ -128,6 +132,7 @@ def scheme(url: String) -> String
       if at > 0 and at <= MAX_SCHEME and name.to_bytes.all? do |byte| scheme_byte?(byte) end
         return name
       end
+
       return "(none)"
     error(_) -> return "(none)"
   end
