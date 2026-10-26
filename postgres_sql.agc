@@ -56,14 +56,17 @@ export def translate(sql: String) -> Result[Translated]
   if sql.include?(String.from_code(0))
     return error("postgres error: the sql contains a NUL character")
   end
+
   bytes = sql.to_bytes
   scan = Scan(out: [], at: 0, count: 0, depth: 0, ended: false, content: false, verb: "")
   while scan.at < bytes.size
     scan = try step(bytes, scan)
   end
+
   if not scan.content
     return error("postgres error: the sql has no statement")
   end
+
   translated = try String.from_bytes(scan.out)
   return ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
 end
@@ -82,6 +85,7 @@ def step(bytes: List[Int], scan: Scan) -> Result[Scan]
   elsif space?(byte)
     return ok(scan.with(out: scan.out.push(byte), at: at + 1))
   end
+
   return other(bytes, scan)
 end
 
@@ -91,6 +95,7 @@ def span(bytes: List[Int], scan: Scan, stop: Int) -> Result[Scan]
   if not comment_at?(bytes, scan.at)
     seen = try with_content(bytes, scan)
   end
+
   return ok(seen.with(out: copy_range(seen.out, bytes, scan.at, stop), at: stop))
 end
 
@@ -108,6 +113,7 @@ def other(bytes: List[Int], scan: Scan) -> Result[Scan]
   if byte == DOLLAR and digit_after?(bytes, at) and not word_before?(bytes, at)
     return error("postgres error: write ? for a parameter, not a $n placeholder")
   end
+
   return ok(seen.with(out: seen.out.push(byte), at: at + 1, depth: next_depth(seen.depth, byte)))
 end
 
@@ -116,9 +122,11 @@ def with_content(bytes: List[Int], scan: Scan) -> Result[Scan]
   if scan.ended
     return error(more_than_one())
   end
+
   if scan.content
     return ok(scan)
   end
+
   return ok(scan.with(content: true, verb: word_at(bytes, scan.at)))
 end
 
@@ -127,6 +135,7 @@ def word_at(bytes: List[Int], at: Int) -> String
   while stop < bytes.size and letter?(bytes[stop])
     stop += 1
   end
+
   # A run of ASCII letters is always valid UTF-8, so the empty fallback never shows.
   return String.from_bytes(bytes.drop(at).take(stop - at)).unwrap_or("").downcase
 end
@@ -142,6 +151,7 @@ def next_depth(depth: Int, byte: Int) -> Int
   elsif byte == RIGHT_PAREN and depth > 0
     return depth - 1
   end
+
   return depth
 end
 
@@ -150,6 +160,7 @@ def copy_range(out: List[Int], bytes: List[Int], from: Int, stop: Int) -> List[I
   for index in from...stop
     copied = copied.push(bytes[index])
   end
+
   return copied
 end
 
@@ -197,6 +208,7 @@ def span_end(bytes: List[Int], i: Int) -> Int
   elsif byte == DOLLAR and not word_before?(bytes, i)
     return dollar_end(bytes, i)
   end
+
   return i
 end
 
@@ -205,10 +217,12 @@ def escape_string?(bytes: List[Int], i: Int) -> Bool
   if i == 0
     return false
   end
+
   prefix = bytes[i - 1]
   if prefix != UPPER_E and prefix != LOWER_E
     return false
   end
+
   return not word_before?(bytes, i - 1)
 end
 
@@ -228,6 +242,7 @@ def quoted_end(bytes: List[Int], i: Int, backslash: Bool) -> Int
       at += 1
     end
   end
+
   return bytes.size
 end
 
@@ -237,6 +252,7 @@ def line_end(bytes: List[Int], i: Int) -> Int
   while at < bytes.size and bytes[at] != NEWLINE and bytes[at] != CARRIAGE_RETURN
     at += 1
   end
+
   return at
 end
 
@@ -255,9 +271,11 @@ def block_end(bytes: List[Int], i: Int) -> Int
       at += 1
     end
   end
+
   if at > bytes.size
     return bytes.size
   end
+
   return at
 end
 
@@ -267,17 +285,21 @@ def dollar_end(bytes: List[Int], i: Int) -> Int
   while tag_end < bytes.size and tag_byte?(bytes[tag_end], tag_end == i + 1)
     tag_end += 1
   end
+
   if tag_end >= bytes.size or bytes[tag_end] != DOLLAR
     return i
   end
+
   tag = bytes.drop(i).take(tag_end + 1 - i)
   at = tag_end + 1
   while at < bytes.size
     if bytes[at] == DOLLAR and matches_at?(bytes, at, tag)
       return at + tag.size
     end
+
     at += 1
   end
+
   return bytes.size
 end
 
@@ -285,6 +307,7 @@ def tag_byte?(byte: Int, first: Bool) -> Bool
   if first
     return letter?(byte) or byte == UNDERSCORE or byte >= FIRST_NON_ASCII
   end
+
   return letter?(byte) or digit?(byte) or byte == UNDERSCORE or byte >= FIRST_NON_ASCII
 end
 
@@ -292,10 +315,12 @@ def matches_at?(bytes: List[Int], at: Int, tag: List[Int]) -> Bool
   if at + tag.size > bytes.size
     return false
   end
+
   for offset in 0...tag.size
     if bytes[at + offset] != tag[offset]
       return false
     end
   end
+
   return true
 end

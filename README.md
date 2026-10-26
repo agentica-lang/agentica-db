@@ -166,9 +166,8 @@ for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done
 agentica test --steps specs/steps.agc
 ```
 
-`--steps specs/steps.agc` is always needed. SQLite needs no server. The PostgreSQL scenarios run when
-`AGENTICA_DB_POSTGRES_URL` is set; without it they are skipped, and they fail when `CI=true` (CI always sets the
-variable). `--only TEXT` runs the scenarios whose name contains `TEXT`, for example `--only "on sqlite"`. See
-`AGENTS.md`.
+`--steps specs/steps.agc` is always needed. The PostgreSQL scenarios need a server: set `AGENTICA_DB_POSTGRES_URL`
+(CI always does); without it they fail. With no server, run only the SQLite scenarios, which have "on sqlite" in
+their name: `agentica test --steps specs/steps.agc --only "on sqlite"`. See `AGENTS.md`.
 
 License: Apache-2.0.

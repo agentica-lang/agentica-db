@@ -1,20 +1,22 @@
 Feature: PostgreSQL
-  What only the PostgreSQL adapter promises. These scenarios need a server and run when AGENTICA_DB_POSTGRES_URL is
-  set; the first step of each opens the connection. Parameters travel as text and the server infers their types from
+  What only the PostgreSQL adapter promises. These scenarios need a server: set AGENTICA_DB_POSTGRES_URL.
+  The first step of each opens the connection. Parameters travel as text and the server infers their types from
   the sql, so a type comes from the context of the placeholder or from a cast.
+  In a step text, [LF], [TAB], [SP] and [NUL] stand for characters a text cannot hold, [URL] is the url of the server
+  (`[URL]&name=value` adds a libpq parameter) and [SERVER] is that url without its scheme.
 
   Scenario: Values read back unchanged in columns of every integer, float, text and bytea type
     Given a "postgres" database
     Then each value reads back unchanged in a column of its type:
-      | column type | value                           |
-      | integer     | Int 2147483647                  |
-      | smallint    | Int -32768                      |
-      | float8      | Float 0.0000001                 |
-      | float4      | Float 0.5                       |
-      | varchar(5)  | Text short                      |
-      | bytea       | Repeat 20000 Blob 255           |
-      | boolean     | Bool true                       |
-      | boolean     | Bool false                      |
+      | column type | value                                        |
+      | integer     | Int 2147483647                               |
+      | smallint    | Int -32768                                   |
+      | float8      | Float 0.0000001                              |
+      | float4      | Float 0.5                                    |
+      | varchar(5)  | Text short                                   |
+      | bytea       | Repeat 20000 Blob 255                        |
+      | boolean     | Bool true                                    |
+      | boolean     | Bool false                                   |
       | text        | Text quote ' and " and ? and ; and \\ and $1 |
 
   Scenario: Infinity and NaN round trip, and come back from the server's own spellings
@@ -23,22 +25,25 @@ Feature: PostgreSQL
       | a              | b               | c         |
       | Float Infinity | Float -Infinity | Float NaN |
     And each value reads back unchanged in a column of its type:
-      | column type | value           |
-      | float8      | Float NaN       |
-      | float8      | Float Infinity  |
+      | column type | value          |
+      | float8      | Float NaN      |
+      | float8      | Float Infinity |
 
-  Scenario: A float is read exactly, with or without an exponent
+  Scenario Outline: A float is read exactly, with or without an exponent: <literal>
     Given a "postgres" database
-    Then the query "select '5e-324'::float8 as v union all select '1.7976931348623157e308'::float8 union all select '-1.5e-07'::float8 union all select '1e+20'::float8 union all select '2.2250738585072014e-308'::float8 union all select '0.1'::float8 union all select '123456789.123456789'::float8 union all select '9007199254740993'::float8" returns:
-      | v                            |
-      | Float 5e-324                 |
-      | Float 1.7976931348623157e308 |
-      | Float -1.5e-07               |
-      | Float 1e+20                  |
-      | Float 2.2250738585072014e-308 |
-      | Float 0.1                    |
-      | Float 123456789.123456789    |
-      | Float 9007199254740993       |
+    Then the server reads the float "<literal>" exactly
+
+    Examples:
+      | literal                 |
+      | 5e-324                  |
+      | 1.7976931348623157e308  |
+      | -1.5e-07                |
+      | 1e+20                   |
+      | 2.2250738585072014e-308 |
+      | 0.1                     |
+      | -0                      |
+      | 123456789.123456789     |
+      | 9007199254740993        |
 
   Scenario: A bool is a real boolean
     Given a "postgres" database
@@ -52,12 +57,12 @@ Feature: PostgreSQL
   Scenario: A bytea reads back whole in the hex and the escape output formats
     Given a "postgres" database
     Then the query "select '\\x00ff0a5c27'::bytea as v" returns:
-      | v                    |
-      | Blob 0,255,10,92,39  |
+      | v                   |
+      | Blob 0,255,10,92,39 |
     When I execute "set bytea_output = 'escape'"
     Then the query "select '\\x00ff0a5c27'::bytea as v" returns:
-      | v                    |
-      | Blob 0,255,10,92,39  |
+      | v                   |
+      | Blob 0,255,10,92,39 |
 
   Scenario: A null of every type reads back as null
     Given a "postgres" database
@@ -76,19 +81,25 @@ Feature: PostgreSQL
 
   Scenario: A type without a variant comes back as text
     Given a "postgres" database
-    Then the query "select 12.50::numeric as n, date '2024-02-29' as d, timestamp '2024-02-29 13:14:15' as ts, '123e4567-e89b-12d3-a456-426614174000'::uuid as u, '{\"a\": 1}'::json as j, '{\"a\":1}'::jsonb as jb, array[1, 2]::int[] as a, 'ab'::char(3) as c, 'x'::name as nm, interval '1 day' as iv, 7::oid as o" returns:
-      | n          | d               | ts                        | u                                         | j                | jb               | a          | c         | nm     | iv           | o      |
-      | Text 12.50 | Text 2024-02-29 | Text 2024-02-29 13:14:15  | Text 123e4567-e89b-12d3-a456-426614174000 | Text {"a": 1}    | Text {"a": 1}    | Text {1,2} | Text ab[SP] | Text x | Text 1 day   | Text 7 |
+    Then the query "select 12.50::numeric as n, date '2024-02-29' as d, timestamp '2024-02-29 13:14:15' as ts, '123e4567-e89b-12d3-a456-426614174000'::uuid as u" returns:
+      | n          | d               | ts                       | u                                         |
+      | Text 12.50 | Text 2024-02-29 | Text 2024-02-29 13:14:15 | Text 123e4567-e89b-12d3-a456-426614174000 |
+    And the query "select '{\"a\": 1}'::json as j, '{\"a\":1}'::jsonb as jb, array[1, 2]::int[] as a" returns:
+      | j             | jb            | a          |
+      | Text {"a": 1} | Text {"a": 1} | Text {1,2} |
+    And the query "select 'ab'::char(3) as c, 'x'::name as nm, interval '1 day' as iv, 7::oid as o" returns:
+      | c           | nm     | iv         | o      |
+      | Text ab[SP] | Text x | Text 1 day | Text 7 |
 
   Scenario: Text parameters are accepted by columns of those types
     Given a "postgres" database
     And I execute "create temp table t (n numeric, d date, u uuid, j jsonb)"
     When I execute "insert into t values (?, ?, ?, ?)" with:
-      | value                                         |
-      | Text 12.50                                    |
-      | Text 2024-02-29                               |
-      | Text 123e4567-e89b-12d3-a456-426614174000     |
-      | Text {"a": [1, 2]}                            |
+      | value                                     |
+      | Text 12.50                                |
+      | Text 2024-02-29                           |
+      | Text 123e4567-e89b-12d3-a456-426614174000 |
+      | Text {"a": [1, 2]}                        |
     Then the query "select n, d, u, j from t" returns:
       | n          | d               | u                                         | j                  |
       | Text 12.50 | Text 2024-02-29 | Text 123e4567-e89b-12d3-a456-426614174000 | Text {"a": [1, 2]} |
@@ -102,17 +113,17 @@ Feature: PostgreSQL
   Scenario: A big text and a big blob come back whole
     Given a "postgres" database
     When I query "select ?::text as v" with:
-      | value                        |
-      | Repeat 40000 Text héllo      |
+      | value                   |
+      | Repeat 40000 Text héllo |
     Then the result is:
-      | v                            |
-      | Repeat 40000 Text héllo      |
+      | v                       |
+      | Repeat 40000 Text héllo |
     When I query "select ?::bytea as v" with:
-      | value                        |
-      | Repeat 20000 Blob 255        |
+      | value                 |
+      | Repeat 20000 Blob 255 |
     Then the result is:
-      | v                            |
-      | Repeat 20000 Blob 255        |
+      | v                     |
+      | Repeat 20000 Blob 255 |
 
   Scenario: UTF-8 survives a connection that asks for another client encoding
     Given a "postgres" database
@@ -134,11 +145,11 @@ Feature: PostgreSQL
       | <quoted> | Int 5 |
 
     Examples:
-      | sql                                          | quoted      |
-      | select '?' as q, ?::int as n                 | Text ?      |
-      | select 'it''s ?' as q, ?::int as n           | Text it's ? |
-      | select $$?$$ as q, ?::int as n               | Text ?      |
-      | select $t$$$ ?$t$ as q, ?::int as n          | Text $$ ?   |
+      | sql                                           | quoted      |
+      | select '?' as q, ?::int as n                  | Text ?      |
+      | select 'it''s ?' as q, ?::int as n            | Text it's ? |
+      | select $$?$$ as q, ?::int as n                | Text ?      |
+      | select $t$$$ ?$t$ as q, ?::int as n           | Text $$ ?   |
       | select '?' /* ? */ as q, -- ?[LF] ?::int as n | Text ?      |
 
   Scenario: A placeholder after an escaped quote of an E string is still a placeholder
@@ -147,7 +158,7 @@ Feature: PostgreSQL
       | value |
       | Int 5 |
     Then the result is:
-      | q      | n     |
+      | q       | n     |
       | Text '? | Int 5 |
 
   Scenario: A quoted identifier keeps its question mark
@@ -233,9 +244,9 @@ Feature: PostgreSQL
     Given a "postgres" database
     And I execute "create temp table t (a integer)"
     When I run these statements in a transaction:
-      | sql                       | failure |
-      | insert into t values (1)  |         |
-      | select 1 / 0              | ignored |
+      | sql                      | on failure |
+      | insert into t values (1) |            |
+      | select 1 / 0             | carry on   |
     Then it fails with "postgres error 25P02: "
     And the query "select a from t" returns:
       | a |
@@ -320,9 +331,9 @@ Feature: PostgreSQL
     Then it fails with "postgres error: "
 
     Examples:
-      | url                                                                 |
+      | url                                                                  |
       | postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=2 |
-      | postgres://localhost:notaport/db                                    |
+      | postgres://localhost:notaport/db                                     |
 
   Scenario: A url with a NUL character is refused before libpq sees it
     Given a "postgres" database

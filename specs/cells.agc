@@ -18,30 +18,16 @@ MARKERS = {
   "[SP]": 32,
 }
 
-## Replaces the markers of control characters in `text` with the characters.
+## Replaces the markers of characters in `text` with the characters.
 export def expand(text: String) -> String
   return MARKERS.keys.reduce(text) do |acc, marker| acc.replace(marker, String.from_code(MARKERS[marker])) end
 end
 
 ## Reads a typed cell.
 export def parse(cell: String) -> Result[Value]
-  split = cell.index_of(" ")
-  tag = cell
-  rest = ""
-  if split.ok?
-    tag = cell.slice(0, split.unwrap!)
-    rest = cell.slice(split.unwrap! + 1, cell.length - split.unwrap! - 1)
-  end
-
-  case tag
-    "Null" -> return ok(Value.Null)
-    "Int" -> return ok(Value.Int(try rest.to_i))
-    "Float" -> return parse_float(rest)
-    "Text" -> return ok(Value.Text(expand(rest)))
-    "Bool" -> return parse_bool(rest)
-    "Blob" -> return parse_blob(rest)
-    "Repeat" -> return parse_repeat(rest)
-    _ -> return error("unknown cell type in #{cell.inspect}")
+  case cell.index_of(" ")
+    error(_) -> return parse_tagged(cell, "")
+    ok(at) -> return parse_tagged(cell.slice(0, at), cell.slice(at + 1, cell.length - at - 1))
   end
 end
 
@@ -81,6 +67,19 @@ export def same?(left: Value, right: Value) -> Bool
   return Test.eq(left, right).ok?
 end
 
+def parse_tagged(tag: String, rest: String) -> Result[Value]
+  case tag
+    "Null" -> return ok(Value.Null)
+    "Int" -> return ok(Value.Int(try rest.to_i))
+    "Float" -> return parse_float(rest)
+    "Text" -> return ok(Value.Text(expand(rest)))
+    "Bool" -> return parse_bool(rest)
+    "Blob" -> return parse_blob(rest)
+    "Repeat" -> return parse_repeat(rest)
+    _ -> return error("unknown cell type in #{tag.inspect}")
+  end
+end
+
 # Infinity is what a product overflows to; NaN is infinity minus itself.
 def parse_float(text: String) -> Result[Value]
   infinity = 1.0
@@ -92,38 +91,8 @@ def parse_float(text: String) -> Result[Value]
     "Infinity" -> return ok(Value.Float(infinity))
     "-Infinity" -> return ok(Value.Float(0.0 - infinity))
     "NaN" -> return ok(Value.Float(infinity - infinity))
-    _ ->
-      digits = try plain(text)
-      return ok(Value.Float(try digits.to_f))
+    _ -> return ok(Value.Float(try text.to_f))
   end
-end
-
-# `String.to_f` does not read an exponent: `5e-324` becomes its decimal digits, by moving the point in the text.
-def plain(text: String) -> Result[String]
-  parts = text.split("e")
-  if parts.size == 1
-    return ok(text)
-  end
-
-  sign = ""
-  mantissa = parts[0]
-  if mantissa.start_with?("-")
-    sign = "-"
-    mantissa = mantissa.slice(1, mantissa.length - 1)
-  end
-
-  halves = mantissa.split(".")
-  digits = halves.join("")
-  point = halves[0].length + (try parts[1].replace("+", "").to_i)
-  if point <= 0
-    return ok("#{sign}0.#{List.repeat("0", 0 - point).join("")}#{digits}")
-  end
-
-  if point >= digits.length
-    return ok("#{sign}#{digits}#{List.repeat("0", point - digits.length).join("")}.0")
-  end
-
-  return ok("#{sign}#{digits.slice(0, point)}.#{digits.slice(point, digits.length - point)}")
 end
 
 def parse_bool(text: String) -> Result[Value]
@@ -147,13 +116,9 @@ end
 
 # `Repeat COUNT Text|Blob ...`: the text or the bytes of the inner cell, COUNT times.
 def parse_repeat(text: String) -> Result[Value]
-  split = text.index_of(" ")
-  if not split.ok?
-    return error("a Repeat cell is Repeat COUNT CELL")
-  end
-
-  count = try text.slice(0, split.unwrap!).to_i
-  inner = try parse(text.slice(split.unwrap! + 1, text.length - split.unwrap! - 1))
+  at = try text.index_of(" ")
+  count = try text.slice(0, at).to_i
+  inner = try parse(text.slice(at + 1, text.length - at - 1))
   case inner
     Value.Text(piece) -> return ok(Value.Text(List.repeat(piece, count).join("")))
     Value.Blob(bytes) -> return ok(Value.Blob(List.repeat(bytes, count).flat_map do |chunk| chunk end))

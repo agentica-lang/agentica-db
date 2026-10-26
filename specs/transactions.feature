@@ -6,7 +6,7 @@ Feature: Transactions
     Given a "<adapter>" database
     And I execute "create temp table users (name text not null unique)"
     When I run these statements in a transaction:
-      | sql                                   |
+      | sql                                     |
       | insert into users (name) values ('ana') |
       | insert into users (name) values ('bob') |
     Then it succeeds
@@ -25,8 +25,8 @@ Feature: Transactions
     And I execute "create temp table users (name text not null unique)"
     And I execute "insert into users (name) values ('kept')"
     When I run these statements in a transaction that fails with "stop here":
-      | sql                                       |
-      | insert into users (name) values ('lost')  |
+      | sql                                      |
+      | insert into users (name) values ('lost') |
     Then it fails with exactly "stop here"
     And the query "select name from users" returns:
       | name      |
@@ -58,10 +58,9 @@ Feature: Transactions
   Scenario Outline: Transactions do not nest, and a new one works after the refusal on <adapter>
     Given a "<adapter>" database
     And I execute "create temp table users (name text not null unique)"
-    When I run these statements in a transaction:
+    When I run these statements in a transaction that starts a transaction inside it:
       | sql                                       |
       | insert into users (name) values ('inner') |
-      | (nested transaction)                      |
     Then it fails with "<prefix>"
     And the query "select name from users" returns:
       | name |
@@ -74,6 +73,6 @@ Feature: Transactions
       | Text later |
 
     Examples:
-      | adapter  | prefix                                                   |
+      | adapter  | prefix                                                          |
       | sqlite   | sqlite error 1: cannot start a transaction within a transaction |
-      | postgres | postgres error 25001: |
+      | postgres | postgres error 25001:                                           |

@@ -1,8 +1,10 @@
 Feature: SQLite
   What only the SQLite adapter promises. SQLite has no boolean: a Bool is stored as 0 or 1 and reads back as an Int,
   and a NaN is stored as NULL.
+  In a step text, [NUL], [FF] and [VT] stand for characters a text cannot hold, and [SCRATCH] is a folder of the
+  scenario under tmp/ (it is emptied when the next scenario starts).
 
-  Scenario: A bool false reads back as the int 0
+  Scenario: A bool false reads back as the int 0 on sqlite
     Given a "sqlite" database
     When I execute "create temp table t (v)"
     And I execute "insert into t values (?)" with:
@@ -12,7 +14,7 @@ Feature: SQLite
       | v     |
       | Int 0 |
 
-  Scenario: A NaN is stored as null
+  Scenario: A NaN is stored as null on sqlite
     Given a "sqlite" database
     When I execute "create temp table t (v)"
     And I execute "insert into t values (?)" with:
@@ -22,32 +24,32 @@ Feature: SQLite
       | v    |
       | Null |
 
-  Scenario: An infinity from the engine is a float
+  Scenario: An infinity from the engine is a float on sqlite
     Given a "sqlite" database
     Then the query "select 9e999 as v" returns:
       | v              |
       | Float Infinity |
 
-  Scenario: A text with an embedded NUL reads back whole
+  Scenario: A text with an embedded NUL reads back whole on sqlite
     Given a "sqlite" database
     Then the query "select 'a' || char(0) || 'b' as s" returns:
-      | s             |
-      | Text a[NUL]b  |
+      | s            |
+      | Text a[NUL]b |
 
-  Scenario: A form feed is a space and a vertical tab is refused
+  Scenario: A form feed is a space and a vertical tab is refused on sqlite
     Given a "sqlite" database
     When I execute "[FF]"
     Then it fails with exactly "sqlite error: the sql has no statement"
     When I execute "[VT]"
     Then it fails with exactly 'sqlite error 1: unrecognized token: "[VT]"'
 
-  Scenario: Using a closed connection ends only the task that used it
+  Scenario: Using a closed connection ends only the task that used it on sqlite
     Given a "sqlite" database
     When I close the database
     And another task executes "select 1"
     Then it fails mentioning "RUNTIME-NATIVE-CLOSED"
 
-  Scenario: A file database keeps its rows after it is closed and opened again
+  Scenario: A file database keeps its rows after it is closed and opened again on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/file.db"
     And I execute "create table t (x integer)"
@@ -60,13 +62,12 @@ Feature: SQLite
       | x      |
       | Int 42 |
     When I close the database
-    And I remove the files I created
 
-  Scenario: A missing directory fails to open with the SQLite code
+  Scenario: A missing directory fails to open with the SQLite code on sqlite
     When I open "sqlite:/no/such/dir/x.db"
     Then it fails with exactly "sqlite error 14: unable to open database file"
 
-  Scenario: A statement is finalized when a row fails, so the table can be dropped
+  Scenario: A statement is finalized when a row fails, so the table can be dropped on sqlite
     Given a "sqlite" database
     And I execute "create table t (x integer)"
     And I execute "insert into t values (1), (2), (3), (4)"
@@ -76,7 +77,7 @@ Feature: SQLite
     When I execute "drop table t"
     Then the changed row count is 0
 
-  Scenario: Statements that are refused before they run are finalized, so the table can be dropped
+  Scenario: Statements that are refused before they run are finalized, so the table can be dropped on sqlite
     Given a "sqlite" database
     And I execute "create table t (a)"
     When I query "select * from t; select 2"

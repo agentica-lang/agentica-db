@@ -12,7 +12,7 @@ Feature: Opening and closing a database
       | sqlite   |
       | postgres |
 
-  Scenario Outline: An unknown url scheme is a db error: <url>
+  Scenario Outline: An unknown url scheme is a db error: <url> (on sqlite, no server)
     When I open "<url>"
     Then it fails with "db error: "
     And it fails mentioning "<scheme>"
@@ -22,17 +22,17 @@ Feature: Opening and closing a database
       | ftp://host/db     | ftp    |
       | pg://user@host/db | pg     |
 
-  Scenario Outline: An error never shows the password: <url>
+  Scenario Outline: An error never shows the password: <url> (on sqlite, no server)
     When I open "<url>"
     Then it fails with "db error: "
     And the failure never shows "hunter2"
 
     Examples:
-      | url                        |
-      | pg://user:hunter2@host/db  |
-      | host=h password=hunter2:x  |
+      | url                       |
+      | pg://user:hunter2@host/db |
+      | host=h password=hunter2:x |
 
-  Scenario Outline: Only sqlite:PATH names a SQLite database: <url>
+  Scenario Outline: Only sqlite:PATH names a SQLite database: <url> (on sqlite, no server)
     When I open "<url>"
     Then it fails with "db error: "
 

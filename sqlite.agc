@@ -63,12 +63,14 @@ export def open(path: String) -> Result[Handle]
   if has_nul?(path)
     return error("sqlite error: the path contains a NUL character")
   end
+
   opened = sqlite3_open(path)
   if opened.result != SQLITE_OK
     # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
     Native.close(opened.db)
     return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
+
   sqlite3_busy_timeout(opened.db, BUSY_TIMEOUT_MS)
   return ok(opened.db)
 end
@@ -88,6 +90,7 @@ export def query(conn: Handle, sql: String, params: List[Value]) -> Result[List[
     Native.close(stmt)
     return error("sqlite error: the result has the column #{repeated_name(names)} twice, alias one of them")
   end
+
   rows = collect(conn, stmt, names, true)
   Native.close(stmt)
   return rows
@@ -115,6 +118,7 @@ def changes_since(conn: Handle, before: Int) -> Int
   if sqlite3_total_changes(conn) == before
     return 0
   end
+
   return sqlite3_changes(conn)
 end
 
@@ -122,6 +126,7 @@ def prepare(conn: Handle, sql: String, params: List[Value]) -> Result[Stmt]
   if has_nul?(sql)
     return error("sqlite error: the sql contains a NUL character")
   end
+
   try check_params(params)
   # The sql goes through an owned buffer, not a C.String: SQLite points `tail` into its copy, and a C.String copy
   # lives only during the call.
@@ -132,8 +137,10 @@ def prepare(conn: Handle, sql: String, params: List[Value]) -> Result[Stmt]
     if prepared.result != SQLITE_OK
       return error(failure(conn, prepared.result))
     end
+
     ok(prepared.stmt)
   end
+
   stmt = try made
   bound = bind_all(conn, stmt, params)
   case bound
@@ -155,21 +162,26 @@ def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
   if probe.result != SQLITE_OK
     return error(failure(conn, probe.result))
   end
+
   if Native.null?(probe.stmt)
     return error("sqlite error: the sql has no statement")
   end
+
   sqlite3_finalize_pointer(probe.stmt)
   if Native.get_string(probe.tail, 0) == ""
     return ok()
   end
+
   more = sqlite3_probe(conn, probe.tail, NUL_TERMINATED)
   # Text after the first statement that is only comments gives a NULL statement: still one statement.
   if more.result == SQLITE_OK and Native.null?(more.stmt)
     return ok()
   end
+
   if more.result == SQLITE_OK
     sqlite3_finalize_pointer(more.stmt)
   end
+
   return error("sqlite error: the sql has more than one statement")
 end
 
@@ -180,16 +192,19 @@ def check_params(params: List[Value]) -> Result[Void]
         if has_nul?(text)
           return error("sqlite error: a text parameter contains a NUL character")
         end
+
       Value.Blob(bytes) ->
         if bytes.any? do |byte| byte < 0 or byte > BYTE_MAX end
           return error("sqlite error: a blob parameter has an item outside 0..255")
         end
+
       Value.Null -> next
       Value.Int(_) -> next
       Value.Float(_) -> next
       Value.Bool(_) -> next
     end
   end
+
   return ok()
 end
 
@@ -198,14 +213,17 @@ def bind_all(conn: Handle, stmt: Stmt, params: List[Value]) -> Result[Void]
   if wanted != params.size
     return error("sqlite error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
   end
+
   index = 1
   for param in params
     code = bind_value(stmt, index, param)
     if code != SQLITE_OK
       return error(failure(conn, code))
     end
+
     index += 1
   end
+
   return ok()
 end
 
@@ -213,6 +231,7 @@ def noun(count: Int) -> String
   if count == 1
     return "parameter"
   end
+
   return "parameters"
 end
 
@@ -232,6 +251,7 @@ def bind_blob(stmt: Stmt, index: Int, bytes: List[Int]) -> Int
   if bytes.empty?
     return sqlite3_bind_zeroblob(stmt, index, 0)
   end
+
   return sqlite3_bind_blob(stmt, index, bytes, bytes.size, transient())
 end
 
@@ -243,6 +263,7 @@ def bool_int(flag: Bool) -> Int
   if flag
     return 1
   end
+
   return 0
 end
 
@@ -254,13 +275,16 @@ def collect(conn: Handle, stmt: Stmt, names: List[String], keep: Bool) -> Result
     if code == SQLITE_DONE
       return ok(rows)
     end
+
     if code != SQLITE_ROW
       return error(failure(conn, code))
     end
+
     if keep
       rows = rows.push(read_row(stmt, names))
     end
   end
+
   return ok(rows)
 end
 
@@ -270,6 +294,7 @@ def column_names(stmt: Stmt) -> List[String]
   for col in 0...count
     names = names.push(sqlite3_column_name(stmt, col))
   end
+
   return names
 end
 
@@ -280,6 +305,7 @@ def read_row(stmt: Stmt, names: List[String]) -> Row
     row = row.put(name, read_value(stmt, index))
     index += 1
   end
+
   return row
 end
 
@@ -297,6 +323,7 @@ def read_value(stmt: Stmt, col: Int) -> Value
     blob = sqlite3_column_blob(stmt, col)
     return Value.Blob(Native.get_bytes(blob, 0, sqlite3_column_bytes(stmt, col)))
   end
+
   return Value.Null
 end
 

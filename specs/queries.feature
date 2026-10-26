@@ -42,8 +42,7 @@ Feature: Queries and statements
 
   Scenario Outline: A statement without a result gives no rows on <adapter>
     Given a "<adapter>" database
-    When I query "create temp table t (x integer)"
-    Then the result is:
+    Then the query "create temp table t (x integer)" returns:
       | x |
 
     Examples:
@@ -94,7 +93,7 @@ Feature: Queries and statements
     Given a "<adapter>" database
     And I execute "create temp table users (name text not null unique, age integer)"
     When I execute "insert into users (name) values (?)" with:
-      | value                        |
+      | value                         |
       | Text x'); drop table users;-- |
     Then the query "select name from users" returns:
       | name                          |
@@ -105,31 +104,31 @@ Feature: Queries and statements
       | sqlite   |
       | postgres |
 
-  Scenario Outline: Only the first and only statement runs on <adapter>
+  Scenario Outline: Only the first and only statement runs on <adapter>: <sql>
     Given a "<adapter>" database
     When I execute "<sql>"
     Then it fails with exactly "<adapter> error: the sql has more than one statement"
 
     Examples:
-      | adapter  | sql                                                  |
-      | sqlite   | select 1; select 2                                   |
-      | sqlite   | select 1; selec 2                                    |
-      | sqlite   | create temp table t(a); insert into t values (1)     |
-      | postgres | select 1; select 2                                   |
-      | postgres | select 1; selec 2                                    |
-      | postgres | create temp table t(a); insert into t values (1)     |
+      | adapter  | sql                                              |
+      | sqlite   | select 1; select 2                               |
+      | sqlite   | select 1; selec 2                                |
+      | sqlite   | create temp table t(a); insert into t values (1) |
+      | postgres | select 1; select 2                               |
+      | postgres | select 1; selec 2                                |
+      | postgres | create temp table t(a); insert into t values (1) |
 
-  Scenario Outline: A trailing comment or semicolon is not a second statement on <adapter>
+  Scenario Outline: A trailing comment or semicolon is not a second statement on <adapter>: <sql>
     Given a "<adapter>" database
     Then the query "<sql>" returns:
       | one   |
       | Int 1 |
 
     Examples:
-      | adapter  | sql                  |
-      | sqlite   | select 1 as one -- done |
+      | adapter  | sql                      |
+      | sqlite   | select 1 as one -- done  |
       | sqlite   | select 1 as one; -- done |
-      | postgres | select 1 as one -- done |
+      | postgres | select 1 as one -- done  |
       | postgres | select 1 as one; -- done |
 
   Scenario Outline: A result with a repeated column name is an error on <adapter>
