@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  AGENTICA_VERSION: 0.10.0
+  AGENTICA_SHA256: ca6b44111db19884aa4bc27ae021a753731165314d2de5a5ca892832046e5f0a
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0
+
+      - name: Install the pinned Agentica release
+        run: |
+          archive="agentica-${AGENTICA_VERSION}-linux-x86_64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/sonic182/agentica/releases/download/${AGENTICA_VERSION}/$archive"
+          echo "${AGENTICA_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/agentica-${AGENTICA_VERSION}-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Check
+        run: |
+          agentica --version
+          for file in *.agc test/*.agc; do agentica check "$file"; done
+
+      - name: Test
+        run: agentica test
