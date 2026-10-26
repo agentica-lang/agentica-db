@@ -358,7 +358,7 @@ def round_trip(conn: Db.Connection, kind: String, value: Value) -> String
 end
 
 # The server is the judge of a float: the driver reads the literal, sends the float back as a parameter, and the
-# server says whether it is the literal.
+# server says whether it is the literal. It compares the text forms, since `-0 = 0` is true for float8.
 def float_oracle(state: State, literal: String) -> Handled
   if state.conns.empty?
     return Handled(state: state, reply: NO_DATABASE)
@@ -368,7 +368,7 @@ def float_oracle(state: State, literal: String) -> Handled
   case Db.query(conn, "select '#{literal}'::float8 as v", [])
     error(message) -> return Handled(state: state, reply: "reading #{literal} failed: #{message}")
     ok(rows) ->
-      sql = "select ?::float8 = '#{literal}'::float8 as v"
+      sql = "select (?::float8)::text = ('#{literal}'::float8)::text as v"
       case Db.query(conn, sql, [rows[0]["v"]])
         error(message) -> return Handled(state: state, reply: "sending #{literal} back failed: #{message}")
         ok(same) if Cells.same?(same[0]["v"], Value.Bool(true)) -> return reply_ok(state)

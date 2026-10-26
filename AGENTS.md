@@ -46,7 +46,8 @@ with its placeholder scanner `postgres_sql.agc`), all through the C FFI. No C co
   `[SCRATCH]` is a folder under `tmp/`. A feature that uses a marker says so in its description.
 - Add a step only when no step can say it. Lines of 119 characters at most, except a step line that holds a long sql.
 - A statement that fails must be checked by the next `Then` (`it fails with ...`): the driver refuses any new request
-  while the last failure is unchecked, so a failing setup step fails the scenario.
+  while the last failure is unchecked, so a failing setup step fails the scenario. The last step of a scenario is a
+  `Then`, since nothing comes after it to refuse.
 - Scenario names are unique: put a column of the Examples in the title of an outline with several rows.
 - `test/*_test.agc` is only for a pure helper that needs no connection: the placeholder scanner
   (`test/postgres_sql_test.agc`). Anything that opens a connection is a scenario.

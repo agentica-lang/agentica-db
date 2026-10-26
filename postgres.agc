@@ -452,11 +452,20 @@ def parse_float(text: String) -> Result[Float]
 
   parts = text.downcase.split("e")
   if parts.size == 1
-    return text.to_f
+    return read_decimal(text)
   end
 
   exponent = try parts[1].to_i
-  return shift_point(parts[0], exponent).to_f
+  return read_decimal(shift_point(parts[0], exponent))
+end
+
+# String#to_f reads integer text such as `-0` as 0.0; with a fraction it keeps the sign of zero.
+def read_decimal(text: String) -> Result[Float]
+  if text.include?(".")
+    return text.to_f
+  end
+
+  return "#{text}.0".to_f
 end
 
 def infinity() -> Float

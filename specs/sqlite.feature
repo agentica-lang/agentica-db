@@ -61,7 +61,6 @@ Feature: SQLite
     Then the query "select x from t" returns:
       | x      |
       | Int 42 |
-    When I close the database
 
   Scenario: A missing directory fails to open with the SQLite code on sqlite
     When I open "sqlite:/no/such/dir/x.db"
