@@ -1,0 +1,7 @@
+name = "db"
+
+# The system SQLite; `extern "sqlite3"` in sqlite.agc opens the entry of the running system.
+[native.sqlite3]
+linux = { system = "libsqlite3.so.0" }
+macos = { system = "libsqlite3.dylib" }
+windows = { system = "winsqlite3.dll" }
