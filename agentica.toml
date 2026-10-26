@@ -21,3 +21,7 @@ windows = { system = "libpq.dll" }
 linux = { system = "libmariadb.so.3" }
 macos = { system = "libmariadb.3.dylib" }
 windows = { system = "libmariadb.dll" }
+
+# Every bare `end` is followed by an empty line (AGENTS.md).
+[style]
+blank_line_after_end = true

@@ -9,16 +9,15 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`.
 - `for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done`, then
-  `agentica test --steps specs/steps.agc`: the features of `specs/` and the unit tests of `test/`. Always give
-  `--steps`: without it every step is undefined. SQLite needs no server. `--only TEXT` keeps the scenarios and tests
-  whose name contains `TEXT`.
+  `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and the unit tests of `test/`.
+  SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
   a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
   and in CI: there is no skipped scenario. Without a server run only the SQLite ones:
-  `agentica test --steps specs/steps.agc --only "on sqlite"` (every SQLite scenario has "on sqlite" in its name).
+  `agentica test --only "on sqlite"` (every SQLite scenario has "on sqlite" in its name).
   Locally: `docker run -d --rm --name agentica-db-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:17`,
-  then `AGENTICA_DB_POSTGRES_URL='postgres://postgres:pw@127.0.0.1:55432/postgres?sslmode=disable' agentica test
-  --steps specs/steps.agc`, and `docker stop agentica-db-pg` when done. For MySQL:
+  then `AGENTICA_DB_POSTGRES_URL='postgres://postgres:pw@127.0.0.1:55432/postgres?sslmode=disable' agentica test`,
+  and `docker stop agentica-db-pg` when done. For MySQL:
   `docker run -d --rm --name agentica-db-mysql -e MARIADB_ROOT_PASSWORD=pw -p 127.0.0.1:53306:3306 mariadb:11`, then
   `AGENTICA_DB_MYSQL_URL='mysql://root:pw@127.0.0.1:53306/mysql'` (an address, never `localhost`: the client library
   takes that for the local socket), and `docker stop agentica-db-mysql` when done. Run the whole suite against MySQL
@@ -66,4 +65,5 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   repository. Lines are at most 119 characters.
 - Every user-visible change adds a line under `## [Unreleased]` of `CHANGELOG.md`.
 - A line that is only `end` is followed by an empty line, except before another `end`, `else`, `elsif`, a closing `)`
-  or `]`, or the end of the file (all the `.agc` files follow it).
+  or `]`, or the end of the file (`[style] blank_line_after_end` in `agentica.toml` makes `agentica check` enforce
+  it).

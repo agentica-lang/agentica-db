@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 env:
-  AGENTICA_VERSION: 0.10.0
-  AGENTICA_SHA256: ca6b44111db19884aa4bc27ae021a753731165314d2de5a5ca892832046e5f0a
+  AGENTICA_VERSION: 0.11.0
+  AGENTICA_SHA256: af5cfbdb83c892c852abc44ea58cdafaebec5cfe6344428fd7b5249b6d209b73
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
@@ -80,4 +80,4 @@ jobs:
         env:
           AGENTICA_DB_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
           AGENTICA_DB_MYSQL_URL: mysql://root:pw@127.0.0.1:3306/mysql
-        run: agentica test --steps specs/steps.agc
+        run: agentica test

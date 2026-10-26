@@ -9,7 +9,7 @@ with one adapter per database, all through the C FFI (no C code of ours).
 | PostgreSQL | `postgres.agc`, the system `libpq` | available |
 | MySQL, MariaDB | `mysql.agc`, the system `libmariadb` | available |
 
-Needs Agentica 0.10.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
+Needs Agentica 0.11.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
 Linux, `libsqlite3.dylib` on macOS, `winsqlite3.dll` on Windows), libpq (`libpq.so.5`, `libpq.5.dylib`,
 `libpq.dll`; PostgreSQL 12 or later) or MariaDB Connector/C (`libmariadb.so.3`, `libmariadb.3.dylib`,
 `libmariadb.dll`; package `libmariadb3` on Debian and Ubuntu). A library is loaded when the first call needs it, so
@@ -245,12 +245,12 @@ the steps. Only the pure helpers, the scanners and the url reader, have unit tes
 
 ```sh
 for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done
-agentica test --steps specs/steps.agc
+agentica test
 ```
 
-`--steps specs/steps.agc` is always needed. The PostgreSQL scenarios need a server: set `AGENTICA_DB_POSTGRES_URL`;
-the MySQL ones set `AGENTICA_DB_MYSQL_URL` (`mysql://root:pw@127.0.0.1:3306/mysql`). CI always does; without them the
-scenarios fail. With no server, run only the SQLite scenarios, which have "on sqlite" in
-their name: `agentica test --steps specs/steps.agc --only "on sqlite"`. See `AGENTS.md`.
+`agentica test` finds `specs/steps.agc` by itself. The PostgreSQL scenarios need a server: set
+`AGENTICA_DB_POSTGRES_URL`; the MySQL ones set `AGENTICA_DB_MYSQL_URL` (`mysql://root:pw@127.0.0.1:3306/mysql`).
+CI always does; without them the scenarios fail. With no server, run only the SQLite scenarios, which have
+"on sqlite" in their name: `agentica test --only "on sqlite"`. See `AGENTS.md`.
 
 License: Apache-2.0.
