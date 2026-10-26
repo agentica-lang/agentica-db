@@ -16,4 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The behavior of the API is specified as Gherkin features in `specs/`, run by `agentica test`;
   the unit and integration tests they replace are removed.
 - `agentica.toml` sets `[style] blank_line_after_end`, so `agentica check` enforces the empty line after a bare `end`.
+- `Db` re-exports `Value` and `Row`: `import Db from "pkg/db/db"` is enough, and `Db.Value.Text(...)` replaces the
+  import of `value`.
+- The PostgreSQL connection is a native resource freed by `PQfinish`: the end of the task that opened it closes it,
+  as for SQLite. `Db.close` still works, and a use after it is still `postgres error: the connection is closed`.
 - Needs Agentica 0.11.0 (CI and README).

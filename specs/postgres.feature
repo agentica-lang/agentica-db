@@ -321,6 +321,10 @@ Feature: PostgreSQL
       | v      |
       | Int 42 |
 
+  Scenario: The end of a task closes the connection it opened
+    Given a "postgres" database
+    Then a task leaves a connection named "agentica_db_leak" open, and the server drops it within 3000 ms
+
   Scenario: Other tasks run while a query waits for the server
     Given a "postgres" database
     Then another task keeps running during "select pg_sleep(0.5)::text as v", with gaps under 300 milliseconds

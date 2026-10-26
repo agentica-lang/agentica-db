@@ -2,10 +2,10 @@
 ## and MariaDB servers alike.
 ##
 ## `open` gives a `Handle`, which the task that opened it owns. Close it with `close`: the end of the task frees the
-## handle (a cell that holds the connection pointer) but does not close the connection, as for PostgreSQL. The
-## server session, its socket and the locks of an open transaction stay until `close` or the end of the process. The
-## cell is what makes a closed handle give `mysql error: the connection is closed`, where a resource would halt the
-## task.
+## handle (a cell that holds the connection pointer) but does not close the connection, unlike PostgreSQL, whose
+## connection is a resource next to the same closed cell. The server session, its socket and the locks of an open
+## transaction stay until `close` or the end of the process. The cell is what makes a closed handle give `mysql
+## error: the connection is closed`.
 ##
 ## Every statement goes through the prepared statement API (`mysql_stmt_*`): the sql is sent as it is, with its `?`
 ## placeholders, and the values are bound, never spliced.

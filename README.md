@@ -37,10 +37,9 @@ you edited) writes `agentica.lock` and `deps/db/`.
 
 ```ruby
 import Db from "pkg/db/db"
-import {Value} from "pkg/db/value"
 
 def save(conn: Db.Connection, name: String, age: Int) -> Result[Int]
-  return Db.execute(conn, "insert into users (name, age) values (?, ?)", [Value.Text(name), Value.Int(age)])
+  return Db.execute(conn, "insert into users (name, age) values (?, ?)", [Db.Value.Text(name), Db.Value.Int(age)])
 end
 
 def run() -> Result[Void]
@@ -51,7 +50,8 @@ def run() -> Result[Void]
     try save(tx, "Bob", 27)
     ok()
   end
-  rows = try Db.query(conn, "select name, age from users where age > ?", [Value.Int(28)])
+
+  rows = try Db.query(conn, "select name, age from users where age > ?", [Db.Value.Int(28)])
   puts(rows)   # [{"name": Value.Text("Ana"), "age": Value.Int(31)}]
   Db.close(conn)
   return ok()
@@ -67,7 +67,7 @@ end
 
 ## API
 
-`db.agc` (`import Db from "pkg/db/db"`):
+`db.agc` (`import Db from "pkg/db/db"`) is the whole API, types included:
 
 | Function | Gives |
 |---|---|
@@ -75,13 +75,14 @@ end
 | `open_sqlite(path)` | `Result[Connection]` |
 | `open_postgres(url)` | `Result[Connection]`, a libpq url or a conninfo string (`host=localhost dbname=app`) |
 | `open_mysql(url)` | `Result[Connection]`, a `mysql://` or `mariadb://` url |
-| `query(conn, sql, params)` | `Result[List[Row]]`, a `Row` is `Map[String, Value]` in column order |
+| `query(conn, sql, params)` | `Result[List[Db.Row]]`, a `Db.Row` is `Map[String, Db.Value]` in column order |
 | `execute(conn, sql, params)` | `Result[Int]`, the rows inserted, updated or deleted |
 | `transaction(conn) do \|tx\| ... end` | `Result[Void]`; BEGIN, then COMMIT on `ok`, ROLLBACK on `error` |
 | `close(conn)` | `Void`; closing twice is safe |
 
-`value.agc` (`import {Value} from "pkg/db/value"`): `Value.Null`, `Value.Int(Int)`, `Value.Float(Float)`,
-`Value.Text(String)`, `Value.Blob(List[Int])`, `Value.Bool(Bool)`.
+`Db` also re-exports the types of `value.agc`, so one import is enough: `Db.Value` (`Db.Value.Null`,
+`Db.Value.Int(Int)`, `Db.Value.Float(Float)`, `Db.Value.Text(String)`, `Db.Value.Blob(List[Int])`,
+`Db.Value.Bool(Bool)`) and `Db.Row`.
 
 - Placeholders are `?`, always bound (PostgreSQL gets `$1..$n`, MySQL takes `?` as it is; see below); values are
   never spliced into the sql.
@@ -94,23 +95,23 @@ end
   SQLSTATE, the code of MySQL is the number of the server or the client library (see below).
 - Only the first and only statement of the string runs; two statements are an error. A result with two columns of
   one name is an error: alias them.
-- Types: a database type without a `Value` variant comes back as `Value.Text` (the contract for PostgreSQL and
-  MySQL types such as numeric, date or uuid). SQLite has no boolean: `Value.Bool` is stored as 0 or 1 and reads
-  back as `Value.Int`. NaN is stored as NULL.
+- Types: a database type without a `Value` variant comes back as `Db.Value.Text` (the contract for PostgreSQL and
+  MySQL types such as numeric, date or uuid). SQLite has no boolean: `Db.Value.Bool` is stored as 0 or 1 and reads
+  back as `Db.Value.Int`. NaN is stored as NULL.
 - SQLite keeps its defaults: foreign keys are off until you run `PRAGMA foreign_keys = ON`.
 - `transaction` starts with `BEGIN IMMEDIATE` on SQLite, which needs write access to the database (a read-only
   database cannot open a transaction). A runtime error (a halt) inside the body stops the task
-  and leaves the transaction open; closing the connection rolls it back. For SQLite the end of the task closes it;
-  for PostgreSQL and MySQL the transaction and its locks stay until `Db.close` or the end of the process.
-- A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it; for SQLite so
-  does the end of the task, but for PostgreSQL and MySQL only `Db.close` does (see below). Using a SQLite connection
+  and leaves the transaction open; closing the connection rolls it back. For SQLite and PostgreSQL the end of the
+  task closes it; for MySQL the transaction and its locks stay until `Db.close` or the end of the process.
+- A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it; for SQLite and
+  PostgreSQL so does the end of the task, but for MySQL only `Db.close` does (see below). Using a SQLite connection
   after `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
 
 ## PostgreSQL
 
 ```ruby
 conn = try Db.open("postgres://user:pass@localhost:5432/app?sslmode=disable")
-rows = try Db.query(conn, "select id, name from users where age > ?::int", [Value.Int(28)])
+rows = try Db.query(conn, "select id, name from users where age > ?::int", [Db.Value.Int(28)])
 ```
 
 - The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`,
@@ -149,8 +150,8 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Valu
 - `transaction` starts with `BEGIN`. Transactions do not nest (`postgres error 25001`; PostgreSQL itself only warns).
   A statement that fails inside a transaction aborts it: a `COMMIT` after that does not fail on the server (it rolls
   back), so this package turns it into `postgres error 25P02`, and `transaction` gives that error.
-- libpq's `PQfinish` cannot be the free function of an Agentica resource yet, so the end of the task does not close
-  the connection: call `Db.close`. Using a connection after `close` is `postgres error: the connection is closed`.
+- The end of the task that opened the connection closes it (the connection is a native resource freed by `PQfinish`),
+  or call `Db.close` earlier. Using a connection after `close` is `postgres error: the connection is closed`.
 - `open`, `query` and `execute` run on the compute pool: other tasks keep running while the server works.
 - Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
   `Task.await(task, ms)` times out, while a query is running, the libpq call still runs to its end and its result is
@@ -161,7 +162,7 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Valu
 
 ```ruby
 conn = try Db.open("mysql://user:pass@127.0.0.1:3306/app")
-rows = try Db.query(conn, "select id, name from users where age > ?", [Value.Int(28)])
+rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.Int(28)])
 ```
 
 - The url is `mysql://user:password@host:port/database?parameter=value` (`mariadb://` is the same). The user, the
@@ -226,9 +227,9 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Value.Int
   certificate is not supported. The path of `ssl_ca` is read by the process, so a relative path is relative to its
   working directory. Verifying a good certificate is not tested here: the test servers have self-signed ones.
 - `LOAD DATA LOCAL INFILE` is off, so a server cannot ask for a file of this machine.
-- The end of the task does not close the connection, as for PostgreSQL: call `Db.close`. The server session and the
-  locks of an open transaction stay until then. Using a connection after `close` is `mysql error: the connection is
-  closed`.
+- The end of the task does not close the connection (unlike SQLite and PostgreSQL): call `Db.close`. The server
+  session and the locks of an open transaction stay until then. Using a connection after `close` is `mysql error:
+  the connection is closed`.
 - `open`, `query` and `execute` wait for the server on the compute pool: other tasks keep running.
 - Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
   `Task.await(task, ms)` times out, while a query is running, the call still runs to its end and its result is
