@@ -1,20 +1,25 @@
-import {Translated} from "../postgres_sql"
 import PostgresSql from "../postgres_sql"
 
 MORE_THAN_ONE = "postgres error: the sql has more than one statement"
 NO_STATEMENT = "postgres error: the sql has no statement"
 HAND_WRITTEN = "postgres error: write ? for a parameter, not a $n placeholder"
 
-def translated(sql: String, count: Int) -> Result[Translated]
-  return ok(Translated(sql: sql, count: count))
+# The sql and the count of a translation; the verb has its own test.
+def becomes(sql: String, expected: String, count: Int) -> Result[Void]
+  done = PostgresSql.translate(sql)
+  try Test.ok?(done)
+  try Test.eq(done.unwrap!.sql, expected)
+  return Test.eq(done.unwrap!.count, count)
 end
 
 def same(sql: String, count: Int) -> Result[Void]
-  return Test.eq(PostgresSql.translate(sql), translated(sql, count))
+  return becomes(sql, sql, count)
 end
 
-def becomes(sql: String, expected: String, count: Int) -> Result[Void]
-  return Test.eq(PostgresSql.translate(sql), translated(expected, count))
+def verb_of(sql: String, verb: String) -> Result[Void]
+  done = PostgresSql.translate(sql)
+  try Test.ok?(done)
+  return Test.eq(done.unwrap!.verb, verb)
 end
 
 def refused(sql: String, message: String) -> Result[Void]
@@ -58,6 +63,8 @@ def main() -> Void
       try becomes("select 1 -- ?\n, ?", "select 1 -- ?\n, $1", 1)
       try becomes("select /* ? */ ?", "select /* ? */ $1", 1)
       try becomes("select /* ? /* nested ? */ still ? */ ?", "select /* ? /* nested ? */ still ? */ $1", 1)
+      try becomes("select 1 -- ?\r, ?", "select 1 -- ?\r, $1", 1)
+      try becomes("select 1 -- ?\r\n, ?", "select 1 -- ?\r\n, $1", 1)
       try same("select 1 -- last ?", 0)
       try same("select 1 /* unterminated ?", 0)
       return becomes("select 1/*?*/+?", "select 1/*?*/+$1", 1)
@@ -107,6 +114,16 @@ def main() -> Void
       try refused("-- only a comment", NO_STATEMENT)
       try refused("/* a */ -- b\n ;", NO_STATEMENT)
       return refused(String.from_code(11) + String.from_code(12), NO_STATEMENT)
+    end,
+    Test.test("the verb is the first word, after whitespace and comments") do
+      try verb_of("BEGIN\nISOLATION LEVEL SERIALIZABLE", "begin")
+      try verb_of("\t Commit ;", "commit")
+      try verb_of("/* c */ -- end\n\r\n\tCOMMIT", "commit")
+      try verb_of("select ?", "select")
+      try verb_of("end", "end")
+      try verb_of("(select 1)", "")
+      try verb_of("'x'", "")
+      return verb_of("begin;", "begin")
     end,
     Test.test("a NUL is refused") do
       return refused("select 1#{String.from_code(0)}", "postgres error: the sql contains a NUL character")

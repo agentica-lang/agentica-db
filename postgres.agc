@@ -34,7 +34,15 @@ FLOAT8_OID = 701
 POINTER_SIZE = 8
 BYTE_MAX = 255
 RESULT_AS_TEXT = 0
-PQTRANS_IDLE = 0
+CELL_OFFSET = 0
+CLIENT_ENCODING_SET = 0
+IS_NULL = 1
+COPY_BLOCKING = 0
+NO_MORE_COPY_DATA = 0
+HEX_BASE = 16
+# PGTransactionStatusType: a transaction is open (INTRANS) or failed (INERROR).
+PQTRANS_INTRANS = 2
+PQTRANS_INERROR = 3
 ABORTED_COMMIT_SQLSTATE = "25P02"
 ACTIVE_TRANSACTION_SQLSTATE = "25001"
 # The statements whose command tag counts rows changed; a SELECT counts rows too, but execute does not report them.
@@ -58,16 +66,16 @@ export def open(url: String) -> Result[Handle]
   end
   try check_connection(conn)
   handle = Native.memory_pointer(POINTER_SIZE)
-  Native.put_pointer(handle, 0, conn)
+  Native.put_pointer(handle, CELL_OFFSET, conn)
   return ok(handle)
 end
 
 ## Closes the connection; closing it again does nothing.
 export def close(handle: Handle) -> Void
-  conn = Native.get_pointer(handle, 0)
+  conn = Native.get_pointer(handle, CELL_OFFSET)
   if not Native.null?(conn)
     pq_finish(conn)
-    Native.put_pointer(handle, 0, Native.null())
+    Native.put_pointer(handle, CELL_OFFSET, Native.null())
   end
 end
 
@@ -99,7 +107,7 @@ def check_connection(conn: C.Pointer) -> Result[Void]
     return abandon(conn)
   end
   # Text results are read as UTF-8 whatever the server or the environment default to.
-  if pq_set_client_encoding(conn, "UTF8") != 0
+  if pq_set_client_encoding(conn, "UTF8") != CLIENT_ENCODING_SET
     return abandon(conn)
   end
   return ok()
@@ -117,7 +125,7 @@ def repeated_name(names: List[String]) -> String
 end
 
 def live(handle: Handle) -> Result[C.Pointer]
-  conn = Native.get_pointer(handle, 0)
+  conn = Native.get_pointer(handle, CELL_OFFSET)
   if Native.null?(conn)
     return error("postgres error: the connection is closed")
   end
@@ -133,24 +141,20 @@ def run(handle: Handle, sql: String, params: List[Value]) -> Result[C.Pointer]
     return error("postgres error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
   end
   try check_params(params)
-  verb = first_word(sql)
+  verb = translated.verb
   try check_begin(conn, verb)
-  res = send(conn, translated.sql, params)
+  res = exec_params(conn, translated.sql, params)
   if Native.null?(res)
     return error("postgres error: #{pq_error_message(conn).strip}")
   end
   return accept(conn, res, verb)
 end
 
-# The first word of the statement, in lower case: `commit` for "COMMIT;".
-def first_word(sql: String) -> String
-  return sql.strip.split(" ")[0].split(";")[0].downcase
-end
-
 # PostgreSQL only warns about a BEGIN inside a transaction, and the inner COMMIT would then end the outer one:
 # transactions do not nest here, as in the other adapters.
 def check_begin(conn: C.Pointer, verb: String) -> Result[Void]
-  if (verb == "begin" or verb == "start") and pq_transaction_status(conn) != PQTRANS_IDLE
+  status = pq_transaction_status(conn)
+  if (verb == "begin" or verb == "start") and (status == PQTRANS_INTRANS or status == PQTRANS_INERROR)
     return error("postgres error #{ACTIVE_TRANSACTION_SQLSTATE}: a transaction is already in progress")
   end
   return ok()
@@ -184,17 +188,18 @@ def check_params(params: List[Value]) -> Result[Void]
 end
 
 # Parameters travel as text and the server infers their types from the sql. A NULL entry of the value array is
-# the SQL NULL. The buffers are freed right after the call, on every path: nothing between the allocation and the
-# free can return.
-def send(conn: C.Pointer, sql: String, params: List[Value]) -> C.Pointer
-  values = Native.memory_pointer(max_one(params.size) * POINTER_SIZE)
-  owned = fill_values(values, params)
+# the SQL NULL. The value array goes away with its block, and the text buffers are freed right after the call, on
+# every path: nothing between the allocation and the free can return.
+def exec_params(conn: C.Pointer, sql: String, params: List[Value]) -> C.Pointer
   null = Native.null()
-  res = pq_exec_params(conn, sql, params.size, null, values, null, null, RESULT_AS_TEXT)
-  for buffer in owned
-    Native.free(buffer)
+  res: C.Pointer = Native.memory_pointer(max_one(params.size) * POINTER_SIZE) do |values|
+    owned = fill_values(values, params)
+    sent = pq_exec_params(conn, sql, params.size, null, values, null, null, RESULT_AS_TEXT)
+    for buffer in owned
+      Native.free(buffer)
+    end
+    sent
   end
-  Native.free(values)
   return res
 end
 
@@ -252,7 +257,7 @@ end
 # The hex input form of bytea: a backslash, an x and two digits per byte.
 def bytea_text(bytes: List[Int]) -> String
   digits = HEX_DIGITS.split("")
-  pairs = bytes.map do |byte| digits[byte / 16] + digits[byte % 16] end
+  pairs = bytes.map do |byte| digits[byte / HEX_BASE] + digits[byte % HEX_BASE] end
   return "\\x" + pairs.join("")
 end
 
@@ -312,8 +317,8 @@ end
 
 def skip_copy_data(conn: C.Pointer) -> Void
   while true
-    read = pq_get_copy_data(conn, 0)
-    if read.result <= 0
+    read = pq_get_copy_data(conn, COPY_BLOCKING)
+    if read.result <= NO_MORE_COPY_DATA
       return
     end
     pq_freemem(read.data)
@@ -364,7 +369,7 @@ def read_rows(res: C.Pointer, names: List[String]) -> Result[List[Row]]
 end
 
 def read_value(res: C.Pointer, line: Int, col: Int, oid: Int) -> Result[Value]
-  if pq_getisnull(res, line, col) == 1
+  if pq_getisnull(res, line, col) == IS_NULL
     return ok(Value.Null)
   end
   cell = pq_getvalue(res, line, col)
@@ -481,6 +486,7 @@ extern "pq"
   def pq_nfields(res: C.Pointer) -> C.Int32 = "PQnfields"
   def pq_ntuples(res: C.Pointer) -> C.Int32 = "PQntuples"
   def pq_fname(res: C.Pointer, col: C.Int32) -> C.String = "PQfname"
+  # An Oid is unsigned 32 bits; read as C.Int32, one above 2^31 is negative and matches no type here, so it is text.
   def pq_ftype(res: C.Pointer, col: C.Int32) -> C.Int32 = "PQftype"
   def pq_getisnull(res: C.Pointer, row: C.Int32, col: C.Int32) -> C.Int32 = "PQgetisnull"
   def pq_getvalue(res: C.Pointer, row: C.Int32, col: C.Int32) -> C.Pointer = "PQgetvalue"

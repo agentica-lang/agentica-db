@@ -304,6 +304,21 @@ def specific(url: String) -> List[TestCase]
       try Test.assert(committed.message.start_with?("postgres error 25P02: "), "error was: #{committed.message}")
       Test.eq(Db.query(conn, "select a from t", []), ok([]))
     end,
+    Test.test("the verb is found after newlines and comments") do
+      conn = try Shared.connect(flavor(url))
+      try Db.execute(conn, "create temp table t (a integer)", [])
+      try Db.execute(conn, "BEGIN\nISOLATION LEVEL SERIALIZABLE", [])
+      nested = Db.execute(conn, "/* again */ begin\n", [])
+      try Test.error?(nested)
+      try Test.assert(nested.message.start_with?("postgres error 25001: "), "error was: #{nested.message}")
+      try Db.execute(conn, "insert into t values (1)", [])
+      try Test.error?(Db.execute(conn, "select 1 / 0", []))
+      # The transaction is in error: a nested BEGIN is still refused, and the COMMIT is not taken for a commit.
+      try Test.error?(Db.execute(conn, "begin", []))
+      committed = Db.execute(conn, "-- done\n\tCOMMIT\n", [])
+      try Test.assert(committed.message.start_with?("postgres error 25P02: "), "error was: #{committed.message}")
+      Test.eq(Db.query(conn, "select a from t", []), ok([]))
+    end,
     Test.test("a transaction body that hides a failed statement does not commit") do
       conn = try Shared.connect(flavor(url))
       try Db.execute(conn, "create temp table t (a integer)", [])

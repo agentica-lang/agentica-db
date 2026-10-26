@@ -137,7 +137,10 @@ def specific() -> List[TestCase]
       failed = Db.open("ftp://host/db")
       try Test.error?(failed)
       try Test.assert(failed.message.start_with?("db error: "), "error was: #{failed.message}")
-      Test.assert(failed.message.include?("ftp://host/db"), "error was: #{failed.message}")
+      try Test.assert(failed.message.include?("ftp"), "error was: #{failed.message}")
+      secret = Db.open("pg://user:hunter2@host/db")
+      try Test.error?(secret)
+      Test.assert(not secret.message.include?("hunter2"), "the error shows the password: #{secret.message}")
     end,
     Test.test("only sqlite:PATH is accepted") do
       for url in ["sqlite:///tmp/x.db", "sqlite:", "sqlite"]

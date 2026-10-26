@@ -7,8 +7,6 @@
 
 TAB = 9
 NEWLINE = 10
-VERTICAL_TAB = 11
-FORM_FEED = 12
 CARRIAGE_RETURN = 13
 SPACE = 32
 DOUBLE_QUOTE = 34
@@ -33,10 +31,23 @@ LOWER_E = 101
 LOWER_Z = 122
 FIRST_NON_ASCII = 128
 
-## The sql with `$n` placeholders, and how many there are.
+## The sql with `$n` placeholders, how many there are, and its first word in lower case (`begin`, `commit`,
+## `select`; empty when the statement starts with something else), read after any whitespace and comments.
 export struct Translated
   sql: String
   count: Int
+  verb: String
+end
+
+# The state of the walk: the bytes copied so far, the next byte to read, and what has been seen.
+struct Scan
+  out: List[Int]
+  at: Int
+  count: Int
+  depth: Int
+  ended: Bool
+  content: Bool
+  verb: String
 end
 
 ## Translates `?` to `$1..$n`. An error is `postgres error: <message>` for a NUL, a second statement, no statement
@@ -46,58 +57,78 @@ export def translate(sql: String) -> Result[Translated]
     return error("postgres error: the sql contains a NUL character")
   end
   bytes = sql.to_bytes
-  out: List[Int] = []
-  count = 0
-  depth = 0
-  ended = false
-  content = false
-  i = 0
-  while i < bytes.size
-    byte = bytes[i]
-    stop = span_end(bytes, i)
-    if stop > i
-      # A literal is content, a comment is not.
-      if not comment_at?(bytes, i)
-        if ended
-          return error(more_than_one())
-        end
-        content = true
-      end
-      out = copy_range(out, bytes, i, stop)
-      i = stop
-    elsif byte == QUESTION
-      if ended
-        return error(more_than_one())
-      end
-      count += 1
-      content = true
-      out = out.push(DOLLAR).concat(count.to_s.to_bytes)
-      i += 1
-    elsif byte == SEMICOLON and depth == 0
-      ended = true
-      out = out.push(byte)
-      i += 1
-    elsif space?(byte)
-      out = out.push(byte)
-      i += 1
-    else
-      if ended
-        return error(more_than_one())
-      end
-      if byte == DOLLAR and digit_after?(bytes, i) and not word_before?(bytes, i)
-        return error("postgres error: write ? for a parameter, not a $n placeholder")
-      end
-      content = true
-      depth = next_depth(depth, byte)
-      out = out.push(byte)
-      i += 1
-    end
+  scan = Scan(out: [], at: 0, count: 0, depth: 0, ended: false, content: false, verb: "")
+  while scan.at < bytes.size
+    scan = try step(bytes, scan)
   end
-  if not content
+  if not scan.content
     return error("postgres error: the sql has no statement")
   end
-  translated = try String.from_bytes(out)
-  return ok(Translated(sql: translated, count: count))
+  translated = try String.from_bytes(scan.out)
+  return ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
+end
+
+# Reads one literal, comment, placeholder or byte.
+def step(bytes: List[Int], scan: Scan) -> Result[Scan]
+  at = scan.at
+  byte = bytes[at]
+  stop = span_end(bytes, at)
+  if stop > at
+    return span(bytes, scan, stop)
+  elsif byte == QUESTION
+    return placeholder(bytes, scan)
+  elsif byte == SEMICOLON and scan.depth == 0
+    return ok(scan.with(out: scan.out.push(byte), at: at + 1, ended: true))
+  elsif space?(byte)
+    return ok(scan.with(out: scan.out.push(byte), at: at + 1))
+  end
+  return other(bytes, scan)
+end
+
+# A literal is content, a comment is not.
+def span(bytes: List[Int], scan: Scan, stop: Int) -> Result[Scan]
+  seen = scan
+  if not comment_at?(bytes, scan.at)
+    seen = try with_content(bytes, scan)
+  end
+  return ok(seen.with(out: copy_range(seen.out, bytes, scan.at, stop), at: stop))
+end
+
+def placeholder(bytes: List[Int], scan: Scan) -> Result[Scan]
+  seen = try with_content(bytes, scan)
+  count = seen.count + 1
+  out = seen.out.push(DOLLAR).concat(count.to_s.to_bytes)
+  return ok(seen.with(out: out, count: count, at: seen.at + 1))
+end
+
+def other(bytes: List[Int], scan: Scan) -> Result[Scan]
+  at = scan.at
+  byte = bytes[at]
+  if byte == DOLLAR and digit_after?(bytes, at) and not word_before?(bytes, at)
+    return error("postgres error: write ? for a parameter, not a $n placeholder")
+  end
+  seen = try with_content(bytes, scan)
+  return ok(seen.with(out: seen.out.push(byte), at: at + 1, depth: next_depth(seen.depth, byte)))
+end
+
+# Content after the end of the statement is a second statement. The first content gives the verb.
+def with_content(bytes: List[Int], scan: Scan) -> Result[Scan]
+  if scan.ended
+    return error(more_than_one())
+  end
+  if scan.content
+    return ok(scan)
+  end
+  return ok(scan.with(content: true, verb: word_at(bytes, scan.at)))
+end
+
+def word_at(bytes: List[Int], at: Int) -> String
+  stop = at
+  while stop < bytes.size and letter?(bytes[stop])
+    stop += 1
+  end
+  # A run of ASCII letters is always valid UTF-8, so the empty fallback never shows.
+  return String.from_bytes(bytes.drop(at).take(stop - at)).unwrap_or("").downcase
 end
 
 def more_than_one() -> String
@@ -200,9 +231,10 @@ def quoted_end(bytes: List[Int], i: Int, backslash: Bool) -> Int
   return bytes.size
 end
 
+# PostgreSQL ends a `--` comment at \n or \r.
 def line_end(bytes: List[Int], i: Int) -> Int
   at = i
-  while at < bytes.size and bytes[at] != NEWLINE
+  while at < bytes.size and bytes[at] != NEWLINE and bytes[at] != CARRIAGE_RETURN
     at += 1
   end
   return at

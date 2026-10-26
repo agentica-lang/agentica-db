@@ -14,7 +14,8 @@ import {Row, Value} from "value"
 SQLITE_PREFIX = "sqlite:"
 POSTGRES_PREFIXES = ["postgres://", "postgresql://"]
 
-## An open connection. Its task owns it: close it with `close`, or the end of the task closes it.
+## An open connection, owned by the task that opened it. Close it with `close`. The end of the task closes a SQLite
+## connection, but not a PostgreSQL one (it only frees the handle): the caller must call `close`.
 export enum Connection
   Sqlite(Sqlite.Handle)
   Postgres(Postgres.Handle)
@@ -23,20 +24,22 @@ end
 ## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database), or
 ## `postgres://` and `postgresql://` urls, which libpq parses.
 export def open(url: String) -> Result[Connection]
+  # Errors name the scheme only: a url can hold a password.
   if url.start_with?("sqlite://")
-    return error("db error: unsupported database url #{url}: write sqlite:PATH, without //")
+    return error("db error: unsupported database url with scheme sqlite://: write sqlite:PATH, without //")
   end
   if url.start_with?(SQLITE_PREFIX)
     path = url.slice(SQLITE_PREFIX.length, url.length - SQLITE_PREFIX.length)
     if path.empty?
-      return error("db error: unsupported database url #{url}: the path is empty")
+      return error("db error: unsupported database url with scheme sqlite: the path is empty")
     end
     return open_sqlite(path)
   end
   if POSTGRES_PREFIXES.any? do |prefix| url.start_with?(prefix) end
     return open_postgres(url)
   end
-  return error("db error: unsupported database url #{url}: expected sqlite:PATH, sqlite::memory: or postgres://")
+  return error("db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory: " +
+               "or postgres://")
 end
 
 ## Opens a SQLite database file, or `:memory:`.
@@ -45,7 +48,8 @@ export def open_sqlite(path: String) -> Result[Connection]
   return ok(Connection.Sqlite(handle))
 end
 
-## Opens a PostgreSQL database from a libpq url.
+## Opens a PostgreSQL database from a libpq url, or from a conninfo string (`host=localhost dbname=app`), which libpq
+## also takes.
 export def open_postgres(url: String) -> Result[Connection]
   handle = try Postgres.open(url)
   return ok(Connection.Postgres(handle))
@@ -108,5 +112,14 @@ def abandon(conn: Connection, message: String) -> Result[Void]
   case rolled
     ok(_) -> return error(message)
     error(rollback_message) -> return error("#{message}; rollback failed: #{rollback_message}")
+  end
+end
+
+# The text before the first colon, or a fixed word when there is none (the whole text could be a secret).
+def scheme(url: String) -> String
+  found = url.index_of(":")
+  case found
+    ok(at) -> return url.slice(0, at)
+    error(_) -> return "(none)"
   end
 end

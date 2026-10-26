@@ -9,11 +9,14 @@ with one adapter per database, all through the C FFI (no C code of ours).
 | PostgreSQL | `postgres.agc`, the system `libpq` | available |
 | MySQL | `libmariadb` / `libmysqlclient` | planned |
 
-Needs Agentica 0.10.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on Linux,
-`libsqlite3.dylib` on macOS, `winsqlite3.dll` on Windows) or libpq (`libpq.so.5`, `libpq.5.dylib`, `libpq.dll`). A
-library is loaded when the first call needs it, so SQLite alone works without libpq. CI runs on Linux only; the macOS
-and Windows library names are declared but not tested yet. On macOS the manifest cannot name an absolute path, so
-run with Homebrew's libpq as `DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib" agentica ...`.
+Needs Agentica 0.10.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
+Linux, `libsqlite3.dylib` on macOS, `winsqlite3.dll` on Windows) or libpq (`libpq.so.5`, `libpq.5.dylib`,
+`libpq.dll`; PostgreSQL 12 or later). A library is loaded when the first call needs it, so SQLite alone works
+without libpq. CI runs on Linux only; the macOS and Windows library names are declared but not tested yet. On
+macOS the manifest cannot name an absolute path, so run with Homebrew's libpq as
+`DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib" agentica ...`. On Windows, `libpq.dll` is looked up next to
+`agentica.exe` and in System32, never in `PATH`, and so are the DLLs it needs (`libssl`, `libcrypto`, `libintl`,
+...): copy them there.
 
 ## Install
 
@@ -68,7 +71,7 @@ end
 |---|---|
 | `open(url)` | `Result[Connection]`; `sqlite:PATH` (`sqlite::memory:`), `postgres://...` or `postgresql://...` |
 | `open_sqlite(path)` | `Result[Connection]` |
-| `open_postgres(url)` | `Result[Connection]`, a libpq url |
+| `open_postgres(url)` | `Result[Connection]`, a libpq url or a conninfo string (`host=localhost dbname=app`) |
 | `query(conn, sql, params)` | `Result[List[Row]]`, a `Row` is `Map[String, Value]` in column order |
 | `execute(conn, sql, params)` | `Result[Int]`, the rows inserted, updated or deleted |
 | `transaction(conn) do \|tx\| ... end` | `Result[Void]`; BEGIN, then COMMIT on `ok`, ROLLBACK on `error` |
@@ -94,8 +97,9 @@ end
 - `transaction` starts with `BEGIN IMMEDIATE` on SQLite, which needs write access to the database (a read-only
   database cannot open a transaction). A runtime error (a halt) inside the body stops the task
   and leaves the transaction open until the task ends; closing the connection then rolls it back.
-- A connection belongs to the task that opened it. `close` ends it; so does the end of the task. Using it after
-  `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`). PostgreSQL differs: see below.
+- A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it; for SQLite so
+  does the end of the task, but for PostgreSQL only `Db.close` does (see below). Using a SQLite connection after
+  `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
 
 ## PostgreSQL
 
@@ -105,8 +109,9 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Valu
 ```
 
 - The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`,
-  `options`). The client encoding is always UTF8. A connection that cannot open, or a url libpq cannot parse, is
-  `postgres error: <libpq message>`.
+  `options`). Set `connect_timeout` (seconds): without it an unreachable host waits as long as the
+  operating system does. The client encoding is always UTF8.
+  A connection that cannot open, or a url libpq cannot parse, is `postgres error: <libpq message>`.
 - Types, read and written (parameters travel as text, and the server infers their types from the sql):
 
   | PostgreSQL | `Value` |
@@ -119,7 +124,9 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Valu
   | `text`, `varchar`, `char`, `name`, and the rest: `numeric`, `date`, `timestamp`, `uuid`, `json`, arrays | `Text` |
 
   A `Text` parameter goes into a column of any of those types (`'12.50'` into `numeric`, `'2024-02-29'` into `date`).
-  Where the sql gives the server no type for a placeholder (`select ? is null`), cast it: `?::int`, `cast(? as text)`.
+  The server takes the type of a placeholder from its context (`where id = ?` takes the type of `id`). Where the
+  context gives none (`select ? is null`) it is an error (`42P18`): cast it, `?::int` or `cast(? as text)`. A cast
+  also picks a type where several fit, as in `?::numeric`.
 - The placeholder `?` is rewritten to `$n` outside string literals (`'?'`, `E'...'`), quoted identifiers (`"a?"`),
   dollar quotes (`$$ ? $$`) and comments (`-- ?`, nested `/* ? */`). The operators `?`, `?|` and `?&` of `jsonb` are
   not available: use `jsonb_exists`, `jsonb_exists_any` and `jsonb_exists_all`. Write `?`, never `$1`.
@@ -129,13 +136,20 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Valu
   appendix A). The message is the server's, in the language of its `lc_messages`. A failure without a SQLSTATE (the
   connection dropped) is `postgres error: <message>`.
 - `execute` counts the rows of `INSERT`, `UPDATE`, `DELETE` and `MERGE` (also with `RETURNING`); other statements,
-  `SELECT` too, give 0. `COPY` is refused.
+  `SELECT` too, give 0.
+- `COPY` is not supported: the server starts the copy before the adapter sees it, so the adapter ends it, reads the
+  rest of the results (for `COPY ... TO STDOUT` all the data, which can take long for a big table) and gives
+  `postgres error: COPY is not supported`. The connection keeps working.
 - `transaction` starts with `BEGIN`. Transactions do not nest (`postgres error 25001`; PostgreSQL itself only warns).
   A statement that fails inside a transaction aborts it: a `COMMIT` after that does not fail on the server (it rolls
   back), so this package turns it into `postgres error 25P02`, and `transaction` gives that error.
 - libpq's `PQfinish` cannot be the free function of an Agentica resource yet, so the end of the task does not close
   the connection: call `Db.close`. Using a connection after `close` is `postgres error: the connection is closed`.
 - `open`, `query` and `execute` run on the compute pool: other tasks keep running while the server works.
+- Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
+  `Task.await(task, ms)` times out, while a query is running, the libpq call still runs to its end and its result is
+  dropped, so the connection may be left in the middle of a query (and that one result is not freed). Close that
+  connection and open a new one.
 
 ## Development
 
