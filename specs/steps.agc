@@ -29,6 +29,11 @@ def main() -> Void
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), nested: true))
     end,
     plain_step("I close the database", "close"),
+    BDD.step("a program whose native libraries are missing") do |ctx, args|
+      BDD.given_program(ctx, "fixtures/nolib/open.agc")
+    end,
+    BDD.step("the program opens {string}") do |ctx, args| BDD.when_line(ctx, args[0]) end,
+    BDD.step("the program answers a line starting with {string}", &answers_with),
     text_step("another task executes {string}", "execute_in_task"),
     text_step("another task opens its own connection and queries {string}", "query_in_new_task"),
     BDD.step("the query {string} returns:") do |ctx, args|
@@ -51,7 +56,7 @@ def main() -> Void
     text_step("it fails with exactly {string}", "expect_exact"),
     text_step("it fails mentioning {string}", "expect_mentions"),
     text_step("the failure never shows {string}", "expect_hides"),
-    BDD.step("a task leaves a connection named {string} open, and the server drops it within {int} ms", &left_open),
+    BDD.step("a task leaves a connection open, and the server drops its session within {int} ms", &left_open),
     BDD.step("another task keeps running during {string}, with gaps under {int} milliseconds") do |ctx, args|
       send(ctx, Request(op: "keep_running", text: args[0], number: args[1].to_i!))
     end,
@@ -68,8 +73,14 @@ def plain_step(pattern: String, op: String) -> BDD.Step
   return BDD.step(pattern) do |ctx, args| send(ctx, Request(op: op)) end
 end
 
+# The program of `fixtures/nolib` answers each url with one line.
+def answers_with(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  answer = BDD.read_line(ctx, REPLY_MS).unwrap_or("no answer")
+  return BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
+end
+
 def left_open(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return send(ctx, Request(op: "leave_open", text: args[0], number: args[1].to_i!))
+  return send(ctx, Request(op: "leave_open", number: args[0].to_i!))
 end
 
 def open_database(ctx: BDD.Context, args: List[String]) -> BDD.Context

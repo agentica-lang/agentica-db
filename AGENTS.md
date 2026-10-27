@@ -8,7 +8,7 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`.
-- `for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done`, then
+- `for file in *.agc specs/*.agc specs/fixtures/*/*.agc test/*.agc; do agentica check "$file"; done`, then
   `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and the unit tests of `test/`.
   SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
@@ -32,7 +32,9 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   site: `library/io-and-system/native/wrapping`). An adapter has the same four functions as `db.agc`:
   `open`, `close`, `query`, `execute`. `db.agc` dispatches on `Connection`; `transaction` stays in `db.agc`.
   `db.agc` also re-exports `Value` and `Row` of `value.agc` (`export V.Value`), so a user imports `Db` only. The
-  PostgreSQL connection is a native resource (`PQfinish`), like SQLite's.
+  connection of each adapter is a native resource (`sqlite3_close_v2`, `PQfinish`, `mysql_close`): the end of the task
+  or of `main` closes it, and `Native.closed?` turns a use after `close` into an error (SQLite keeps the runtime
+  error). `open` calls `Native.load` before touching the library, so a missing library is an `error`.
 - Placeholders are `?` in the API. An adapter translates them (`$1` for PostgreSQL; MySQL takes `?` natively) and
   always binds (`mysql_stmt_*` for MySQL); no value is ever spliced into sql.
 - A failure is `error(message)` in one of two shapes: an engine failure `<adapter> error <code>: <message>`, a

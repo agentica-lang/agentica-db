@@ -22,9 +22,9 @@ POSTGRES_PREFIXES = ["postgres://", "postgresql://"]
 MYSQL_PREFIXES = ["mysql://", "mariadb://"]
 MAX_SCHEME = 16
 
-## An open connection, owned by the task that opened it. Close it with `close`. The end of the task closes a SQLite
-## or PostgreSQL connection, but not a MySQL one (it only frees the handle; the server session and its socket stay
-## open): the caller must call `close`.
+## An open connection, owned by the task that opened it. Close it with `close`, or the end of the task closes it (the
+## end of `main` closes one still open). Open it in the task that keeps it (usually `main`), or hand it over with
+## `Task.spawn_owning(&f, conn)`.
 export enum Connection
   Sqlite(Sqlite.Handle)
   Postgres(Postgres.Handle)

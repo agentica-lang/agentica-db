@@ -54,10 +54,6 @@ Feature: Errors
       | Int 1 |
     Then it fails with exactly "<adapter> error: the sql has 0 parameters, got 1"
     When I execute "select ?" with:
-      | value        |
-      | Text a[NUL]b |
-    Then it fails with exactly "<adapter> error: a text parameter contains a NUL character"
-    When I execute "select ?" with:
       | value    |
       | Blob 256 |
     Then it fails with exactly "<adapter> error: a blob parameter has an item outside 0..255"
@@ -65,5 +61,17 @@ Feature: Errors
     Examples:
       | adapter  |
       | sqlite   |
+      | postgres |
+      | mysql    |
+
+  Scenario Outline: A text parameter with a NUL is refused before the statement runs on <adapter>
+    Given a "<adapter>" database
+    When I execute "select ?" with:
+      | value        |
+      | Text a[NUL]b |
+    Then it fails with exactly "<adapter> error: a text parameter contains a NUL character"
+
+    Examples:
+      | adapter  |
       | postgres |
       | mysql    |

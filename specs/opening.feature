@@ -44,6 +44,17 @@ Feature: Opening and closing a database
       | mysql    | mysql://u:hunter2@127.0.0.1:1/none?connect_timeout=2    | mysql error 2002:                       |
       | mysql    | mysql://u:hunter2@localhost/db[NUL]                     | mysql error: the url contains           |
 
+  Scenario Outline: A missing native library is an error, not a stop of the program: <adapter> (on sqlite, no server)
+    Given a program whose native libraries are missing
+    When the program opens "<url>"
+    Then the program answers a line starting with "<failure>"
+
+    Examples:
+      | adapter  | url                      | failure                                 |
+      | sqlite   | sqlite::memory:          | sqlite error: cannot load the SQLite    |
+      | postgres | postgres://u@127.0.0.1/d | postgres error: cannot load the libpq   |
+      | mysql    | mysql://u@127.0.0.1/d    | mysql error: cannot load the client lib |
+
   Scenario Outline: Using a closed connection is an error on <adapter>
     Given a "<adapter>" database
     When I close the database
@@ -61,6 +72,15 @@ Feature: Opening and closing a database
     Then the result is:
       | v      |
       | Int 42 |
+
+    Examples:
+      | adapter  |
+      | postgres |
+      | mysql    |
+
+  Scenario Outline: The end of a task closes the connection it opened on <adapter>
+    Given a "<adapter>" database
+    Then a task leaves a connection open, and the server drops its session within 3000 ms
 
     Examples:
       | adapter  |

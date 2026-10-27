@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 env:
-  AGENTICA_VERSION: 0.11.0
-  AGENTICA_SHA256: af5cfbdb83c892c852abc44ea58cdafaebec5cfe6344428fd7b5249b6d209b73
+  AGENTICA_VERSION: 0.12.0
+  AGENTICA_SHA256: b679be65c9347802ccbf2506391084376a9d5252510f01beb9e5fbed81b965c0
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
@@ -71,7 +71,7 @@ jobs:
       - name: Check
         run: |
           agentica --version
-          for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done
+          for file in *.agc specs/*.agc specs/fixtures/*/*.agc test/*.agc; do agentica check "$file"; done
 
       # The features of specs/ and the unit tests of test/. The variables point the postgres and mysql scenarios at the
       # service containers; without them they fail. The mysql host is an address: `localhost` means the local socket
