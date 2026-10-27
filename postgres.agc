@@ -33,9 +33,6 @@ FLOAT8_OID = 701
 POINTER_SIZE = 8
 BYTE_MAX = 255
 RESULT_AS_TEXT = 0
-CELL_OFFSET = 0
-CLOSED_SIZE = 1
-CLOSED = 1
 CLIENT_ENCODING_SET = 0
 IS_NULL = 1
 COPY_BLOCKING = 0
@@ -54,14 +51,15 @@ EXPONENT_LIMIT = 400
 
 # The libpq names start with a capital letter, which a def name cannot, so each def says its C name.
 extern "pq"
-  resource Conn, free: PQfinish
-  compute def pq_connectdb(conninfo: C.String) -> Conn = "PQconnectdb"
-  def pq_status(conn: Conn) -> C.Int32 = "PQstatus"
-  def pq_transaction_status(conn: Conn) -> C.Int32 = "PQtransactionStatus"
-  def pq_error_message(conn: Conn) -> C.String = "PQerrorMessage"
+  ## An open connection.
+  export resource Handle, free: PQfinish
+  compute def pq_connectdb(conninfo: C.String) -> Handle = "PQconnectdb"
+  def pq_status(conn: Handle) -> C.Int32 = "PQstatus"
+  def pq_transaction_status(conn: Handle) -> C.Int32 = "PQtransactionStatus"
+  def pq_error_message(conn: Handle) -> C.String = "PQerrorMessage"
   # The two calls below wait for the server, so they are compute.
-  compute def pq_set_client_encoding(conn: Conn, encoding: C.String) -> C.Int32 = "PQsetClientEncoding"
-  compute def pq_exec_params(conn: Conn, command: C.String, count: C.Int32, types: C.Pointer,
+  compute def pq_set_client_encoding(conn: Handle, encoding: C.String) -> C.Int32 = "PQsetClientEncoding"
+  compute def pq_exec_params(conn: Handle, command: C.String, count: C.Int32, types: C.Pointer,
                              values: C.Pointer, lengths: C.Pointer, formats: C.Pointer,
                              format: C.Int32) -> C.Pointer = "PQexecParams"
   def pq_clear(res: C.Pointer) -> Void = "PQclear"
@@ -79,16 +77,9 @@ extern "pq"
   def pq_unescape_bytea(text: C.Pointer, out length: C.Int64) -> C.Pointer = "PQunescapeBytea"
   def pq_freemem(memory: C.Pointer) -> Void = "PQfreemem"
   # The calls that leave a COPY that a statement started.
-  def pq_put_copy_end(conn: Conn, message: C.String) -> C.Int32 = "PQputCopyEnd"
-  compute def pq_get_copy_data(conn: Conn, out data: C.Pointer, async: C.Int32) -> C.Int32 = "PQgetCopyData"
-  compute def pq_get_result(conn: Conn) -> C.Pointer = "PQgetResult"
-end
-
-## An open connection. `closed` is an owned cell that `close` sets: a closed resource cannot be asked, and a call
-## with it stops the program, so the cell is what turns a use after `close` into an error.
-export struct Handle
-  conn: Conn
-  closed: C.Pointer
+  def pq_put_copy_end(conn: Handle, message: C.String) -> C.Int32 = "PQputCopyEnd"
+  compute def pq_get_copy_data(conn: Handle, out data: C.Pointer, async: C.Int32) -> C.Int32 = "PQgetCopyData"
+  compute def pq_get_result(conn: Handle) -> C.Pointer = "PQgetResult"
 end
 
 ## Connects with a `postgres://` or `postgresql://` url, which libpq parses (`?sslmode=disable`, `connect_timeout`
@@ -98,20 +89,18 @@ export def open(url: String) -> Result[Handle]
     return error("postgres error: the url contains a NUL character")
   end
 
+  try load_library()
   case pq_connectdb(url)
     error(_) -> return error("postgres error: out of memory")
     ok(conn) ->
       try check_connection(conn)
-      return ok(Handle(conn: conn, closed: Native.memory_pointer(CLOSED_SIZE)))
+      return ok(conn)
   end
 end
 
 ## Closes the connection; closing it again does nothing.
 export def close(handle: Handle) -> Void
-  if not closed?(handle)
-    Native.put_int8(handle.closed, CELL_OFFSET, CLOSED)
-    Native.close(handle.conn)
-  end
+  Native.close(handle)
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
@@ -137,8 +126,16 @@ export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[I
   return changed
 end
 
+# A library that is missing is an error here, not a stop of the program at the first call.
+def load_library() -> Result[Void]
+  case Native.load("pq")
+    error(message) -> return error("postgres error: cannot load the libpq library: #{message}")
+    ok(_) -> return ok()
+  end
+end
+
 # Frees the connection when it does not work: a failed connect still gives a PGconn that holds the error.
-def check_connection(conn: Conn) -> Result[Void]
+def check_connection(conn: Handle) -> Result[Void]
   if pq_status(conn) != CONNECTION_OK
     return abandon(conn)
   end
@@ -151,7 +148,7 @@ def check_connection(conn: Conn) -> Result[Void]
   return ok()
 end
 
-def abandon(conn: Conn) -> Result[Void]
+def abandon(conn: Handle) -> Result[Void]
   message = pq_error_message(conn).strip
   Native.close(conn)
   return error("postgres error: #{message}")
@@ -162,21 +159,18 @@ def repeated_name(names: List[String]) -> String
   return names.find do |name| counts[name] > 1 end.unwrap_or("")
 end
 
-def live(handle: Handle) -> Result[Conn]
-  if closed?(handle)
+# A call with a closed resource stops the program, so a closed handle is turned into an error first.
+def check_open(handle: Handle) -> Result[Void]
+  if Native.closed?(handle)
     return error("postgres error: the connection is closed")
   end
 
-  return ok(handle.conn)
-end
-
-def closed?(handle: Handle) -> Bool
-  return Native.get_int8(handle.closed, CELL_OFFSET) == CLOSED
+  return ok()
 end
 
 # The result of a statement that succeeded. The caller clears it.
 def run(handle: Handle, sql: String, params: List[Value]) -> Result[C.Pointer]
-  conn = try live(handle)
+  try check_open(handle)
   translated = try PostgresSql.translate(sql)
   if translated.count != params.size
     wanted = translated.count
@@ -185,18 +179,18 @@ def run(handle: Handle, sql: String, params: List[Value]) -> Result[C.Pointer]
 
   try check_params(params)
   verb = translated.verb
-  try check_begin(conn, verb)
-  res = exec_params(conn, translated.sql, params)
+  try check_begin(handle, verb)
+  res = exec_params(handle, translated.sql, params)
   if Native.null?(res)
-    return error("postgres error: #{pq_error_message(conn).strip}")
+    return error("postgres error: #{pq_error_message(handle).strip}")
   end
 
-  return accept(conn, res, verb)
+  return accept(handle, res, verb)
 end
 
 # PostgreSQL only warns about a BEGIN inside a transaction, and the inner COMMIT would then end the outer one:
 # transactions do not nest here, as in the other adapters.
-def check_begin(conn: Conn, verb: String) -> Result[Void]
+def check_begin(conn: Handle, verb: String) -> Result[Void]
   status = pq_transaction_status(conn)
   if (verb == "begin" or verb == "start") and (status == PQTRANS_INTRANS or status == PQTRANS_INERROR)
     return error("postgres error #{ACTIVE_TRANSACTION_SQLSTATE}: a transaction is already in progress")
@@ -239,7 +233,7 @@ end
 # Parameters travel as text and the server infers their types from the sql. A NULL entry of the value array is
 # the SQL NULL. The value array goes away with its block, and the text buffers are freed right after the call, on
 # every path: nothing between the allocation and the free can return.
-def exec_params(conn: Conn, sql: String, params: List[Value]) -> C.Pointer
+def exec_params(conn: Handle, sql: String, params: List[Value]) -> C.Pointer
   null = Native.null()
   res: C.Pointer = Native.memory_pointer(max_one(params.size) * POINTER_SIZE) do |values|
     owned = fill_values(values, params)
@@ -318,7 +312,7 @@ def bytea_text(bytes: List[Int]) -> String
 end
 
 # Gives the result of a statement that succeeded; any other result is cleared and becomes the error.
-def accept(conn: Conn, res: C.Pointer, verb: String) -> Result[C.Pointer]
+def accept(conn: Handle, res: C.Pointer, verb: String) -> Result[C.Pointer]
   status = pq_result_status(res)
   if status == PGRES_COMMAND_OK or status == PGRES_TUPLES_OK
     return check_commit(res, verb)
@@ -352,7 +346,7 @@ def check_commit(res: C.Pointer, verb: String) -> Result[C.Pointer]
 end
 
 # The code is the SQLSTATE of the server; a failure that libpq makes itself has none.
-def failure(conn: Conn, res: C.Pointer) -> String
+def failure(conn: Handle, res: C.Pointer) -> String
   code = pq_result_error_field(res, PG_DIAG_SQLSTATE)
   message = pq_result_error_field(res, PG_DIAG_MESSAGE_PRIMARY)
   if code == ""
@@ -363,7 +357,7 @@ def failure(conn: Conn, res: C.Pointer) -> String
 end
 
 # A statement that starts a COPY leaves the connection in copy mode: end it, then read the results that follow.
-def leave_copy(conn: Conn, status: Int) -> Void
+def leave_copy(conn: Handle, status: Int) -> Void
   if status == PGRES_COPY_IN
     pq_put_copy_end(conn, "copy is not supported")
   else
@@ -377,7 +371,7 @@ def leave_copy(conn: Conn, status: Int) -> Void
   end
 end
 
-def skip_copy_data(conn: Conn) -> Void
+def skip_copy_data(conn: Handle) -> Void
   while true
     read = pq_get_copy_data(conn, COPY_BLOCKING)
     if read.result <= NO_MORE_COPY_DATA

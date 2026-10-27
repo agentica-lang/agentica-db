@@ -20,7 +20,7 @@ SQLITE_TEXT = 3
 SQLITE_BLOB = 4
 BUSY_TIMEOUT_MS = 5_000
 BYTE_MAX = 255
-# The length argument that means "up to the NUL" for sql and text.
+# The length argument that means "up to the NUL" for the sql.
 NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
 TRANSIENT_DESTRUCTOR = -1
@@ -45,7 +45,7 @@ extern "sqlite3"
   def sqlite3_bind_null(stmt: Stmt, index: C.Int32) -> C.Int32
   def sqlite3_bind_int64(stmt: Stmt, index: C.Int32, value: C.Int64) -> C.Int32
   def sqlite3_bind_double(stmt: Stmt, index: C.Int32, value: C.Double) -> C.Int32
-  def sqlite3_bind_text(stmt: Stmt, index: C.Int32, text: C.String, bytes: C.Int32, destructor: C.Pointer) -> C.Int32
+  def sqlite3_bind_text(stmt: Stmt, index: C.Int32, text: C.Pointer, bytes: C.Int32, destructor: C.Pointer) -> C.Int32
   def sqlite3_bind_blob(stmt: Stmt, index: C.Int32, blob: C.Bytes, bytes: C.Int32, destructor: C.Pointer) -> C.Int32
   def sqlite3_bind_zeroblob(stmt: Stmt, index: C.Int32, bytes: C.Int32) -> C.Int32
   def sqlite3_column_count(stmt: Stmt) -> C.Int32
@@ -64,6 +64,7 @@ export def open(path: String) -> Result[Handle]
     return error("sqlite error: the path contains a NUL character")
   end
 
+  try load_library()
   opened = sqlite3_open(path)
   if opened.result != SQLITE_OK
     # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
@@ -107,6 +108,14 @@ export def execute(conn: Handle, sql: String, params: List[Value]) -> Result[Int
   return ok(changes_since(conn, before))
 end
 
+# A library that is missing is an error here, not a stop of the program at the first call.
+def load_library() -> Result[Void]
+  case Native.load("sqlite3")
+    error(message) -> return error("sqlite error: cannot load the SQLite library: #{message}")
+    ok(_) -> return ok()
+  end
+end
+
 def repeated_name(names: List[String]) -> String
   counts = names.tally
   return names.find do |name| counts[name] > 1 end.unwrap_or("")
@@ -130,8 +139,7 @@ def prepare(conn: Handle, sql: String, params: List[Value]) -> Result[Stmt]
   try check_params(params)
   # The sql goes through an owned buffer, not a C.String: SQLite points `tail` into its copy, and a C.String copy
   # lives only during the call.
-  made: Result[Stmt] = Native.memory_pointer(sql.to_bytes.size + 1) do |buf|
-    Native.put_string(buf, 0, sql)
+  made: Result[Stmt] = Native.from_string(sql) do |buf|
     try single_statement(conn, buf)
     prepared = sqlite3_prepare_v2(conn, buf, NUL_TERMINATED)
     if prepared.result != SQLITE_OK
@@ -188,11 +196,6 @@ end
 def check_params(params: List[Value]) -> Result[Void]
   for param in params
     case param
-      Value.Text(text) ->
-        if has_nul?(text)
-          return error("sqlite error: a text parameter contains a NUL character")
-        end
-
       Value.Blob(bytes) ->
         if bytes.any? do |byte| byte < 0 or byte > BYTE_MAX end
           return error("sqlite error: a blob parameter has an item outside 0..255")
@@ -202,6 +205,7 @@ def check_params(params: List[Value]) -> Result[Void]
       Value.Int(_) -> next
       Value.Float(_) -> next
       Value.Bool(_) -> next
+      Value.Text(_) -> next
     end
   end
 
@@ -240,10 +244,19 @@ def bind_value(stmt: Stmt, index: Int, value: Value) -> Int
     Value.Null -> return sqlite3_bind_null(stmt, index)
     Value.Int(n) -> return sqlite3_bind_int64(stmt, index, n)
     Value.Float(x) -> return sqlite3_bind_double(stmt, index, x)
-    Value.Text(text) -> return sqlite3_bind_text(stmt, index, text, NUL_TERMINATED, transient())
+    Value.Text(text) -> return bind_text(stmt, index, text)
     Value.Blob(bytes) -> return bind_blob(stmt, index, bytes)
     Value.Bool(flag) -> return sqlite3_bind_int64(stmt, index, bool_int(flag))
   end
+end
+
+# The text goes with its length, so a NUL inside it is kept; SQLite copies it (transient) before the buffer is freed.
+def bind_text(stmt: Stmt, index: Int, text: String) -> Int
+  code: Int = Native.from_string(text) do |buf|
+    sqlite3_bind_text(stmt, index, buf, text.bytesize, transient())
+  end
+
+  return code
 end
 
 def bind_blob(stmt: Stmt, index: Int, bytes: List[Int]) -> Int

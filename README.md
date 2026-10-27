@@ -9,16 +9,17 @@ with one adapter per database, all through the C FFI (no C code of ours).
 | PostgreSQL | `postgres.agc`, the system `libpq` | available |
 | MySQL, MariaDB | `mysql.agc`, the system `libmariadb` | available |
 
-Needs Agentica 0.11.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
+Needs Agentica 0.12.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
 Linux, `libsqlite3.dylib` on macOS, `winsqlite3.dll` on Windows), libpq (`libpq.so.5`, `libpq.5.dylib`,
 `libpq.dll`; PostgreSQL 12 or later) or MariaDB Connector/C (`libmariadb.so.3`, `libmariadb.3.dylib`,
 `libmariadb.dll`; package `libmariadb3` on Debian and Ubuntu). A library is loaded when the first call needs it, so
-SQLite alone works without libpq or libmariadb. CI runs on Linux only; the macOS and Windows library names are
-declared but not tested yet. On macOS the manifest cannot name an absolute path, so run with Homebrew's libraries as
-`DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib" agentica ...` (for MySQL, `mariadb-connector-c`). On Windows,
-`libpq.dll` and `libmariadb.dll` are looked up next to `agentica.exe` and in System32, never in `PATH`, and so are
-the DLLs they need (`libssl`, `libcrypto`, `libintl`, ... for libpq; `libcrypto` and `libssl` for libmariadb):
-copy them there.
+SQLite alone works without libpq or libmariadb. A library that is missing makes `open` give an `error` that says so
+(`sqlite error: cannot load the SQLite library: ...`); it never stops the program. CI runs on Linux only; the macOS and
+Windows library names are declared but not tested yet. On macOS the manifest cannot name an absolute path, so run with
+Homebrew's libraries as `DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib" agentica ...` (for MySQL,
+`mariadb-connector-c`). On Windows, `libpq.dll` and `libmariadb.dll` are looked up next to `agentica.exe` and in
+System32, never in `PATH`, and so are the DLLs they need (`libssl`, `libcrypto`, `libintl`, ... for libpq; `libcrypto`
+and `libssl` for libmariadb): copy them there.
 
 ## Install
 
@@ -90,9 +91,9 @@ end
   from the list length yourself (only the placeholders, never the values) and pass the values as parameters.
 - An error is `error(message)` in one of two shapes. An engine failure is `<adapter> error <code>: <message>`, as in
   `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs (wrong parameter count, a
-  NUL in text, a blob item outside 0..255, no statement, two statements, a repeated result column), is
-  `<adapter> error: <message>`. An unknown url is `db error: <message>`. The code of PostgreSQL is its five character
-  SQLSTATE, the code of MySQL is the number of the server or the client library (see below).
+  NUL in text (PostgreSQL and MySQL), a blob item outside 0..255, no statement, two statements, a repeated result
+  column), is `<adapter> error: <message>`. An unknown url is `db error: <message>`. The code of PostgreSQL is its five
+  character SQLSTATE, the code of MySQL is the number of the server or the client library (see below).
 - Only the first and only statement of the string runs; two statements are an error. A result with two columns of
   one name is an error: alias them.
 - Types: a database type without a `Value` variant comes back as `Db.Value.Text` (the contract for PostgreSQL and
@@ -101,11 +102,10 @@ end
 - SQLite keeps its defaults: foreign keys are off until you run `PRAGMA foreign_keys = ON`.
 - `transaction` starts with `BEGIN IMMEDIATE` on SQLite, which needs write access to the database (a read-only
   database cannot open a transaction). A runtime error (a halt) inside the body stops the task
-  and leaves the transaction open; closing the connection rolls it back. For SQLite and PostgreSQL the end of the
-  task closes it; for MySQL the transaction and its locks stay until `Db.close` or the end of the process.
-- A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it; for SQLite and
-  PostgreSQL so does the end of the task, but for MySQL only `Db.close` does (see below). Using a SQLite connection
-  after `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
+  and leaves the transaction open; closing the connection rolls it back, which the end of the task does (see below).
+- A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it, and so does the
+  end of the task; a connection still open when `main` returns is closed too. Using a SQLite connection after `close`
+  is a runtime error (`RUNTIME-NATIVE-CLOSED`).
 
 ## PostgreSQL
 
@@ -151,7 +151,8 @@ rows = try Db.query(conn, "select id, name from users where age > ?::int", [Db.V
   A statement that fails inside a transaction aborts it: a `COMMIT` after that does not fail on the server (it rolls
   back), so this package turns it into `postgres error 25P02`, and `transaction` gives that error.
 - The end of the task that opened the connection closes it (the connection is a native resource freed by `PQfinish`),
-  or call `Db.close` earlier. Using a connection after `close` is `postgres error: the connection is closed`.
+  or call `Db.close` earlier; one still open when `main` returns is closed then. Using a connection after `close` is
+  `postgres error: the connection is closed`.
 - `open`, `query` and `execute` run on the compute pool: other tasks keep running while the server works.
 - Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
   `Task.await(task, ms)` times out, while a query is running, the libpq call still runs to its end and its result is
@@ -175,8 +176,8 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.
   with the code of the client library or the server (`2002` unreachable, `1045` access denied, `1049` unknown
   database); the messages of the library name the user and the host but never the password.
 - The adapter goes through MariaDB Connector/C (`libmariadb.so.3`), which talks to MySQL and MariaDB servers. It is
-  tested with MariaDB 11 and MySQL 8.4. The offsets of its `MYSQL_BIND` and `MYSQL_FIELD` structs and the numbers of
-  its options are those of Connector/C 3.x, so `libmysqlclient` cannot take its place.
+  tested with MariaDB 11 and MySQL 8.4. The layout of its `MYSQL_BIND` and `MYSQL_FIELD` structs (declared in
+  `mysql.agc`) and the numbers of its options are those of Connector/C 3.x, so `libmysqlclient` cannot take its place.
 - Every statement with parameters is prepared (`mysql_stmt_*`): the sql is sent with its `?` placeholders and the
   values are bound as
   `BIGINT`, `DOUBLE`, strings and blobs. The `?` of a string, a quoted identifier or a comment is not a placeholder:
@@ -227,9 +228,10 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.
   certificate is not supported. The path of `ssl_ca` is read by the process, so a relative path is relative to its
   working directory. Verifying a good certificate is not tested here: the test servers have self-signed ones.
 - `LOAD DATA LOCAL INFILE` is off, so a server cannot ask for a file of this machine.
-- The end of the task does not close the connection (unlike SQLite and PostgreSQL): call `Db.close`. The server
-  session and the locks of an open transaction stay until then. Using a connection after `close` is `mysql error:
-  the connection is closed`.
+- The end of the task that opened the connection closes it (the connection is a native resource freed by
+  `mysql_close`), or call `Db.close` earlier; one still open when `main` returns is closed then. The server session and
+  the locks of an open transaction stay until then. `mysql_close` talks to the server and blocks the scheduler while it
+  runs, so other tasks wait for it. Using a connection after `close` is `mysql error: the connection is closed`.
 - `open`, `query` and `execute` wait for the server on the compute pool: other tasks keep running.
 - Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
   `Task.await(task, ms)` times out, while a query is running, the call still runs to its end and its result is
@@ -246,7 +248,7 @@ tests (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`, `test/mysql_url_
 them only as the single integration row per adapter (a bad url, a NUL in the sql).
 
 ```sh
-for file in *.agc specs/*.agc test/*.agc; do agentica check "$file"; done
+for file in *.agc specs/*.agc specs/fixtures/*/*.agc test/*.agc; do agentica check "$file"; done
 agentica test
 ```
 

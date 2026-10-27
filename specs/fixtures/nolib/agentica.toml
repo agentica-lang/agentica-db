@@ -1,0 +1,21 @@
+name = "nolib"
+
+# The manifest of the program under test of the missing-library scenario: every library of the package is a path that
+# does not exist, so Db.open must fail with an error instead of stopping the program.
+[native.sqlite3]
+linux = { system = "/nonexistent/libsqlite3.so.0" }
+macos = { system = "/nonexistent/libsqlite3.dylib" }
+windows = { system = "C:\\nonexistent\\winsqlite3.dll" }
+
+[native.pq]
+linux = { system = "/nonexistent/libpq.so.5" }
+macos = { system = "/nonexistent/libpq.5.dylib" }
+windows = { system = "C:\\nonexistent\\libpq.dll" }
+
+[native.mariadb]
+linux = { system = "/nonexistent/libmariadb.so.3" }
+macos = { system = "/nonexistent/libmariadb.3.dylib" }
+windows = { system = "C:\\nonexistent\\libmariadb.dll" }
+
+[style]
+blank_line_after_end = true

@@ -14,11 +14,15 @@ Feature: SQLite
       | v    |
       | Null |
 
-  Scenario: A text with an embedded NUL reads back whole on sqlite
+  Scenario: A text with an embedded NUL is written and read back whole on sqlite
     Given a "sqlite" database
-    Then the query "select 'a' || char(0) || 'b' as s" returns:
-      | s            |
+    And I execute "create temp table t (s text)"
+    And I execute "insert into t values (?)" with:
+      | value        |
       | Text a[NUL]b |
+    Then the query "select s, length(cast(s as blob)) as n from t" returns:
+      | s            | n     |
+      | Text a[NUL]b | Int 3 |
 
   Scenario: A form feed is a space and a vertical tab is refused on sqlite
     Given a "sqlite" database

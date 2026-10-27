@@ -1,11 +1,9 @@
 ## The MySQL and MariaDB adapter, through the system MariaDB Connector/C (`libmariadb.so.3`), which speaks to MySQL
 ## and MariaDB servers alike.
 ##
-## `open` gives a `Handle`, which the task that opened it owns. Close it with `close`: the end of the task frees the
-## handle (a cell that holds the connection pointer) but does not close the connection, unlike PostgreSQL, whose
-## connection is a resource next to the same closed cell. The server session, its socket and the locks of an open
-## transaction stay until `close` or the end of the process. The cell is what makes a closed handle give `mysql
-## error: the connection is closed`.
+## `open` gives a `Handle`, which the task that opened it owns. Close it with `close`, or the end of the task closes
+## it (`mysql_close`, the free function of the connection resource), as in the other adapters. A closed handle gives
+## `mysql error: the connection is closed`.
 ##
 ## Every statement goes through the prepared statement API (`mysql_stmt_*`): the sql is sent as it is, with its `?`
 ## placeholders, and the values are bound, never spliced.
@@ -14,9 +12,11 @@
 ## key) or of the client library (`2002` for a server that cannot be reached) and its message. A bad input is
 ## `mysql error: <message>`. A message never holds the url or the password.
 ##
-## The C structs `MYSQL_BIND` and `MYSQL_FIELD` are byte buffers with the offsets of MariaDB Connector/C 3.x: an
-## extern block passes a struct by value only, and the library wants an array of binds by pointer, each pointing to
-## buffers of its own (there is no pointer arithmetic to point into one buffer).
+## `MysqlBind` and `MysqlField` declare the C structs `MYSQL_BIND` and `MYSQL_FIELD` of MariaDB Connector/C 3.x, field
+## by field: a struct of an extern block has the whole layout of the header (there are no partial structs), so the
+## fields that this adapter never reads are there to give the right size and offsets (112 and 128 bytes on Linux
+## x86-64). `Native.size_of`, `Native.get_struct` and `Native.put_struct` read and write them in the arrays that the
+## library takes by pointer. `unsigned long` is a `C.Long`, which is 32 bits on Windows.
 
 import MysqlSql from "mysql_sql"
 import MysqlUrl from "mysql_url"
@@ -25,7 +25,6 @@ import {Row, Value} from "value"
 ## The statement that starts a transaction.
 export BEGIN_SQL = "START TRANSACTION"
 POINTER_SIZE = 8
-CELL_OFFSET = 0
 BYTE_MAX = 255
 CHARSET = "utf8mb4"
 # The client flag CLIENT_FOUND_ROWS: an UPDATE counts the rows it matched, as in the other adapters, not only the
@@ -50,21 +49,6 @@ UNSUPPORTED_PREPARE = 1295
 FETCH_ERROR = 1
 FETCH_NO_DATA = 100
 FETCH_TRUNCATED = 101
-# The offsets in MYSQL_BIND (112 bytes): the pointers to the length and to the null flag, the buffer, its length,
-# and the type of the buffer.
-BIND_SIZE = 112
-BIND_LENGTH = 0
-BIND_IS_NULL = 8
-BIND_BUFFER = 16
-BIND_BUFFER_LENGTH = 64
-BIND_BUFFER_TYPE = 96
-# The offsets in MYSQL_FIELD (128 bytes).
-FIELD_NAME = 0
-FIELD_LENGTH = 56
-FIELD_MAX_LENGTH = 64
-FIELD_FLAGS = 100
-FIELD_CHARSET = 108
-FIELD_TYPE = 112
 UNSIGNED_FLAG = 32
 BINARY_CHARSET = 63
 # enum_field_types: the buffer types that this adapter binds, and the field types that it tells apart.
@@ -108,25 +92,73 @@ struct Slots
   null: C.Pointer
 end
 
-## An open connection: an owned cell that holds the MYSQL pointer, which `close` sets to NULL.
-export type Handle = C.Pointer
-
-# The names of the library start with `mysql_`, so a statement can be a resource that the end of the task frees.
+# The names of the library start with `mysql_`, so a connection and a statement can be resources that the end of the
+# task frees. `mysql_close` blocks while it says goodbye to the server, and a free runs on the scheduler.
 extern "mariadb"
+  ## An open connection (a `MYSQL *`).
+  export resource Handle, free: mysql_close
   resource Stmt, free: mysql_stmt_close
-  def mysql_init(mysql: C.Pointer) -> C.Pointer
-  compute def mysql_real_connect(mysql: C.Pointer, host: C.String, user: C.String, password: C.String,
+
+  # MYSQL_BIND, in the order of mysql.h. The pointers and the callbacks after `buffer` are the library's own.
+  struct MysqlBind
+    length: C.Pointer
+    is_null: C.Pointer
+    buffer: C.Pointer
+    error_flag: C.Pointer
+    row_ptr: C.Pointer
+    store_param_func: C.Pointer
+    fetch_result: C.Pointer
+    skip_result: C.Pointer
+    buffer_length: C.Long
+    offset: C.Long
+    length_value: C.Long
+    flags: C.UInt32
+    pack_length: C.UInt32
+    buffer_type: C.Int32
+    error_value: C.UInt8
+    is_unsigned: C.UInt8
+    long_data_used: C.UInt8
+    is_null_value: C.UInt8
+    extension: C.Pointer
+  end
+
+  # MYSQL_FIELD, in the order of mariadb_com.h (`def` is a keyword, hence `def_value`).
+  struct MysqlField
+    name: C.Pointer
+    org_name: C.Pointer
+    table: C.Pointer
+    org_table: C.Pointer
+    db: C.Pointer
+    catalog: C.Pointer
+    def_value: C.Pointer
+    length: C.Long
+    max_length: C.Long
+    name_length: C.UInt32
+    org_name_length: C.UInt32
+    table_length: C.UInt32
+    org_table_length: C.UInt32
+    db_length: C.UInt32
+    catalog_length: C.UInt32
+    def_length: C.UInt32
+    flags: C.UInt32
+    decimals: C.UInt32
+    charsetnr: C.UInt32
+    type: C.Int32
+    extension: C.Pointer
+  end
+
+  def mysql_init(mysql: C.Pointer) -> Handle
+  compute def mysql_real_connect(mysql: Handle, host: C.String, user: C.String, password: C.String,
                                  database: C.String, port: C.Int32, socket: C.Pointer,
-                                 flags: C.Int64) -> C.Pointer
-  def mysql_options(mysql: C.Pointer, option: C.Int32, value: C.Pointer) -> C.Int32
-  def mysql_options_text(mysql: C.Pointer, option: C.Int32, value: C.String) -> C.Int32 = "mysql_options"
-  compute def mysql_set_character_set(mysql: C.Pointer, name: C.String) -> C.Int32
-  compute def mysql_close(mysql: C.Pointer) -> Void
-  def mysql_errno(mysql: C.Pointer) -> C.Int32
-  def mysql_error(mysql: C.Pointer) -> C.String
-  def mariadb_get_info(mysql: C.Pointer, value: C.Int32, arg: C.Pointer) -> C.Bool
-  def mysql_stmt_init(mysql: C.Pointer) -> Stmt
-  compute def mysql_stmt_prepare(stmt: Stmt, sql: C.String, bytes: C.Int64) -> C.Int32
+                                 flags: C.Long) -> C.Pointer
+  def mysql_options(mysql: Handle, option: C.Int32, value: C.Pointer) -> C.Int32
+  def mysql_options_text(mysql: Handle, option: C.Int32, value: C.String) -> C.Int32 = "mysql_options"
+  compute def mysql_set_character_set(mysql: Handle, name: C.String) -> C.Int32
+  def mysql_errno(mysql: Handle) -> C.Int32
+  def mysql_error(mysql: Handle) -> C.String
+  def mariadb_get_info(mysql: Handle, value: C.Int32, arg: C.Pointer) -> C.Bool
+  def mysql_stmt_init(mysql: Handle) -> Stmt
+  compute def mysql_stmt_prepare(stmt: Stmt, sql: C.String, bytes: C.Long) -> C.Int32
   def mysql_stmt_param_count(stmt: Stmt) -> C.Int64
   def mysql_stmt_bind_param(stmt: Stmt, binds: C.Pointer) -> C.Bool
   compute def mysql_stmt_execute(stmt: Stmt) -> C.Int32
@@ -140,14 +172,14 @@ extern "mariadb"
   def mysql_stmt_errno(stmt: Stmt) -> C.Int32
   def mysql_stmt_error(stmt: Stmt) -> C.String
   # The text protocol, for the statements that the server does not prepare.
-  compute def mysql_real_query(mysql: C.Pointer, sql: C.String, bytes: C.Int64) -> C.Int32
-  compute def mysql_store_result(mysql: C.Pointer) -> C.Pointer
-  def mysql_field_count(mysql: C.Pointer) -> C.Int32
-  def mysql_affected_rows(mysql: C.Pointer) -> C.Int64
+  compute def mysql_real_query(mysql: Handle, sql: C.String, bytes: C.Long) -> C.Int32
+  compute def mysql_store_result(mysql: Handle) -> C.Pointer
+  def mysql_field_count(mysql: Handle) -> C.Int32
+  def mysql_affected_rows(mysql: Handle) -> C.Int64
   def mysql_fetch_row(result: C.Pointer) -> C.Pointer
   def mysql_fetch_lengths(result: C.Pointer) -> C.Pointer
-  def mysql_more_results(mysql: C.Pointer) -> C.Bool
-  compute def mysql_next_result(mysql: C.Pointer) -> C.Int32
+  def mysql_more_results(mysql: Handle) -> C.Bool
+  compute def mysql_next_result(mysql: Handle) -> C.Int32
   def mysql_free_result(result: C.Pointer) -> Void
   def mysql_num_fields(result: C.Pointer) -> C.Int32
   def mysql_fetch_field_direct(result: C.Pointer, index: C.Int32) -> C.Pointer
@@ -156,14 +188,11 @@ end
 ## Connects with a `mysql://` or `mariadb://` url (see `MysqlUrl`). The client character set is utf8mb4.
 export def open(url: String) -> Result[Handle]
   target = try MysqlUrl.parse(url)
-  mysql = mysql_init(Native.null())
-  if Native.null?(mysql)
-    return error("mysql error: out of memory")
-  end
-
+  try load_library()
+  mysql = try init()
   configured = configure(mysql, target)
   if not configured.ok?
-    mysql_close(mysql)
+    Native.close(mysql)
     return error(configured.message)
   end
 
@@ -177,18 +206,12 @@ export def open(url: String) -> Result[Handle]
     return abandon(mysql)
   end
 
-  handle = Native.memory_pointer(POINTER_SIZE)
-  Native.put_pointer(handle, CELL_OFFSET, mysql)
-  return ok(handle)
+  return ok(mysql)
 end
 
 ## Closes the connection; closing it again does nothing.
 export def close(handle: Handle) -> Void
-  mysql = Native.get_pointer(handle, CELL_OFFSET)
-  if not Native.null?(mysql)
-    mysql_close(mysql)
-    Native.put_pointer(handle, CELL_OFFSET, Native.null())
-  end
+  Native.close(handle)
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
@@ -196,12 +219,12 @@ end
 ## prepare (`START TRANSACTION`, `BEGIN`, `SAVEPOINT`, `USE` and `LOCK TABLES` on MySQL) goes through the text
 ## protocol, which is safe because there is nothing to bind.
 export def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
-  mysql = try live(handle)
+  try check_open(handle)
   statement = try MysqlSql.inspect(sql)
   try check_params(params)
-  try check_begin(mysql, statement.verb)
-  case start(mysql, sql)
-    error(message) if text_only?(message, params) -> return text_query(mysql, sql)
+  try check_begin(handle, statement.verb)
+  case start(handle, sql)
+    error(message) if text_only?(message, params) -> return text_query(handle, sql)
     error(message) -> return error(message)
     ok(stmt) ->
       rows = launch_query(stmt, params)
@@ -213,12 +236,12 @@ end
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
 ## replaced. The text protocol is used as for `query`.
 export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
-  mysql = try live(handle)
+  try check_open(handle)
   statement = try MysqlSql.inspect(sql)
   try check_params(params)
-  try check_begin(mysql, statement.verb)
-  case start(mysql, sql)
-    error(message) if text_only?(message, params) -> return text_execute(mysql, sql, statement.verb)
+  try check_begin(handle, statement.verb)
+  case start(handle, sql)
+    error(message) if text_only?(message, params) -> return text_execute(handle, sql, statement.verb)
     error(message) -> return error(message)
     ok(stmt) ->
       changed = launch_execute(stmt, params, statement.verb)
@@ -227,10 +250,25 @@ export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[I
   end
 end
 
+# A library that is missing is an error here, not a stop of the program at the first call.
+def load_library() -> Result[Void]
+  case Native.load("mariadb")
+    error(message) -> return error("mysql error: cannot load the client library: #{message}")
+    ok(_) -> return ok()
+  end
+end
+
+def init() -> Result[Handle]
+  case mysql_init(Native.null())
+    error(_) -> return error("mysql error: out of memory")
+    ok(mysql) -> return ok(mysql)
+  end
+end
+
 # Options set before the connection: the connect timeout (0 keeps the library's), no LOCAL INFILE, and the TLS mode
 # (the library's own when the url sets none). The library says whether it took an option, and a refused one stops
 # the connection: a TLS option that did nothing would connect without the check that was asked for.
-def configure(mysql: C.Pointer, target: MysqlUrl.Target) -> Result[Void]
+def configure(mysql: Handle, target: MysqlUrl.Target) -> Result[Void]
   if target.timeout > 0
     try set_number(mysql, OPT_CONNECT_TIMEOUT, target.timeout)
   end
@@ -244,7 +282,7 @@ def configure(mysql: C.Pointer, target: MysqlUrl.Target) -> Result[Void]
 end
 
 # `ca` is empty to accept any certificate, else the PEM file of authorities that the certificate is checked against.
-def require_tls(mysql: C.Pointer, ca: String) -> Result[Void]
+def require_tls(mysql: Handle, ca: String) -> Result[Void]
   try set_flag(mysql, OPT_SSL_ENFORCE)
   if not ca.empty?
     try set_flag(mysql, OPT_SSL_VERIFY_SERVER_CERT)
@@ -256,7 +294,7 @@ def require_tls(mysql: C.Pointer, ca: String) -> Result[Void]
   return ok()
 end
 
-def set_number(mysql: C.Pointer, option: Int, n: Int) -> Result[Void]
+def set_number(mysql: Handle, option: Int, n: Int) -> Result[Void]
   refused: Bool = Native.memory_pointer(POINTER_SIZE) do |value|
     Native.put_int32(value, 0, n)
     mysql_options(mysql, option, value) != 0
@@ -270,7 +308,7 @@ def set_number(mysql: C.Pointer, option: Int, n: Int) -> Result[Void]
 end
 
 # A my_bool option set to true: one byte.
-def set_flag(mysql: C.Pointer, option: Int) -> Result[Void]
+def set_flag(mysql: Handle, option: Int) -> Result[Void]
   refused: Bool = Native.memory_pointer(1) do |flag|
     Native.put_int8(flag, 0, 1)
     mysql_options(mysql, option, flag) != 0
@@ -284,9 +322,9 @@ def set_flag(mysql: C.Pointer, option: Int) -> Result[Void]
 end
 
 # Frees the connection when it does not work: a failed connect still holds the error.
-def abandon(mysql: C.Pointer) -> Result[Handle]
+def abandon(mysql: Handle) -> Result[Handle]
   message = failure(mysql_errno(mysql), mysql_error(mysql))
-  mysql_close(mysql)
+  Native.close(mysql)
   return error(message)
 end
 
@@ -303,13 +341,13 @@ def stmt_failure(stmt: Stmt) -> String
   return failure(mysql_stmt_errno(stmt), mysql_stmt_error(stmt))
 end
 
-def live(handle: Handle) -> Result[C.Pointer]
-  mysql = Native.get_pointer(handle, CELL_OFFSET)
-  if Native.null?(mysql)
+# A call with a closed resource stops the program, so a closed handle is turned into an error first.
+def check_open(handle: Handle) -> Result[Void]
+  if Native.closed?(handle)
     return error("mysql error: the connection is closed")
   end
 
-  return ok(mysql)
+  return ok()
 end
 
 def noun(count: Int) -> String
@@ -323,7 +361,7 @@ end
 # MySQL has no error for a BEGIN inside a transaction: it commits the open one without a word. Transactions do not
 # nest here, as in the other adapters, so a BEGIN or START TRANSACTION is refused while the server says that one is
 # open.
-def check_begin(mysql: C.Pointer, verb: String) -> Result[Void]
+def check_begin(mysql: Handle, verb: String) -> Result[Void]
   if (verb == "begin" or verb == "start") and in_transaction?(mysql)
     return error("mysql error: a transaction is already in progress")
   end
@@ -331,7 +369,7 @@ def check_begin(mysql: C.Pointer, verb: String) -> Result[Void]
   return ok()
 end
 
-def in_transaction?(mysql: C.Pointer) -> Bool
+def in_transaction?(mysql: Handle) -> Bool
   open: Bool = Native.memory_pointer(POINTER_SIZE) do |status|
     failed = mariadb_get_info(mysql, INFO_SERVER_STATUS, status)
     (not failed) and Native.get_uint32(status, 0) % 2 == 1
@@ -369,7 +407,7 @@ def check_params(params: List[Value]) -> Result[Void]
 end
 
 # A statement that is prepared. The caller closes it.
-def start(mysql: C.Pointer, sql: String) -> Result[Stmt]
+def start(mysql: Handle, sql: String) -> Result[Stmt]
   made = mysql_stmt_init(mysql)
   if not made.ok?
     return error("mysql error: out of memory")
@@ -377,7 +415,7 @@ def start(mysql: C.Pointer, sql: String) -> Result[Stmt]
 
   stmt = try made
   # The length is given, so the sql needs no NUL at its end.
-  if mysql_stmt_prepare(stmt, sql, sql.to_bytes.size) != 0
+  if mysql_stmt_prepare(stmt, sql, sql.bytesize) != 0
     return refuse(stmt, stmt_failure(stmt))
   end
 
@@ -430,7 +468,7 @@ end
 # True when the statement ran. The bind array and the buffers it points to must stay until the execute returns, so
 # they are freed right after it, and nothing between the allocation and the free can return.
 def send(stmt: Stmt, params: List[Value]) -> Bool
-  sent: Bool = Native.memory_pointer(max_one(params.size) * BIND_SIZE) do |binds|
+  sent: Bool = Native.memory_pointer(max_one(params.size) * Native.size_of(MysqlBind)) do |binds|
     owned = fill_binds(binds, params)
     bound = params.empty? or (not mysql_stmt_bind_param(stmt, binds))
     ran = bound and mysql_stmt_execute(stmt) == 0
@@ -456,14 +494,13 @@ def fill_binds(binds: C.Pointer, params: List[Value]) -> List[C.Pointer]
   owned: List[C.Pointer] = []
   index = 0
   for param in params
-    base = index * BIND_SIZE
     case param
-      Value.Null -> Native.put_int32(binds, base + BIND_BUFFER_TYPE, TYPE_NULL)
-      Value.Int(n) -> owned = owned.push(bind_int(binds, base, n))
-      Value.Bool(flag) -> owned = owned.push(bind_int(binds, base, bool_int(flag)))
-      Value.Float(x) -> owned = owned.push(bind_float(binds, base, x))
-      Value.Text(text) -> owned = owned.push(bind_text(binds, base, text))
-      Value.Blob(bytes) -> owned = owned.push(bind_blob(binds, base, bytes))
+      Value.Null -> put_bind(binds, index, bind_at(binds, index).with(buffer_type: TYPE_NULL))
+      Value.Int(n) -> owned = owned.push(bind_int(binds, index, n))
+      Value.Bool(flag) -> owned = owned.push(bind_int(binds, index, bool_int(flag)))
+      Value.Float(x) -> owned = owned.push(bind_float(binds, index, x))
+      Value.Text(text) -> owned = owned.push(bind_text(binds, index, text))
+      Value.Blob(bytes) -> owned = owned.push(bind_blob(binds, index, bytes))
     end
 
     index += 1
@@ -480,42 +517,45 @@ def bool_int(flag: Bool) -> Int
   return 0
 end
 
-# Points the bind at `base` to a new buffer of `size` bytes (at least one) with the given type, and gives it.
-def bind_buffer(binds: C.Pointer, base: Int, type: Int, size: Int) -> C.Pointer
-  buffer = Native.memory_pointer(max_one(size))
-  Native.put_pointer(binds, base + BIND_BUFFER, buffer)
-  Native.put_int32(binds, base + BIND_BUFFER_TYPE, type)
-  Native.put_int64(binds, base + BIND_BUFFER_LENGTH, size)
+# The bind at `index` of the array, which starts zeroed: every pointer in it is NULL until a field is set.
+def bind_at(binds: C.Pointer, index: Int) -> MysqlBind
+  return Native.get_struct(binds, index * Native.size_of(MysqlBind), MysqlBind)
+end
+
+def put_bind(binds: C.Pointer, index: Int, bind: MysqlBind) -> Void
+  Native.put_struct(binds, index * Native.size_of(MysqlBind), bind)
+end
+
+# Points the bind at `index` to `buffer`, with the given type and `length` bytes.
+def bind_buffer(binds: C.Pointer, index: Int, buffer: C.Pointer, type: Int, length: Int) -> C.Pointer
+  put_bind(binds, index, bind_at(binds, index).with(buffer: buffer, buffer_type: type, buffer_length: length))
   return buffer
 end
 
-def bind_int(binds: C.Pointer, base: Int, n: Int) -> C.Pointer
-  buffer = bind_buffer(binds, base, TYPE_LONGLONG, 8)
+def bind_int(binds: C.Pointer, index: Int, n: Int) -> C.Pointer
+  buffer = Native.memory_pointer(8)
   Native.put_int64(buffer, 0, n)
-  return buffer
+  return bind_buffer(binds, index, buffer, TYPE_LONGLONG, 8)
 end
 
-def bind_float(binds: C.Pointer, base: Int, x: Float) -> C.Pointer
-  buffer = bind_buffer(binds, base, TYPE_DOUBLE, 8)
+def bind_float(binds: C.Pointer, index: Int, x: Float) -> C.Pointer
+  buffer = Native.memory_pointer(8)
   Native.put_float64(buffer, 0, x)
-  return buffer
+  return bind_buffer(binds, index, buffer, TYPE_DOUBLE, 8)
 end
 
-def bind_text(binds: C.Pointer, base: Int, text: String) -> C.Pointer
-  # The buffer holds one byte more than the text, for the NUL that put_string writes.
-  buffer = bind_buffer(binds, base, TYPE_VAR_STRING, text.to_bytes.size + 1)
-  Native.put_string(buffer, 0, text)
-  Native.put_int64(binds, base + BIND_BUFFER_LENGTH, text.to_bytes.size)
-  return buffer
+def bind_text(binds: C.Pointer, index: Int, text: String) -> C.Pointer
+  return bind_buffer(binds, index, Native.from_string(text), TYPE_VAR_STRING, text.bytesize)
 end
 
-def bind_blob(binds: C.Pointer, base: Int, bytes: List[Int]) -> C.Pointer
-  buffer = bind_buffer(binds, base, TYPE_BLOB, bytes.size)
+# A buffer holds at least one byte, so an empty blob still has a pointer.
+def bind_blob(binds: C.Pointer, index: Int, bytes: List[Int]) -> C.Pointer
+  buffer = Native.memory_pointer(max_one(bytes.size))
   if not bytes.empty?
     Native.put_bytes(buffer, 0, bytes)
   end
 
-  return buffer
+  return bind_buffer(binds, index, buffer, TYPE_BLOB, bytes.size)
 end
 
 # A statement run for its effect: a result set it makes is stored and dropped, because the connection takes no new
@@ -575,14 +615,9 @@ end
 def describe(meta: C.Pointer) -> List[Column]
   columns: List[Column] = []
   for index in 0...mysql_num_fields(meta)
-    field = mysql_fetch_field_direct(meta, index)
-    name = Native.get_string(Native.get_pointer(field, FIELD_NAME), 0)
-    type = Native.get_int32(field, FIELD_TYPE)
-    flags = Native.get_uint32(field, FIELD_FLAGS)
-    charset = Native.get_uint32(field, FIELD_CHARSET)
-    longest = Native.get_int64(field, FIELD_MAX_LENGTH)
-    width = Native.get_int64(field, FIELD_LENGTH)
-    columns = columns.push(column_of(name, type, flags, charset, longest, width))
+    field = Native.get_struct(mysql_fetch_field_direct(meta, index), 0, MysqlField)
+    name = Native.get_string(field.name, 0)
+    columns = columns.push(column_of(name, field.type, field.flags, field.charsetnr, field.max_length, field.length))
   end
 
   return columns
@@ -628,7 +663,7 @@ end
 # Binds a buffer to every column and reads the stored rows. The bind array lives for the whole read; the buffers of
 # the columns are freed after it, and nothing between their allocation and the free can return.
 def fetch_all(stmt: Stmt, columns: List[Column]) -> Result[List[Row]]
-  read: Result[List[Row]] = Native.memory_pointer(columns.size * BIND_SIZE) do |binds|
+  read: Result[List[Row]] = Native.memory_pointer(columns.size * Native.size_of(MysqlBind)) do |binds|
     slots = bind_columns(binds, columns)
     rows = read_bound(stmt, binds, columns, slots)
     for slot in slots
@@ -647,14 +682,11 @@ def bind_columns(binds: C.Pointer, columns: List[Column]) -> List[Slots]
   slots: List[Slots] = []
   index = 0
   for column in columns
-    base = index * BIND_SIZE
     slot = Slots(data: Native.memory_pointer(max_one(column.size)), length: Native.memory_pointer(8),
                  null: Native.memory_pointer(8))
-    Native.put_pointer(binds, base + BIND_BUFFER, slot.data)
-    Native.put_pointer(binds, base + BIND_LENGTH, slot.length)
-    Native.put_pointer(binds, base + BIND_IS_NULL, slot.null)
-    Native.put_int64(binds, base + BIND_BUFFER_LENGTH, column.size)
-    Native.put_int32(binds, base + BIND_BUFFER_TYPE, buffer_type(column.kind))
+    put_bind(binds, index, bind_at(binds, index).with(length: slot.length, is_null: slot.null, buffer: slot.data,
+                                                      buffer_length: column.size,
+                                                      buffer_type: buffer_type(column.kind)))
     slots = slots.push(slot)
     index += 1
   end
@@ -741,8 +773,8 @@ end
 
 # The text protocol. One statement is sent as it is, and every value comes back as text, which is read by the kind
 # of its column. It is for statements without parameters only.
-def text_result(mysql: C.Pointer, sql: String) -> Result[C.Pointer]
-  if mysql_real_query(mysql, sql, sql.to_bytes.size) != 0
+def text_result(mysql: Handle, sql: String) -> Result[C.Pointer]
+  if mysql_real_query(mysql, sql, sql.bytesize) != 0
     return error(failure(mysql_errno(mysql), mysql_error(mysql)))
   end
 
@@ -757,7 +789,7 @@ end
 
 # A statement that gives several results (a CALL) keeps the connection busy until they are read: the first is the
 # answer, the rest are dropped.
-def drop_results(mysql: C.Pointer) -> Void
+def drop_results(mysql: Handle) -> Void
   while mysql_more_results(mysql) and mysql_next_result(mysql) == 0
     res = mysql_store_result(mysql)
     if not Native.null?(res)
@@ -766,7 +798,7 @@ def drop_results(mysql: C.Pointer) -> Void
   end
 end
 
-def text_query(mysql: C.Pointer, sql: String) -> Result[List[Row]]
+def text_query(mysql: Handle, sql: String) -> Result[List[Row]]
   res = try text_result(mysql, sql)
   if Native.null?(res)
     drop_results(mysql)
@@ -786,7 +818,7 @@ def text_query(mysql: C.Pointer, sql: String) -> Result[List[Row]]
   return ok(rows)
 end
 
-def text_execute(mysql: C.Pointer, sql: String, verb: String) -> Result[Int]
+def text_execute(mysql: Handle, sql: String, verb: String) -> Result[Int]
   res = try text_result(mysql, sql)
   if not Native.null?(res)
     mysql_free_result(res)
