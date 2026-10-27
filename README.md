@@ -104,8 +104,9 @@ end
   database cannot open a transaction). A runtime error (a halt) inside the body stops the task
   and leaves the transaction open; closing the connection rolls it back, which the end of the task does (see below).
 - A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it, and so does the
-  end of the task; a connection still open when `main` returns is closed too. Using a SQLite connection after `close`
-  is a runtime error (`RUNTIME-NATIVE-CLOSED`).
+  end of the task; a connection still open when `main` returns is closed too. Open the connection in the task that
+  keeps it (usually `main`), or hand it over with `Task.spawn_owning(&f, conn)`: one opened in a task that ends comes
+  back closed. Using a SQLite connection after `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
 
 ## PostgreSQL
 
@@ -231,7 +232,9 @@ rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.
 - The end of the task that opened the connection closes it (the connection is a native resource freed by
   `mysql_close`), or call `Db.close` earlier; one still open when `main` returns is closed then. The server session and
   the locks of an open transaction stay until then. `mysql_close` talks to the server and blocks the scheduler while it
-  runs, so other tasks wait for it. Using a connection after `close` is `mysql error: the connection is closed`.
+  runs, so other tasks wait for it; it can also wait on a write the server does not accept (the library has no write
+  timeout set here). Open the connection in the task that keeps it, or hand it over with `Task.spawn_owning(&f, conn)`.
+  Using a connection after `close` is `mysql error: the connection is closed`.
 - `open`, `query` and `execute` wait for the server on the compute pool: other tasks keep running.
 - Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
   `Task.await(task, ms)` times out, while a query is running, the call still runs to its end and its result is

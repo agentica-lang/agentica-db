@@ -8,7 +8,12 @@ import Db from "../db"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
-SESSIONS_SQL = "select count(*) as n from pg_stat_activity where application_name = ?"
+# Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
+SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
+SESSIONS_SQL = {
+  "postgres": "select count(*) as n from pg_stat_activity where pid = ?",
+  "mysql": "select count(*) as n from information_schema.processlist where id = ?",
+}
 SESSION_POLL_MS = 50
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 SQLITE_MEMORY = "sqlite::memory:"
@@ -48,10 +53,10 @@ struct Job
   sql: String
 end
 
-# A connection that a task opens and leaves open, named so that the server shows its session.
+# A connection that a task opens and leaves open: the server shows its session by its id.
 struct Leave
   url: String
-  name: String
+  adapter: String
 end
 
 # A statement run in a task on a connection of its own.
@@ -110,7 +115,7 @@ def act(state: State, req: Request) -> Handled
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
     "keep_running" -> return keep_running(state, req.text, req.number)
-    "leave_open" -> return leave_open(state, req.text, req.number)
+    "leave_open" -> return leave_open(state, req.number)
     _ -> return Handled(state: state, reply: "unknown op #{req.op.inspect}")
   end
 end
@@ -296,50 +301,52 @@ def query_in_new_task(state: State, sql: String) -> State
   end
 end
 
-# The task opens a connection and ends without closing it. It gives the sessions that the server shows under the name
-# while the connection is open, since a session that never showed would pass the check of its end.
+# The task opens a connection and ends without closing it. It gives the id of the session while the connection is
+# open, since a session that never showed would pass the check of its end.
 def open_and_leave(job: Leave) -> Result[Int]
   conn = try Db.open(job.url)
-  return sessions(conn, job.name)
+  rows = try Db.query(conn, SESSION_ID_SQL[job.adapter], [])
+  return int_of(rows)
 end
 
-def sessions(conn: Db.Connection, name: String) -> Result[Int]
-  rows = try Db.query(conn, SESSIONS_SQL, [Db.Value.Text(name)])
+def int_of(rows: List[Db.Row]) -> Result[Int]
   case rows[0]["n"]
-    Db.Value.Int(count) -> return ok(count)
-    _ -> return error("the session count is not an Int")
+    Db.Value.Int(n) -> return ok(n)
+    _ -> return error("the count is not an Int")
   end
 end
 
+def sessions(conn: Db.Connection, adapter: String, id: Int) -> Result[Int]
+  rows = try Db.query(conn, SESSIONS_SQL[adapter], [Db.Value.Int(id)])
+  return int_of(rows)
+end
+
 # The end of the task that opened a connection closes it: the server drops the session within `limit_ms`.
-def leave_open(state: State, name: String, limit_ms: Int) -> Handled
+def leave_open(state: State, limit_ms: Int) -> Handled
   if state.conns.empty?
     return Handled(state: state, reply: NO_DATABASE)
   end
 
-  url = expand(state, "[URL]&application_name=#{name}")
-  seen = Task.await(Task.spawn(&open_and_leave, Leave(url: url, name: name)))
+  job = Leave(url: expand(state, "[URL]"), adapter: state.adapter)
+  seen = Task.await(Task.spawn(&open_and_leave, job))
   case seen
     error(message) -> return Handled(state: state, reply: "the task failed: #{message}")
-    ok(count) if count != 1 ->
-      return Handled(state: state, reply: "the task saw #{count} sessions named #{name}, not 1")
-    ok(_) -> return reply_ok_when_gone(state, name, limit_ms)
+    ok(id) -> return reply_ok_when_gone(state, id, limit_ms)
   end
 end
 
-def reply_ok_when_gone(state: State, name: String, limit_ms: Int) -> Handled
+def reply_ok_when_gone(state: State, id: Int, limit_ms: Int) -> Handled
   started = Time.monotonic_ms()
-  left = sessions(state.conns[0], name)
+  left = sessions(state.conns[0], state.adapter, id)
   while left.ok? and left.unwrap_or(0) > 0 and Time.monotonic_ms() - started < limit_ms
     Task.sleep(SESSION_POLL_MS)
-    left = sessions(state.conns[0], name)
+    left = sessions(state.conns[0], state.adapter, id)
   end
 
   case left
     error(message) -> return Handled(state: state, reply: "counting the sessions failed: #{message}")
     ok(0) -> return reply_ok(state)
-    ok(count) ->
-      return Handled(state: state, reply: "#{count} sessions named #{name} stayed open after #{limit_ms} ms")
+    ok(_) -> return Handled(state: state, reply: "the session #{id} stayed open after #{limit_ms} ms")
   end
 end
 

@@ -56,7 +56,7 @@ def main() -> Void
     text_step("it fails with exactly {string}", "expect_exact"),
     text_step("it fails mentioning {string}", "expect_mentions"),
     text_step("the failure never shows {string}", "expect_hides"),
-    BDD.step("a task leaves a connection named {string} open, and the server drops it within {int} ms", &left_open),
+    BDD.step("a task leaves a connection open, and the server drops its session within {int} ms", &left_open),
     BDD.step("another task keeps running during {string}, with gaps under {int} milliseconds") do |ctx, args|
       send(ctx, Request(op: "keep_running", text: args[0], number: args[1].to_i!))
     end,
@@ -80,7 +80,7 @@ def answers_with(ctx: BDD.Context, args: List[String]) -> BDD.Context
 end
 
 def left_open(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return send(ctx, Request(op: "leave_open", text: args[0], number: args[1].to_i!))
+  return send(ctx, Request(op: "leave_open", number: args[0].to_i!))
 end
 
 def open_database(ctx: BDD.Context, args: List[String]) -> BDD.Context

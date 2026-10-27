@@ -34,7 +34,7 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   `db.agc` also re-exports `Value` and `Row` of `value.agc` (`export V.Value`), so a user imports `Db` only. The
   connection of each adapter is a native resource (`sqlite3_close_v2`, `PQfinish`, `mysql_close`): the end of the task
   or of `main` closes it, and `Native.closed?` turns a use after `close` into an error (SQLite keeps the runtime
-  error). `open` calls `Native.load` first, so a missing library is an `error`.
+  error). `open` calls `Native.load` before touching the library, so a missing library is an `error`.
 - Placeholders are `?` in the API. An adapter translates them (`$1` for PostgreSQL; MySQL takes `?` natively) and
   always binds (`mysql_stmt_*` for MySQL); no value is ever spliced into sql.
 - A failure is `error(message)` in one of two shapes: an engine failure `<adapter> error <code>: <message>`, a

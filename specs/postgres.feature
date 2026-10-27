@@ -170,8 +170,3 @@ Feature: PostgreSQL
     Then the query "select 1 as v" returns:
       | v     |
       | Int 1 |
-
-  Scenario: The end of a task closes the connection it opened
-    Given a "postgres" database
-    Then a task leaves a connection named "agentica_db_leak" open, and the server drops it within 3000 ms
-

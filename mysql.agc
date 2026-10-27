@@ -122,6 +122,12 @@ extern "mariadb"
     extension: C.Pointer
   end
 
+  # One `unsigned long`, the type of a length: 4 bytes on Windows and 8 elsewhere. `Native.size_of` is the stride of the
+  # arrays of lengths (`MYSQL_BIND.length` slots and `mysql_fetch_lengths`), so no code assumes 8 bytes.
+  struct UnsignedLong
+    value: C.Long
+  end
+
   # MYSQL_FIELD, in the order of mariadb_com.h (`def` is a keyword, hence `def_value`).
   struct MysqlField
     name: C.Pointer
@@ -159,7 +165,7 @@ extern "mariadb"
   def mariadb_get_info(mysql: Handle, value: C.Int32, arg: C.Pointer) -> C.Bool
   def mysql_stmt_init(mysql: Handle) -> Stmt
   compute def mysql_stmt_prepare(stmt: Stmt, sql: C.String, bytes: C.Long) -> C.Int32
-  def mysql_stmt_param_count(stmt: Stmt) -> C.Int64
+  def mysql_stmt_param_count(stmt: Stmt) -> C.Long
   def mysql_stmt_bind_param(stmt: Stmt, binds: C.Pointer) -> C.Bool
   compute def mysql_stmt_execute(stmt: Stmt) -> C.Int32
   def mysql_stmt_attr_set(stmt: Stmt, attr: C.Int32, value: C.Pointer) -> C.Bool
@@ -682,7 +688,7 @@ def bind_columns(binds: C.Pointer, columns: List[Column]) -> List[Slots]
   slots: List[Slots] = []
   index = 0
   for column in columns
-    slot = Slots(data: Native.memory_pointer(max_one(column.size)), length: Native.memory_pointer(8),
+    slot = Slots(data: Native.memory_pointer(max_one(column.size)), length: Native.memory_pointer(Native.size_of(UnsignedLong)),
                  null: Native.memory_pointer(8))
     put_bind(binds, index, bind_at(binds, index).with(length: slot.length, is_null: slot.null, buffer: slot.data,
                                                       buffer_length: column.size,
@@ -728,6 +734,11 @@ def read_bound(stmt: Stmt, binds: C.Pointer, columns: List[Column], slots: List[
   return ok(rows)
 end
 
+# The length at `index` of an array of `unsigned long`, which C wrote.
+def read_length(lengths: C.Pointer, index: Int) -> Int
+  return Native.get_struct(lengths, index * Native.size_of(UnsignedLong), UnsignedLong).value
+end
+
 def read_row(columns: List[Column], slots: List[Slots]) -> Result[Row]
   row: Row = {}
   for index in 0...columns.size
@@ -743,7 +754,7 @@ def read_value(column: Column, slot: Slots) -> Result[Value]
     return ok(Value.Null)
   end
 
-  length = Native.get_int64(slot.length, 0)
+  length = read_length(slot.length, 0)
   if length > column.size
     return error("mysql error: a value is longer than its buffer")
   end
@@ -841,7 +852,7 @@ def text_rows(res: C.Pointer, columns: List[Column]) -> List[Row]
     row: Row = {}
     for index in 0...columns.size
       cell = Native.get_pointer(fetched, index * POINTER_SIZE)
-      length = Native.get_int64(lengths, index * POINTER_SIZE)
+      length = read_length(lengths, index)
       row = row.put(columns[index].name, text_value(columns[index], cell, length))
     end
 

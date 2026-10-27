@@ -77,3 +77,12 @@ Feature: Opening and closing a database
       | adapter  |
       | postgres |
       | mysql    |
+
+  Scenario Outline: The end of a task closes the connection it opened on <adapter>
+    Given a "<adapter>" database
+    Then a task leaves a connection open, and the server drops its session within 3000 ms
+
+    Examples:
+      | adapter  |
+      | postgres |
+      | mysql    |
