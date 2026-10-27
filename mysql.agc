@@ -122,8 +122,8 @@ extern "mariadb"
     extension: C.Pointer
   end
 
-  # One `unsigned long`, the type of a length: 4 bytes on Windows and 8 elsewhere. `Native.size_of` is the stride of the
-  # arrays of lengths (`MYSQL_BIND.length` slots and `mysql_fetch_lengths`), so no code assumes 8 bytes.
+  # One `unsigned long`, the type of a length: 4 bytes on Windows and 8 elsewhere. `Native.size_of` is the stride of
+  # the arrays of lengths (`MYSQL_BIND.length` slots and `mysql_fetch_lengths`), so no code assumes 8 bytes.
   struct UnsignedLong
     value: C.Long
   end
@@ -688,8 +688,8 @@ def bind_columns(binds: C.Pointer, columns: List[Column]) -> List[Slots]
   slots: List[Slots] = []
   index = 0
   for column in columns
-    slot = Slots(data: Native.memory_pointer(max_one(column.size)), length: Native.memory_pointer(Native.size_of(UnsignedLong)),
-                 null: Native.memory_pointer(8))
+    lengths = Native.memory_pointer(Native.size_of(UnsignedLong))
+    slot = Slots(data: Native.memory_pointer(max_one(column.size)), length: lengths, null: Native.memory_pointer(8))
     put_bind(binds, index, bind_at(binds, index).with(length: slot.length, is_null: slot.null, buffer: slot.data,
                                                       buffer_length: column.size,
                                                       buffer_type: buffer_type(column.kind)))
