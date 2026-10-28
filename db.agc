@@ -107,9 +107,9 @@ export def execute(conn: Connection, sql: String, params: List[V.Value]) -> Resu
 end
 
 ## Runs the block between the adapter's BEGIN and COMMIT and gives the value of the block's `ok`. An `error` from the
-## block, or a failed COMMIT, rolls back and gives that error (with the ROLLBACK failure appended, if it failed too). Transactions do not nest. A runtime
-## error in the block stops the task and leaves the transaction open; closing the connection rolls it back (for
-## MySQL only `close` or the end of the process does).
+## block, or a failed COMMIT, rolls back and gives that error (with the ROLLBACK failure appended, if it failed too).
+## Transactions do not nest. A runtime error in the block stops the task and leaves the transaction open; closing the
+## connection rolls it back (for MySQL only `close` or the end of the process does).
 export def transaction[R](conn: Connection, body: Fn[Connection, Result[R]]) -> Result[R]
   try execute(conn, begin_sql(conn), [])
   done = body.call(conn)

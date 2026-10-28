@@ -242,17 +242,31 @@ end
 # Each row of the table is a statement (the header row is skipped); a failed statement stops the body with its error
 # unless its row says to carry on. Then, when asked, the body starts a transaction inside the transaction. The body
 # ends with the failure message of the request, or gives the rows changed by its last statement: the transaction
-# records that count when the request asks for it (`gives`), else only that it worked.
+# gives that count when the request asks for it (`gives`), else it is a Void transaction that records only that it
+# worked.
 def transaction(state: State, req: Request) -> State
   rows = req.table.drop(1)
   return with_conn(state) do |conn|
-    done = Db.transaction(conn) do |tx| run_body(tx, rows, req) end
+    if req.gives
+      counted = Db.transaction(conn) do |tx| run_body(tx, rows, req) end
+      case counted
+        error(message) -> return failed(state, message)
+        ok(count) -> return recorded(state, Outcome.Counted(count))
+      end
+    end
+
+    done = Db.transaction(conn) do |tx| run_void(tx, rows, req) end
     case done
       error(message) -> return failed(state, message)
-      ok(count) if req.gives -> return recorded(state, Outcome.Counted(count))
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
+end
+
+# The same body for a transaction whose value is Void, so both forms of `Db.transaction` run in CI.
+def run_void(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Void]
+  try run_body(tx, rows, req)
+  return ok()
 end
 
 def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Int]

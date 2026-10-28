@@ -84,7 +84,7 @@ end
 | `open_mysql(url)` | `Result[Connection]`, a `mysql://` or `mariadb://` url |
 | `query(conn, sql, params)` | `Result[List[Db.Row]]`, a `Db.Row` is `Map[String, Db.Value]` in column order |
 | `execute(conn, sql, params)` | `Result[Int]`, the rows inserted, updated or deleted |
-| `transaction(conn) do \|tx\| ... end` | `Result[R]`, the block's `ok` value; BEGIN, COMMIT on `ok`, ROLLBACK on `error` |
+| `transaction(conn) do \|tx\| ... end` | `Result[R]`, the block's `ok` value; COMMIT on `ok`, ROLLBACK on `error` |
 | `close(conn)` | `Void`; closing twice is safe |
 
 `Db` also re-exports the types of `value.agc`, so one import is enough: `Db.Value` (`Db.Value.Null`,

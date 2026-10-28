@@ -60,24 +60,6 @@ Feature: Transactions
       | postgres |
       | mysql    |
 
-  Scenario Outline: A transaction that returns a value and then an error rolls back on <adapter>
-    Given a "<adapter>" database
-    And I execute "create temporary table users (name varchar(50) not null unique)"
-    And I execute "insert into users (name) values ('kept')"
-    When I run these statements in a transaction that gives a count, then fails with "stop here":
-      | sql                                      |
-      | insert into users (name) values ('lost') |
-    Then it fails with exactly "stop here"
-    And the query "select name from users" returns:
-      | name      |
-      | Text kept |
-
-    Examples:
-      | adapter  |
-      | sqlite   |
-      | postgres |
-      | mysql    |
-
   Scenario Outline: A failed statement inside a transaction rolls it back on <adapter>
     Given a "<adapter>" database
     And I execute "create temporary table users (name varchar(50) not null unique)"

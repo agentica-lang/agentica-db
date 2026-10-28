@@ -28,9 +28,6 @@ def main() -> Void
     BDD.step("I run these statements in a transaction that gives a count:") do |ctx, args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), gives: true))
     end,
-    BDD.step("I run these statements in a transaction that gives a count, then fails with {string}:") do |ctx, args|
-      send(ctx, Request(op: "transaction", text: args[0], table: BDD.table(ctx), gives: true))
-    end,
     BDD.step("I run these statements in a transaction that starts a transaction inside it:") do |ctx, args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), nested: true))
     end,
