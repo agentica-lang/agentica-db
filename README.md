@@ -9,7 +9,7 @@ with one adapter per database, all through the C FFI (no C code of ours).
 | PostgreSQL | `postgres.agc`, the system `libpq` | available |
 | MySQL, MariaDB | `mysql.agc`, the system `libmariadb` | available |
 
-Needs Agentica 0.12.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
+Needs Agentica 0.14.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
 Linux, `libsqlite3.dylib` on macOS, `winsqlite3.dll` on Windows), libpq (`libpq.so.5`, `libpq.5.dylib`,
 `libpq.dll`; PostgreSQL 12 or later) or MariaDB Connector/C (`libmariadb.so.3`, `libmariadb.3.dylib`,
 `libmariadb.dll`; package `libmariadb3` on Debian and Ubuntu). A library is loaded when the first call needs it, so
@@ -52,8 +52,14 @@ def run() -> Result[Void]
     ok()
   end
 
+  # The block's value comes back when the transaction commits.
+  saved = try Db.transaction(conn) do |tx|
+    save(tx, "Cy", 40)
+  end
+
+  puts(saved)   # 1
   rows = try Db.query(conn, "select name, age from users where age > ?", [Db.Value.Int(28)])
-  puts(rows)   # [{"name": Value.Text("Ana"), "age": Value.Int(31)}]
+  puts(rows)   # [{"name": Value.Text("Ana"), ...}, {"name": Value.Text("Cy"), ...}]
   Db.close(conn)
   return ok()
 end
@@ -78,7 +84,7 @@ end
 | `open_mysql(url)` | `Result[Connection]`, a `mysql://` or `mariadb://` url |
 | `query(conn, sql, params)` | `Result[List[Db.Row]]`, a `Db.Row` is `Map[String, Db.Value]` in column order |
 | `execute(conn, sql, params)` | `Result[Int]`, the rows inserted, updated or deleted |
-| `transaction(conn) do \|tx\| ... end` | `Result[Void]`; BEGIN, then COMMIT on `ok`, ROLLBACK on `error` |
+| `transaction(conn) do \|tx\| ... end` | `Result[R]`, the value of the block's `ok`; BEGIN, COMMIT on `ok`, ROLLBACK on `error` |
 | `close(conn)` | `Void`; closing twice is safe |
 
 `Db` also re-exports the types of `value.agc`, so one import is enough: `Db.Value` (`Db.Value.Null`,

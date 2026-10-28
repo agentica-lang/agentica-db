@@ -241,23 +241,30 @@ end
 
 # Each row of the table is a statement (the header row is skipped); a failed statement stops the body with its error
 # unless its row says to carry on. Then, when asked, the body starts a transaction inside the transaction. The body
-# ends with the failure message of the request, or with ok.
+# ends with the failure message of the request, or gives the rows changed by its last statement: the transaction
+# records that count when the request asks for it (`gives`), else only that it worked.
 def transaction(state: State, req: Request) -> State
   rows = req.table.drop(1)
   return with_conn(state) do |conn|
     done = Db.transaction(conn) do |tx| run_body(tx, rows, req) end
     case done
       error(message) -> return failed(state, message)
+      ok(count) if req.gives -> return recorded(state, Outcome.Counted(count))
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
 end
 
-def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Void]
+def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Int]
+  last = 0
   for row in rows
     done = Db.execute(tx, Cells.expand(row[0]), [])
-    if not done.ok? and not (row.size > 1 and row[1] == CARRY_ON)
-      return error(done.message)
+    case done
+      ok(count) -> last = count
+      error(message) ->
+        if not (row.size > 1 and row[1] == CARRY_ON)
+          return error(message)
+        end
     end
   end
 
@@ -269,7 +276,7 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
     return error(req.text)
   end
 
-  return ok()
+  return ok(last)
 end
 
 # A runtime error in the task ends only the task, and its await gives it as an error.

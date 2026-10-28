@@ -9,7 +9,8 @@ export OK = "ok"
 
 ## A request. Every field is always sent; each `op` reads the ones it needs. The ops are `open` (text: adapter),
 ## `open_url` (text: url), `execute` and `query` (text: sql, cells: params), `transaction` (table: statements,
-## text: the failure message of the body, empty for ok, nested: start a transaction inside it), `close`,
+## text: the failure message of the body, empty for ok, nested: start a transaction inside it, gives: the body
+## gives back the rows changed by its last statement, and the transaction gives that count), `close`,
 ## `execute_in_task`, `query_in_new_task` (text: sql), `keep_running` (text: sql, number: the longest gap in
 ## milliseconds), `leave_open` (text: connection name, number: milliseconds the server may take to drop it),
 ## `round_trips` (table: column type and cell), `float_oracle` (text: a float literal), and the
@@ -22,4 +23,5 @@ export struct Request
   cells: List[String] = []
   table: List[List[String]] = []
   nested: Bool = false
+  gives: Bool = false
 end

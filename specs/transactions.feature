@@ -1,6 +1,7 @@
 Feature: Transactions
   Db.transaction runs a block between BEGIN and COMMIT. The block returns ok to commit, or an error to roll back,
-  and the transaction gives that error. Transactions do not nest.
+  and the transaction gives that error. A block that returns a value gives it when the transaction commits.
+  Transactions do not nest.
 
   Scenario Outline: A transaction that returns ok commits on <adapter>
     Given a "<adapter>" database
@@ -26,6 +27,44 @@ Feature: Transactions
     And I execute "create temporary table users (name varchar(50) not null unique)"
     And I execute "insert into users (name) values ('kept')"
     When I run these statements in a transaction that fails with "stop here":
+      | sql                                      |
+      | insert into users (name) values ('lost') |
+    Then it fails with exactly "stop here"
+    And the query "select name from users" returns:
+      | name      |
+      | Text kept |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
+  Scenario Outline: A transaction that returns a value commits and gives it on <adapter>
+    Given a "<adapter>" database
+    And I execute "create temporary table users (name varchar(50) not null unique)"
+    When I run these statements in a transaction that gives a count:
+      | sql                                             |
+      | insert into users (name) values ('ana')         |
+      | insert into users (name) values ('bob'), ('cy') |
+    Then the changed row count is 2
+    And the query "select name from users order by name" returns:
+      | name     |
+      | Text ana |
+      | Text bob |
+      | Text cy  |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
+  Scenario Outline: A transaction that returns a value and then an error rolls back on <adapter>
+    Given a "<adapter>" database
+    And I execute "create temporary table users (name varchar(50) not null unique)"
+    And I execute "insert into users (name) values ('kept')"
+    When I run these statements in a transaction that gives a count, then fails with "stop here":
       | sql                                      |
       | insert into users (name) values ('lost') |
     Then it fails with exactly "stop here"
