@@ -1,6 +1,6 @@
 # agentica-db
 
-Database package for [Agentica](https://github.com/sonic182/agentica): one API for PostgreSQL, SQLite and MySQL,
+Database package for [Agentica](https://github.com/agentica-lang/agentica): one API for PostgreSQL, SQLite and MySQL,
 with one adapter per database, all through the C FFI (no C code of ours).
 
 | Database | Adapter | Status |
@@ -27,11 +27,11 @@ In your `agentica.toml`:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/sonic182/agentica-db", tag = "v0.1.0" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "v0.1.0" }
 ```
 
 `v0.1.0` is a placeholder: there is no release yet, so pin a commit with `--ref COMMIT` until the first tag.
-Then `agentica add db https://github.com/sonic182/agentica-db --tag v0.1.0` (or `agentica install` for a manifest
+Then `agentica add db https://github.com/agentica-lang/agentica-db --tag v0.1.0` (or `agentica install` for a manifest
 you edited) writes `agentica.lock` and `deps/db/`.
 
 ## Example
