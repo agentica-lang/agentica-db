@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 env:
-  AGENTICA_VERSION: 0.12.0
-  AGENTICA_SHA256: b679be65c9347802ccbf2506391084376a9d5252510f01beb9e5fbed81b965c0
+  AGENTICA_VERSION: 0.14.0
+  AGENTICA_SHA256: 492035091c596537637a9c7c9db5c917eed6b92bb85ec99068c1b26fa62fb3e6
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare

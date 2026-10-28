@@ -28,4 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   program.
 - SQLite binds a text with its length, so a text with a NUL is stored and read back whole (PostgreSQL and MySQL still
   refuse it).
-- Needs Agentica 0.12.0 (CI and README).
+- `Db.transaction` is generic: `transaction[R](conn, body)` gives the `R` of the block's `ok` when the transaction
+  commits (`Result[R]`); an `error` still rolls back. A block that returns `ok()` works as before. A block whose only
+  result is `error(...)` no longer infers `R`: give it a type (`failed: Result[Void] = error("x")`, then return
+  `failed`).
+- Needs Agentica 0.14.0 (CI and README).

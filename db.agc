@@ -106,23 +106,23 @@ export def execute(conn: Connection, sql: String, params: List[V.Value]) -> Resu
   end
 end
 
-## Runs the block between the adapter's BEGIN and COMMIT. An `error` from the block, or a failed COMMIT, rolls back
-## and gives that error (with the ROLLBACK failure appended, if it failed too). Transactions do not nest. A runtime
-## error in the block stops the task and leaves the transaction open; closing the connection rolls it back (for
-## MySQL only `close` or the end of the process does).
-export def transaction(conn: Connection, body: Fn[Connection, Result[Void]]) -> Result[Void]
+## Runs the block between the adapter's BEGIN and COMMIT and gives the value of the block's `ok`. An `error` from the
+## block, or a failed COMMIT, rolls back and gives that error (with the ROLLBACK failure appended, if it failed too).
+## Transactions do not nest. A runtime error in the block stops the task and leaves the transaction open; closing the
+## connection rolls it back (for MySQL only `close` or the end of the process does).
+export def transaction[R](conn: Connection, body: Fn[Connection, Result[R]]) -> Result[R]
   try execute(conn, begin_sql(conn), [])
   done = body.call(conn)
   case done
-    ok(_) -> return commit(conn)
+    ok(value) -> return commit(conn, value)
     error(message) -> return abandon(conn, message)
   end
 end
 
-def commit(conn: Connection) -> Result[Void]
+def commit[R](conn: Connection, value: R) -> Result[R]
   committed = execute(conn, "COMMIT", [])
   case committed
-    ok(_) -> return ok()
+    ok(_) -> return ok(value)
     error(message) -> return abandon(conn, message)
   end
 end
@@ -136,7 +136,7 @@ def begin_sql(conn: Connection) -> String
 end
 
 # The original error wins; a failed ROLLBACK is appended, since the transaction may still be open.
-def abandon(conn: Connection, message: String) -> Result[Void]
+def abandon[R](conn: Connection, message: String) -> Result[R]
   rolled = execute(conn, "ROLLBACK", [])
   case rolled
     ok(_) -> return error(message)
