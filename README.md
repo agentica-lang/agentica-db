@@ -215,16 +215,6 @@ plain identifiers, that every field has a column type, that the key is a field a
 - `query`, `find` and the writes take the connection first; the steps and the ends of a query (below) take the query
   first, so that they chain with `|>`.
 
-### Example: a users API
-
-[`examples/users.agc`](examples/users.agc) is a small web-handler style program built on the Orm: a route is a function
-from an `HttpRequest` to an `HttpResponse` that takes the connection as an argument. It has a schema and `check`,
-`POST /users` (`insert`), `GET /users/7` (`find`: 200, or 404 for `None`), `GET /users?min_age=30&sort=name` (the query
-builder, with a column that comes from the request), `PATCH /users/7` (`patch` with the JSON body as it is),
-`DELETE /users/7`, and an import of several users in a `Db.transaction` that gives back the users it created and rolls
-back when one insert fails. It runs against in-memory SQLite and prints each request with its response
-(`agentica examples/users.agc`); CI runs it (`specs/examples.feature`).
-
 ### The query builder
 
 `Orm.from(schema)` starts a query; the functions below take the query first, so they chain with `|>`, and the query
@@ -269,6 +259,18 @@ rows = try (Orm.from(users)
   first row of that order). Where NULLs sort differs between the databases (SQLite and MySQL: first when ascending;
   PostgreSQL: last): do not count on it, or order by a column that is never NULL.
 - `find` is `where_eq` on the key plus `one`, and refuses a key of another kind than the key field, as `delete` does.
+
+### Example: a users API
+
+[`examples/users.agc`](examples/users.agc) is a small web-handler style program built on the Orm: a route is a function
+from an `HttpRequest` to an `HttpResponse` that takes the connection as an argument. It has a schema and `check`,
+`POST /users` (`insert`), `GET /users/7` (`find`: 200, or 404 for `None`), `GET /users?min_age=30&sort=name` (the query
+builder, with a column that comes from the request), `PATCH /users/7` (`patch` with the JSON body as it is),
+`DELETE /users/7`, and an import of several users in a `Db.transaction` that gives back the users it created and rolls
+back when one insert fails. It runs against in-memory SQLite and prints each request with its response
+(`agentica examples/users.agc`); CI runs it (`specs/examples.feature`). Its mapping of errors to status codes is a
+simplification until the Orm has structured errors ([issue 16](https://github.com/agentica-lang/agentica-db/issues/16)):
+an error of the Orm is a 400, any other error a 500.
 
 ## PostgreSQL
 

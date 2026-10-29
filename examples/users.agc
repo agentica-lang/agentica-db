@@ -4,13 +4,16 @@
 ##
 ## It runs on its own against an in-memory SQLite database and prints each request with its response, so no server
 ## is needed. To serve it, open the connection in `main` and hand `HTTP.listen` a block that calls
-## `handle(conn, request)`.
+## `handle(conn, schema, request)`. A real app adds more: a 405 with an `Allow` header, a cap on the size of an import,
+## URL decoding of the query, and the structured errors of the Orm (agentica-db issue 16) for exact status codes.
 ## `specs/examples.feature` runs this file and checks what it prints.
 
 import Db from "../db"
 import Orm from "../orm"
 
 CREATE_USERS = "create table users (id integer primary key, name text not null unique, age integer)"
+# A list never has more rows than this: a real API would page it with an offset.
+LIST_LIMIT = 100
 
 # A column that can be NULL is a `JsonField`: a NULL reads as `JsonField.Null`, and an age that was not sent is
 # `Absent`, which an insert leaves out (the column takes its default, NULL here).
@@ -40,45 +43,45 @@ def main() -> Void
 end
 
 # The routes: the method and the parts of the path (`/users/7` is ["", "users", "7"]).
-def handle(conn: Db.Connection, request: HttpRequest) -> HttpResponse
+def handle(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest) -> HttpResponse
   parts = request.path.split("/")
   if parts.size == 2 and parts[1] == "users"
     case request.method
-      "POST" -> return create(conn, request.body)
-      "GET" -> return list(conn, request.target)
+      "POST" -> return create(conn, schema, request.body)
+      "GET" -> return list(conn, schema, request.target)
       _ -> return failure(405, "method not allowed")
     end
   end
 
   if parts.size == 3 and parts[1] == "users" and parts[2] == "import" and request.method == "POST"
-    return import_users(conn, request.body)
+    return import_users(conn, schema, request.body)
   end
 
   if parts.size == 3 and parts[1] == "users"
     case parts[2].to_i
       error(_) -> return failure(404, "no such user")
-      ok(id) -> return user_route(conn, request, id)
+      ok(id) -> return user_route(conn, schema, request, id)
     end
   end
 
   return failure(404, "no such route")
 end
 
-def user_route(conn: Db.Connection, request: HttpRequest, id: Int) -> HttpResponse
+def user_route(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest, id: Int) -> HttpResponse
   case request.method
-    "GET" -> return show(conn, id)
-    "PATCH" -> return change(conn, id, request.body)
-    "DELETE" -> return remove(conn, id)
+    "GET" -> return show(conn, schema, id)
+    "PATCH" -> return change(conn, schema, id, request.body)
+    "DELETE" -> return remove(conn, schema, id)
     _ -> return failure(405, "method not allowed")
   end
 end
 
 # POST /users: the body is decoded into a plain struct, and the Orm gives back the row with its new key.
-def create(conn: Db.Connection, body: String) -> HttpResponse
+def create(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HttpResponse
   case JSON.decode(body, NewUser)
     error(_) -> return failure(400, "the body is not a user")
     ok(input) ->
-      case Orm.insert(conn, users(), User(name: input.name, age: input.age))
+      case Orm.insert(conn, schema, User(name: input.name, age: input.age))
         error(message) -> return refused(message)
         ok(user) -> return json(201, JSON.encode(user))
       end
@@ -87,27 +90,33 @@ end
 
 # GET /users, with ?min_age=N and ?sort=COLUMN. The column of the request goes through `order_by`, which checks it
 # against the schema, so a request cannot put sql there; the sql of `where` is a constant of the program.
-def list(conn: Db.Connection, target: String) -> HttpResponse
-  query = Orm.from(users())
-  case param(target, "min_age")
-    error(_) -> query = query
-    ok(text) ->
-      case text.to_i
-        error(_) -> return failure(400, "min_age is not a number")
-        ok(years) -> query = Orm.where(query, "age >= ?", [Db.Value.Int(years)])
+def list(conn: Db.Connection, schema: Orm.Schema[User], target: String) -> HttpResponse
+  case filtered(Orm.from(schema), target)
+    error(message) -> return failure(400, message)
+    ok(query) ->
+      column = param(target, "sort").unwrap_or("id")
+      case Orm.all(Orm.order_by(query, column) |> Orm.limit(LIST_LIMIT), conn)
+        error(message) -> return refused(message)
+        ok(found) -> return json(200, JSON.encode(found))
       end
   end
+end
 
-  column = param(target, "sort").unwrap_or("id")
-  case Orm.all(Orm.order_by(query, column), conn)
-    error(message) -> return refused(message)
-    ok(found) -> return json(200, JSON.encode(found))
+# The query with the filters of the request: only ?min_age so far.
+def filtered(query: Orm.Query[User], target: String) -> Result[Orm.Query[User]]
+  case param(target, "min_age")
+    error(_) -> return ok(query)
+    ok(text) ->
+      case text.to_i
+        error(_) -> return error("min_age is not a number")
+        ok(years) -> return ok(Orm.where(query, "age >= ?", [Db.Value.Int(years)]))
+      end
   end
 end
 
 # GET /users/7: `find` gives `Some` or `None`, so a missing row is a 404 and a broken database is a 500.
-def show(conn: Db.Connection, id: Int) -> HttpResponse
-  case Orm.find(conn, users(), Db.Value.Int(id))
+def show(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpResponse
+  case Orm.find(conn, schema, Db.Value.Int(id))
     error(message) -> return refused(message)
     ok(found) ->
       case found
@@ -119,20 +128,20 @@ end
 
 # PATCH /users/7: the body is a JSON object of the fields to change, passed to `patch` as it is. A key that is not a
 # column is an error of the Orm, and `patch` gives the number of rows it changed.
-def change(conn: Db.Connection, id: Int, body: String) -> HttpResponse
+def change(conn: Db.Connection, schema: Orm.Schema[User], id: Int, body: String) -> HttpResponse
   case JSON.parse(body)
     error(_) -> return failure(400, "the body is not JSON")
     ok(changes) ->
-      case Orm.patch(conn, users(), Db.Value.Int(id), changes)
+      case Orm.patch(conn, schema, Db.Value.Int(id), changes)
         error(message) -> return refused(message)
         ok(0) -> return failure(404, "no such user")
-        ok(_) -> return show(conn, id)
+        ok(_) -> return show(conn, schema, id)
       end
   end
 end
 
-def remove(conn: Db.Connection, id: Int) -> HttpResponse
-  case Orm.delete(conn, users(), Db.Value.Int(id))
+def remove(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpResponse
+  case Orm.delete(conn, schema, Db.Value.Int(id))
     error(message) -> return refused(message)
     ok(0) -> return failure(404, "no such user")
     ok(_) -> return HttpResponse(status: 204, headers: [], body: "")
@@ -140,22 +149,23 @@ def remove(conn: Db.Connection, id: Int) -> HttpResponse
 end
 
 # POST /users/import: all the users of the body, or none. The transaction rolls back when an insert fails (a name
-# that is already taken) and gives back the users it created when it commits.
-def import_users(conn: Db.Connection, body: String) -> HttpResponse
+# that is already taken) and gives back the users it created when it commits. Whatever failed is a 500 with no detail:
+# telling a conflict (409) from a broken database needs the structured errors of agentica-db issue 16.
+def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HttpResponse
   case JSON.decode(body, Batch)
     error(_) -> return failure(400, "the body is not a batch of users")
     ok(batch) ->
       done = Db.transaction(conn) do |tx|
         created: List[User] = []
         for input in batch.users
-          created = created.push(try Orm.insert(tx, users(), User(name: input.name, age: input.age)))
+          created = created.push(try Orm.insert(tx, schema, User(name: input.name, age: input.age)))
         end
 
         ok(created)
       end
 
       case done
-        error(_) -> return failure(409, "nothing was imported")
+        error(_) -> return failure(500, "nothing was imported")
         ok(created) -> return json(201, JSON.encode(created))
       end
   end
@@ -173,8 +183,10 @@ def failure(status: Int, message: String) -> HttpResponse
   return json(status, JSON.encode({"error": message}))
 end
 
-# An error of the Orm is about the request (a column that does not exist, a value of the wrong kind): a 400 with its
-# text. Any other error is the database's, and a client has no use for it.
+# A simplification until the Orm has structured errors (agentica-db issue 16): an error of the Orm is a 400 with its
+# text, and any other error is a 500 with no detail. Only the errors of the builder and of `patch` are really about
+# the request: a schema that fails `check` would also come out as a 400, and a duplicate name (a database error) is a
+# 500 instead of a 409. https://github.com/agentica-lang/agentica-db/issues/16
 def refused(message: String) -> HttpResponse
   if message.start_with?("orm error:")
     return failure(400, message)
@@ -203,35 +215,37 @@ end
 # The requests of the example, in order.
 def script() -> List[HttpRequest]
   return [
-    request("POST", "/users", "{\"name\": \"Ana\", \"age\": 31}"),
-    request("POST", "/users", "{\"name\": \"Bob\"}"),
-    request("POST", "/users", "{\"age\": 5}"),
-    request("GET", "/users/1", ""),
-    request("GET", "/users/9", ""),
-    request("GET", "/users?min_age=30", ""),
-    request("GET", "/users?sort=nickname", ""),
-    request("PATCH", "/users/2", "{\"age\": 27}"),
-    request("PATCH", "/users/2", "{\"nickname\": \"b\"}"),
-    request("POST", "/users/import", "{\"users\": [{\"name\": \"Cy\"}, {\"name\": \"Ana\"}]}"),
-    request("GET", "/users", ""),
-    request("POST", "/users/import", "{\"users\": [{\"name\": \"Cy\"}, {\"name\": \"Dee\"}]}"),
-    request("DELETE", "/users/1", ""),
-    request("DELETE", "/users/1", ""),
-    request("GET", "/users?min_age=20&sort=name", ""),
+    build_request("POST", "/users", "{\"name\": \"Ana\", \"age\": 31}"),
+    build_request("POST", "/users", "{\"name\": \"Bob\"}"),
+    build_request("POST", "/users", "{\"age\": 5}"),
+    build_request("GET", "/users/1", ""),
+    build_request("GET", "/users/9", ""),
+    build_request("POST", "/users", "{\"name\": \"Ana\"}"),
+    build_request("GET", "/users?min_age=30", ""),
+    build_request("GET", "/users?sort=nickname", ""),
+    build_request("PATCH", "/users/2", "{\"age\": 27}"),
+    build_request("PATCH", "/users/2", "{\"nickname\": \"b\"}"),
+    build_request("POST", "/users/import", "{\"users\": [{\"name\": \"Cy\"}, {\"name\": \"Ana\"}]}"),
+    build_request("GET", "/users", ""),
+    build_request("POST", "/users/import", "{\"users\": [{\"name\": \"Cy\"}, {\"name\": \"Dee\"}]}"),
+    build_request("DELETE", "/users/1", ""),
+    build_request("DELETE", "/users/1", ""),
+    build_request("GET", "/users?min_age=20&sort=name", ""),
   ]
 end
 
-def request(method: String, target: String, body: String) -> HttpRequest
+def build_request(method: String, target: String, body: String) -> HttpRequest
   return HttpRequest(method: method, target: target, path: target.split("?")[0], headers: [], body: body)
 end
 
 def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, CREATE_USERS, [])
-  try Orm.check(conn, users())
+  schema = users()
+  try Orm.check(conn, schema)
   for item in script()
-    response = handle(conn, item)
-    puts(("#{item.method} #{item.target} -> #{response.status} #{response.body}").strip())
+    response = handle(conn, schema, item)
+    puts("#{item.method} #{item.target} -> #{response.status} #{response.body}".strip())
   end
 
   Db.close(conn)
