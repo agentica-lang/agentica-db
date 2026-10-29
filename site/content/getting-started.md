@@ -17,9 +17,25 @@ db = { git = "https://github.com/agentica-lang/agentica-db", tag = "v0.1.0" }
 
 Import the modules with `pkg/db/...`. `Db` is enough for most programs, and `Orm` is the typed layer.
 
-```ruby
+```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+
+struct Note
+  id: Int = 0
+  text: String
+end
+
+def main() -> Void
+  notes = Orm.schema("notes", Note.members, JSON.codec(Note))
+  puts(Db.open("sqlite::memory:").ok?)
+  puts(notes.table)
+end
+```
+
+```output
+true
+notes
 ```
 
 ## System libraries

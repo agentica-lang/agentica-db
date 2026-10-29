@@ -54,8 +54,24 @@ done
 
 The key is `id`, and the database generates it, unless `.with(...)` says otherwise:
 
-```ruby
-users = Orm.schema("users", User.members, JSON.codec(User)).with(primary_key: "code", generated: false)
+```agentica
+import Orm from "pkg/db/orm"
+
+struct Tag
+  code: String
+  label: String
+end
+
+def main() -> Void
+  tags = Orm.schema("tags", Tag.members, JSON.codec(Tag)).with(primary_key: "code", generated: false)
+  puts(tags.primary_key)
+  puts(tags.generated)
+end
+```
+
+```output
+code
+false
 ```
 
 A generated key must be an `Int`. The key of a table the database numbers is written `id: Int = 0`, so a value can be built before the database gives it its id.

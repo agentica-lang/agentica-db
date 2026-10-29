@@ -85,7 +85,7 @@ They refuse two things, because not every database allows them and because a mis
 - an `order_by`, a `limit` or an `offset`;
 - a query with no condition. A pipeline whose optional filters were all skipped must not change the whole table.
 
-When you do mean every row, say so with a condition that is always true: `Orm.where("1 = 1", [])`.
+When you do mean every row, say so with a condition that is always true: `|> Orm.where("1 = 1", [])`.
 
 ```agentica
 import Db from "pkg/db/db"

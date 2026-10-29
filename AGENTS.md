@@ -30,10 +30,10 @@ runs it and checks its output.
   prepare `START TRANSACTION`), so a MySQL change passes on both. Scenarios use temporary tables, so
   they leave nothing behind.
 - The documentation site is in `site/` (Hugo; `site/DESIGN.md` says how it differs from the Agentica site):
-  `make site` builds it (needs Hugo and Dart Sass, see `.github/workflows/pages.yml`), `make site-samples` checks every
-  `agentica` block of `site/content/` with `agentica check` (and runs the ones followed by an `output` block). A page of
-  `site/content/` never starts with a `# ` heading (the layout prints the title) and keeps one line per paragraph or
-  list item. A change to the API updates its page.
+  `make site` builds it (needs Hugo and Dart Sass, see `.github/workflows/pages.yml`), `make site-samples` checks
+  every `agentica` block of `site/content/` with `agentica check` (and runs the ones followed by an `output` block).
+  A page of `site/content/` never starts with a `# ` heading (the layout prints the title) and keeps one line per
+  paragraph or list item. A change to the API updates its page.
 
 ## Rules
 

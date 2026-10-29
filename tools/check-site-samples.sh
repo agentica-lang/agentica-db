@@ -18,7 +18,12 @@ command -v agentica >/dev/null || { echo "check-site-samples: agentica is not on
 # The files of the package: the library modules, not the specs, examples or tests.
 mkdir -p "$work/deps/db"
 cp "$root/agentica.toml" "$root"/*.agc "$work/deps/db/"
-cp -r "$root/orm" "$work/deps/db/orm"
+for folder in "$root"/*/; do
+  case "$(basename "$folder")" in
+    specs|test|examples|deps|build|site|tools|tmp) continue ;;
+  esac
+  cp -r "$folder" "$work/deps/db/$(basename "$folder")"
+done
 
 # The hash of the lock (modules.md of the programming skill): for each .agc file (and agentica.toml, which is hashed
 # because it has a [native] table) in bytewise order of its path,
