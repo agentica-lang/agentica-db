@@ -48,7 +48,7 @@ end
 - [Getting started](https://agentica-lang.github.io/agentica-db/getting-started/): install and the system libraries.
 - [Connecting](https://agentica-lang.github.io/agentica-db/guide/connecting/), [queries](https://agentica-lang.github.io/agentica-db/guide/queries/), [values](https://agentica-lang.github.io/agentica-db/guide/values/) and [transactions](https://agentica-lang.github.io/agentica-db/guide/transactions/).
 - [SQLite](https://agentica-lang.github.io/agentica-db/guide/sqlite/), [PostgreSQL](https://agentica-lang.github.io/agentica-db/guide/postgresql/) and [MySQL and MariaDB](https://agentica-lang.github.io/agentica-db/guide/mysql/).
-- The ORM: [schema](https://agentica-lang.github.io/agentica-db/guide/orm-schema/), [reads](https://agentica-lang.github.io/agentica-db/guide/orm-reads/), [query builder](https://agentica-lang.github.io/agentica-db/guide/orm-builder/) and [writes](https://agentica-lang.github.io/agentica-db/guide/orm-writes/).
+- The ORM: [schema](https://agentica-lang.github.io/agentica-db/guide/orm-schema/), [reads](https://agentica-lang.github.io/agentica-db/guide/orm-reads/), [query builder](https://agentica-lang.github.io/agentica-db/guide/orm-builder/), [writes](https://agentica-lang.github.io/agentica-db/guide/orm-writes/) and [errors](https://agentica-lang.github.io/agentica-db/guide/orm-errors/).
 - [Testing](https://agentica-lang.github.io/agentica-db/guide/testing/).
 - [`examples/users.agc`](examples/users.agc): a users API on the ORM that runs against in-memory SQLite.
 - [CHANGELOG](CHANGELOG.md).

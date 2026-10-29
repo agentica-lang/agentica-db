@@ -5,8 +5,9 @@
 ## A schema ties a struct to a table: `Orm.schema("users", User.members, JSON.codec(User))`. Every function takes
 ## the `Db.Connection`, so a transaction body or a pooled connection passes its own. `query`, `find` and the writes
 ## take it first; the steps and the ends of a query take the query first, so that they chain with `|>`. The
-## functions give values and never change one. An error is `error("orm error: <table>: <message>")`; an error of the
-## database is the one of `Db`.
+## functions give values and never change one. An error is `error("orm error <code>: <table>: <message>")`, and
+## `classify` gives its kind (`BadRequest`, `NotDecodable`, `Schema`...); an error of the database is the one of `Db`,
+## and `classify` tells a unique or foreign-key violation (`Conflict`) from the others.
 ##
 ## The mapping: the table is a plain struct, a column has the name of its field (the Orm quotes it), and the key is
 ## `id` unless `.with(primary_key: "other")`. A generated key is a field with a default, `id: Int = 0`. A column that
@@ -17,6 +18,9 @@ import Build from "orm/build"
 import Codec from "orm/codec"
 import Db from "db"
 import Dialect from "orm/dialect"
+import Errors from "orm/errors"
+
+export Errors.Error
 
 ## The table of a struct `T`: its name, its fields (`T.members`), the codec that builds a `T`, the key column and
 ## whether the database generates the key. Make one with `schema`; change an option with `.with(...)`.
@@ -55,9 +59,29 @@ export def schema[T](table: String, members: List[StructMember], codec: JSON.Cod
   return Schema(table: table, members: members, codec: codec)
 end
 
+## The kind of the failure a text describes, so that a handler can `case` on it: `Error.BadRequest` (a column, a value
+## or a key the caller got wrong: a 400), `Error.Conflict` (a unique or foreign-key violation: a 409),
+## `Error.NotDecodable` (a row that does not fit its struct), `Error.Schema` (a schema that is not sound) and
+## `Error.Database` (any other error of the database, or of the Orm's own bookkeeping). The text is what an Orm
+## function gave in its `error`, or what `Db` gave.
+export def classify(message: String) -> Errors.Error
+  return Errors.classify(message)
+end
+
+## The name of the kind: `BadRequest`, `Conflict`, `NotDecodable`, `Schema` or `Database`. It is for logs and tests;
+## code should `case` on the `Error`.
+export def kind(failure: Errors.Error) -> String
+  return Errors.kind(failure)
+end
+
+## The message of the failure, for a log.
+export def message(failure: Errors.Error) -> String
+  return Errors.message(failure)
+end
+
 ## Checks the schema and then the table: the names are plain identifiers, every field is a type a column can hold,
 ## the key is a field, and the table has every column. Run it once at start up. It reads no row. The first three are
-## `orm error: <table>: <message>`; a table or a column that is missing is the error of `Db`, unchanged.
+## `orm error <code>: <table>: <message>`; a table or a column that is missing is the error of `Db`, unchanged.
 export def check[T](conn: Db.Connection, schema: Schema[T]) -> Result[Void]
   try valid(schema)
   columns = try columns_sql(conn, schema)
@@ -203,7 +227,7 @@ export def count[T](q: Query[T], conn: Db.Connection) -> Result[Int]
   rows = try Db.query(conn, "select count(*) as n from #{table}#{where_part.sql}", where_part.params)
   case rows[0]["n"]
     Db.Value.Int(n) -> return ok(n)
-    _ -> return fail(q.schema, "the database gave no count")
+    _ -> return broken(q.schema, "the database gave no count")
   end
 end
 
@@ -252,7 +276,7 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
   end
 
   if names.empty?
-    return fail(schema, "no column to insert")
+    return refuse(schema, "no column to insert")
   end
 
   table = try quoted(conn, schema, schema.table)
@@ -287,7 +311,7 @@ export def update[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
   end
 
   if sets.empty?
-    return fail(schema, "no column to update")
+    return refuse(schema, "no column to update")
   end
 
   return update_by_key(conn, schema, sets, params.push(key))
@@ -319,7 +343,7 @@ end
 def quoted[T](conn: Db.Connection, schema: Schema[T], name: String) -> Result[String]
   case Dialect.quote(conn, name)
     ok(text) -> return ok(text)
-    error(message) -> return fail(schema, message)
+    error(message) -> return unsound(schema, message)
   end
 end
 
@@ -328,7 +352,7 @@ def generated_key[T](conn: Db.Connection, schema: Schema[T], sql: String, params
   column = try quoted(conn, schema, schema.primary_key)
   case Dialect.insert_generated(conn, sql, params, column)
     ok(id) -> return ok(id)
-    error(message) if message == Dialect.NO_KEY -> return fail(schema, message)
+    error(message) if message == Dialect.NO_KEY -> return broken(schema, message)
     error(message) -> return error(message)
   end
 end
@@ -338,7 +362,7 @@ end
 def key_kind[T](schema: Schema[T], id: Db.Value) -> Result[Void]
   keys = schema.members.select do |member| member.name == schema.primary_key end
   if Codec.field_kind(keys[0].type) != Codec.value_kind(id)
-    return fail(schema, "the key #{schema.primary_key} has type #{keys[0].type}, not #{Codec.value_kind(id)}")
+    return refuse(schema, "the key #{schema.primary_key} has type #{keys[0].type}, not #{Codec.value_kind(id)}")
   end
 
   return ok()
@@ -347,14 +371,14 @@ end
 def bound[T](schema: Schema[T], member: StructMember, json: Json) -> Result[Db.Value]
   case Codec.to_value(member, json)
     ok(value) -> return ok(value)
-    error(message) -> return fail(schema, message)
+    error(message) -> return refuse(schema, message)
   end
 end
 
 def or_fail[T](schema: Schema[T], found: Result[Json], message: String) -> Result[Json]
   case found
     ok(json) -> return ok(json)
-    error(_) -> return fail(schema, message)
+    error(_) -> return refuse(schema, message)
   end
 end
 
@@ -376,7 +400,7 @@ end
 def reload[T](conn: Db.Connection, schema: Schema[T], key: Db.Value) -> Result[T]
   case try find(conn, schema, key)
     Option.Some(row) -> return ok(row)
-    Option.None -> return fail(schema, "the inserted row was not found by its key #{schema.primary_key}")
+    Option.None -> return broken(schema, "the inserted row was not found by its key #{schema.primary_key}")
   end
 end
 
@@ -447,7 +471,7 @@ end
 # What every end of a query checks first: the problem met while it was built, and the schema.
 def ready[T](q: Query[T]) -> Result[Void]
   if not q.failure.empty?
-    return fail(q.schema, q.failure)
+    return refuse(q.schema, q.failure)
   end
 
   return valid(q.schema)
@@ -458,11 +482,11 @@ end
 # says that every row is meant.
 def guarded[T](q: Query[T], what: String) -> Result[Void]
   if Build.paged?(q.plan)
-    return fail(q.schema, "#{what} cannot use order_by, limit or offset")
+    return refuse(q.schema, "#{what} cannot use order_by, limit or offset")
   end
 
   if q.plan.conds.empty?
-    return fail(q.schema, "#{what} needs a condition; to change every row on purpose add Orm.where(q, \"1 = 1\", [])")
+    return refuse(q.schema, "#{what} needs a condition; to touch every row on purpose add Orm.where(q, \"1 = 1\", [])")
   end
 
   return ok()
@@ -472,7 +496,7 @@ end
 def builder[T](found: Result[Build.Piece], schema: Schema[T]) -> Result[Build.Piece]
   case found
     ok(piece) -> return ok(piece)
-    error(message) -> return fail(schema, message)
+    error(message) -> return unsound(schema, message)
   end
 end
 
@@ -480,7 +504,7 @@ end
 # of the kind of the field.
 def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Result[Sets]
   if JSON.kind(changes) != "object"
-    return fail(schema, "the changes are not a JSON object")
+    return refuse(schema, "the changes are not a JSON object")
   end
 
   sets: List[String] = []
@@ -489,7 +513,7 @@ def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Res
   for member in schema.members
     found = JSON.get(changes, member.name)
     if found.ok? and member.name == schema.primary_key
-      return fail(schema, "the primary key #{schema.primary_key} cannot be changed")
+      return refuse(schema, "the primary key #{schema.primary_key} cannot be changed")
     elsif found.ok?
       known = known.put(member.name, found.unwrap!)
       sets = sets.push("#{try quoted(conn, schema, member.name)} = ?")
@@ -499,11 +523,11 @@ def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Res
 
   # Json has no list of keys: an object with only the known keys is the same object when no key was unknown.
   if (try canonical(JSON.object(known))) != (try canonical(changes))
-    return fail(schema, "the changes have a key that is not a column")
+    return refuse(schema, "the changes have a key that is not a column")
   end
 
   if sets.empty?
-    return fail(schema, "no column to change")
+    return refuse(schema, "no column to change")
   end
 
   return ok(Sets(sql: sets, params: params))
@@ -512,42 +536,56 @@ end
 def read[T](schema: Schema[T], row: Db.Row) -> Result[T]
   json = Codec.to_json(schema.members, row)
   case json
-    error(message) -> return fail(schema, message)
+    error(message) -> return undecodable(schema, message)
     ok(object) ->
       case schema.codec.decode(object)
         ok(value) -> return ok(value)
-        error(message) -> return fail(schema, message)
+        error(message) -> return undecodable(schema, message)
       end
   end
 end
 
 def valid[T](schema: Schema[T]) -> Result[Void]
   if not Dialect.valid_name?(schema.table)
-    return fail(schema, "the table name is not a plain identifier")
+    return unsound(schema, "the table name is not a plain identifier")
   end
 
   for member in schema.members
     if not Dialect.valid_name?(member.name)
-      return fail(schema, "the column name #{member.name.inspect} is not a plain identifier")
+      return unsound(schema, "the column name #{member.name.inspect} is not a plain identifier")
     end
 
     if not Codec.column_type?(member.type)
-      return fail(schema, "the field #{member.name} has the type #{member.type}, which a column cannot hold")
+      return unsound(schema, "the field #{member.name} has the type #{member.type}, which a column cannot hold")
     end
   end
 
   keys = schema.members.select do |member| member.name == schema.primary_key end
   if keys.empty?
-    return fail(schema, "the primary key #{schema.primary_key} is not a column")
+    return unsound(schema, "the primary key #{schema.primary_key} is not a column")
   end
 
   if schema.generated and keys[0].type != "Int"
-    return fail(schema, "the generated key #{schema.primary_key} must be an Int")
+    return unsound(schema, "the generated key #{schema.primary_key} must be an Int")
   end
 
   return ok()
 end
 
-def fail[T, R](schema: Schema[T], message: String) -> Result[R]
-  return error("orm error: #{schema.table}: #{message}")
+# The failures of the Orm, by kind (`classify` reads the kind back): the caller got something wrong, the schema is
+# not sound, a row does not fit its struct, or the database did not do what the Orm needs.
+def refuse[T, R](schema: Schema[T], message: String) -> Result[R]
+  return error(Errors.text(Errors.BAD_REQUEST, schema.table, message))
+end
+
+def unsound[T, R](schema: Schema[T], message: String) -> Result[R]
+  return error(Errors.text(Errors.SCHEMA, schema.table, message))
+end
+
+def undecodable[T, R](schema: Schema[T], message: String) -> Result[R]
+  return error(Errors.text(Errors.DECODE, schema.table, message))
+end
+
+def broken[T, R](schema: Schema[T], message: String) -> Result[R]
+  return error(Errors.text(Errors.DATABASE, schema.table, message))
 end

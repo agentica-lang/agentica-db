@@ -114,7 +114,7 @@ Feature: Orm builder
     Then the result is:
       | id |
     When I find the person with the key "Text 1"
-    Then it fails with exactly "orm error: people: the key id has type Int, not Text"
+    Then it fails with exactly "orm error bad_request: people: the key id has type Int, not Text"
 
     Examples:
       | adapter  |
@@ -166,60 +166,60 @@ Feature: Orm builder
     When I run the people query ending in "all":
       | step     | argument | value  |
       | where_eq | nickname | Text x |
-    Then it fails with exactly "orm error: people: nickname is not a column of the table"
+    Then it fails with exactly "orm error bad_request: people: nickname is not a column of the table"
     When I run the people query ending in "all":
       | step     | argument                | value |
       | order_by | name; drop table people |       |
-    Then it fails with exactly "orm error: people: name; drop table people is not a column of the table"
+    Then it fails with exactly "orm error bad_request: people: name; drop table people is not a column of the table"
     When I run the people query ending in "all":
       | step     | argument | value  |
       | where_eq | age      | Text x |
-    Then it fails with exactly "orm error: people: the column age has type JsonField[Int], not Text"
+    Then it fails with exactly "orm error bad_request: people: the column age has type JsonField[Int], not Text"
     When I run the people query ending in "all":
       | step     | argument | value         |
       | where_in | age      | Int 1; Text x |
-    Then it fails with exactly "orm error: people: the column age has type JsonField[Int], not Text"
+    Then it fails with exactly "orm error bad_request: people: the column age has type JsonField[Int], not Text"
     When I run the people query ending in "all":
       | step  | argument | value |
       | limit | -1       |       |
-    Then it fails with exactly "orm error: people: limit must not be negative"
+    Then it fails with exactly "orm error bad_request: people: limit must not be negative"
     When I run the people query ending in "delete_all":
       | step  | argument | value |
       | limit | 1        |       |
-    Then it fails with exactly "orm error: people: delete_all cannot use order_by, limit or offset"
+    Then it fails with exactly "orm error bad_request: people: delete_all cannot use order_by, limit or offset"
     When I run the people query ending in "update_all":
       | step     | argument        | value     |
       | where_eq | admin           | Bool true |
       | changes  | {"nickname": 1} |           |
-    Then it fails with exactly "orm error: people: the changes have a key that is not a column"
+    Then it fails with exactly "orm error bad_request: people: the changes have a key that is not a column"
     When I run the people query ending in "all":
       | step     | argument | value       |
       | where_in | age      | Int 1; Null |
-    Then it fails with exactly "orm error: people: where_in takes no Null item, use where_eq(column, Null)"
+    Then it fails with exactly "orm error bad_request: people: where_in takes no Null item, use where_eq(column, Null)"
     When I run the people query ending in "all":
       | step     | argument | value |
       | where_eq | name     | Null  |
-    Then it fails with exactly "orm error: people: the column name has type String, not Null"
+    Then it fails with exactly "orm error bad_request: people: the column name has type String, not Null"
     When I run the people query ending in "all":
       | step     | argument | value     |
       | where_eq | score    | Float NaN |
-    Then it fails with exactly "orm error: people: score: not a finite Float"
+    Then it fails with exactly "orm error bad_request: people: score: not a finite Float"
     When I run the people query ending in "all":
       | step     | argument | value                     |
       | where_in | score    | Float 1.0; Float Infinity |
-    Then it fails with exactly "orm error: people: score: not a finite Float"
+    Then it fails with exactly "orm error bad_request: people: score: not a finite Float"
     When I run the people query ending in "update_all":
       | step    | argument   | value |
       | where   | 1 = 1      |       |
       | offset  | 1          |       |
       | changes | {"age": 5} |       |
-    Then it fails with exactly "orm error: people: update_all cannot use order_by, limit or offset"
+    Then it fails with exactly "orm error bad_request: people: update_all cannot use order_by, limit or offset"
     When I run the people query ending in "update_all":
       | step     | argument   | value |
       | where    | 1 = 1      |       |
       | order_by | id         |       |
       | changes  | {"age": 5} |       |
-    Then it fails with exactly "orm error: people: update_all cannot use order_by, limit or offset"
+    Then it fails with exactly "orm error bad_request: people: update_all cannot use order_by, limit or offset"
     When I run the people query ending in "update_all":
       | step    | argument   | value |
       | changes | {"age": 5} |       |

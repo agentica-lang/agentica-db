@@ -69,4 +69,4 @@ A generated key must be an `Int`. The key of a table the database numbers is wri
 - An `Int` column is read as a `Float` for a `Float` field, unless the `Int` is beyond 2^53, which could round: that is an error.
 - A `numeric`, a date or a uuid arrives as `Text`: use a `String` field.
 
-Errors of the Orm are `Result` failures, like those of `Db`. Their text and codes are listed in the [changelog](https://github.com/agentica-lang/agentica-db/blob/main/CHANGELOG.md).
+Errors of the Orm are `Result` failures, like those of `Db`. [ORM: errors](/guide/orm-errors/) tells the kinds apart.

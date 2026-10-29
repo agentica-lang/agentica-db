@@ -1,6 +1,6 @@
 ---
 title: Testing
-weight: 12
+weight: 13
 description: Test your code against in-memory SQLite, and run the tests of agentica-db.
 ---
 

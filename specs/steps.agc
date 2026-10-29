@@ -83,6 +83,7 @@ def main() -> Void
     end,
     plain_step("it succeeds", "expect_ok"),
     text_step("it fails with {string}", "expect_prefix"),
+    text_step("the failure is a {string} error", "expect_kind"),
     text_step("it fails with exactly {string}", "expect_exact"),
     text_step("it fails mentioning {string}", "expect_mentions"),
     text_step("the failure never shows {string}", "expect_hides"),

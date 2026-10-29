@@ -20,7 +20,8 @@ export OK = "ok"
 ## `orm_builder` (text: how the query ends, table: its steps) and `orm_find` (text: the key as a typed cell),
 ## `round_trips` (table: column type and cell), `float_oracle` (text: a float literal), and the
 ## expectations `expect_rows` (table: header and rows), `expect_last` (number, table), `expect_count` (number),
-## `expect_ok`, `expect_prefix`, `expect_exact`, `expect_mentions` and `expect_hides` (text).
+## `expect_ok`, `expect_prefix`, `expect_exact`, `expect_mentions`, `expect_hides` and `expect_kind` (text; for the
+## last, the kind that `Orm.classify` gives the failure, such as `Conflict`).
 export struct Request
   op: String
   text: String = ""
