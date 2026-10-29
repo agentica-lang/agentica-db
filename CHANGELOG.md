@@ -45,3 +45,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `examples/users.agc`: a web-handler style users API on the Orm (insert, find, the builder, patch, delete and a
   transaction), run by CI against SQLite.
 - Needs Agentica 0.15.0 (CI and README).
+- Documentation site at https://agentica-lang.github.io/agentica-db/.

@@ -1,2 +1,7 @@
 .tools/
 tmp/
+deps/
+site/public/
+site/resources/
+site/highlight/node_modules/
+.hugo_build.lock

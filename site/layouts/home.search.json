@@ -1,0 +1,26 @@
+{{- $pages := slice -}}
+{{- range site.Pages -}}
+  {{- $section := "" -}}
+  {{- with .FirstSection }}{{ if not .IsHome }}{{ $section = .LinkTitle }}{{ end }}{{ end -}}
+  {{- $html := replaceRE `<a class="anchor"[^>]*>#</a>` "" .Content -}}
+  {{- $html = replaceRE `(<h[23] id=)` "\x00$1" $html -}}
+  {{- $parts := slice -}}
+  {{- range split $html "\x00" -}}
+    {{- $id := "" -}}
+    {{- $heading := "" -}}
+    {{- $body := . -}}
+    {{- with findRESubmatch `^<h([23]) id="([^"]*)">([\s\S]*?)</h[23]>` . 1 -}}
+      {{- $match := index . 0 -}}
+      {{- $id = index $match 2 -}}
+      {{- $heading = index $match 3 | plainify | htmlUnescape | strings.TrimSpace -}}
+      {{- $body = strings.TrimPrefix (index $match 0) $body -}}
+    {{- end -}}
+    {{- $text := replaceRE `<h1[^>]*>[\s\S]*?</h1>|<div class="sample[^"]*">[\s\S]*?</pre></div>` "" $body | replaceRE `<br\s*/?>|</?(?:p|li|td|th|tr|pre|div|dd|dt|blockquote|table|ul|ol)(?:\s[^>]*)?>` " " | replaceRE `<[^>]+>` "" | htmlUnescape | replaceRE `\s+` " " | strings.TrimSpace -}}
+    {{- if or $heading $text -}}
+      {{- $parts = $parts | append (dict "id" $id "heading" $heading "text" $text) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- $summary := .Description | default (.Summary | plainify | htmlUnescape) | replaceRE `\s+` " " | strings.TrimSpace -}}
+  {{- $pages = $pages | append (dict "title" .LinkTitle "section" $section "url" .RelPermalink "summary" $summary "sections" $parts) -}}
+{{- end -}}
+{{- dict "pages" $pages | jsonify -}}

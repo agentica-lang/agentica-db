@@ -71,7 +71,8 @@ jobs:
       - name: Check
         run: |
           agentica --version
-          for file in *.agc */*.agc specs/fixtures/*/*.agc; do agentica check "$file"; done
+          make check
+          make site-samples
 
       # The features of specs/ and the unit tests of test/. The variables point the postgres and mysql scenarios at the
       # service containers; without them they fail. The mysql host is an address: `localhost` means the local socket

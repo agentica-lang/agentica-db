@@ -1,0 +1,16 @@
+{{- with site.Home.OutputFormats.Get "search" }}
+<div class="site-search" role="search" data-index="{{ .RelPermalink }}">
+  <label class="visually-hidden" for="search-input">Search the docs</label>
+  <input id="search-input" class="search-input" type="search" placeholder="Search" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-results" aria-describedby="search-help">
+  <kbd class="search-key" aria-hidden="true">/</kbd>
+  <span id="search-help" class="visually-hidden">Press / or Control K to search. Use the arrow keys to choose a result and Enter to open it.</span>
+  <span id="search-status" class="visually-hidden" role="status" aria-live="polite"></span>
+  <div class="search-panel" hidden>
+    <p class="search-message" aria-hidden="true"></p>
+    <ul id="search-results" class="search-results" role="listbox" aria-label="Search results"></ul>
+  </div>
+</div>
+{{- with resources.Get "js/search.js" | js.Build (dict "minify" true "targetPath" "js/search.js") | fingerprint }}
+<script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous" defer></script>
+{{- end }}
+{{- end }}

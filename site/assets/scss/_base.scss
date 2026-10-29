@@ -1,0 +1,51 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 1rem/1.65 var(--font);
+}
+
+a {
+  color: var(--link);
+  text-underline-offset: 0.15em;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip {
+  position: absolute;
+  left: -100vw;
+
+  &:focus {
+    left: var(--gutter);
+    top: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background: var(--bg);
+  }
+}
+
+// The sidebar follows the content only without JavaScript on a narrow page; elsewhere it is already within reach.
+.skip-nav {
+  display: none;
+}

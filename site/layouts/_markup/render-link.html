@@ -1,0 +1,8 @@
+{{- $link := partial "link-target.html" (dict "from" .PageInner "dest" .Destination) -}}
+{{- $href := $link.href -}}
+{{- with $link.page }}{{ $href = printf "%s%s" .RelPermalink $link.fragment }}{{ end -}}
+{{- if eq $href "" -}}
+{{ .Text }}
+{{- else -}}
+<a href="{{ $href }}"{{ with .Title }} title="{{ . }}"{{ end }}{{ if $link.external }} rel="noopener"{{ end }}>{{ .Text }}</a>
+{{- end -}}

@@ -1,0 +1,75 @@
+@use "tokens" as *;
+
+// Previous and next page, at the end of a docs page (pager.html).
+.pager {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  max-width: var(--content-width);
+  margin-top: 3rem;
+
+  a {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: var(--target);
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--fg);
+    text-decoration: none;
+
+    &:hover {
+      background: var(--code-bg);
+    }
+
+    &:focus-visible {
+      outline: var(--focus-ring);
+      outline-offset: 2px;
+    }
+  }
+
+  // A lone link keeps its side, so "Next" stays on the right on the first page.
+  .pager-prev {
+    grid-column: 1;
+  }
+
+  .pager-next {
+    grid-column: 2;
+    text-align: right;
+  }
+}
+
+.pager-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.pager-title {
+  color: var(--link);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: $narrow) {
+  .pager {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+    margin-top: 2rem;
+
+    .pager-prev,
+    .pager-next {
+      grid-column: 1;
+    }
+
+    .pager-next {
+      text-align: left;
+    }
+  }
+}
+
+@media print {
+  .pager {
+    display: none;
+  }
+}

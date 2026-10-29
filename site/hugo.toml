@@ -1,0 +1,38 @@
+baseURL = "https://agentica-lang.github.io/agentica-db/"
+locale = "en"
+title = "agentica-db"
+disableKinds = ["taxonomy", "term", "rss"]
+
+[params]
+  description = "agentica-db is a database package for Agentica: one API for SQLite, PostgreSQL and MySQL or MariaDB, and a small typed ORM on top."
+  repo = "https://github.com/agentica-lang/agentica-db"
+  narrow = "50rem"
+
+[markup.highlight]
+  noClasses = false
+
+[markup.tableOfContents]
+  startLevel = 2
+  endLevel = 2
+
+[outputFormats.search]
+  mediaType = "application/json"
+  baseName = "search"
+  isPlainText = true
+  notAlternative = true
+
+[minify]
+  minifyOutput = true
+
+[[module.mounts]]
+  source = "content"
+  target = "content"
+
+[[module.mounts]]
+  source = "assets"
+  target = "assets"
+
+[outputs]
+  home = ["html", "markdown", "search"]
+  section = ["html", "markdown"]
+  page = ["html", "markdown"]

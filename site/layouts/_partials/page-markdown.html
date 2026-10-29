@@ -1,0 +1,17 @@
+{{- $body := string .RenderShortcodes -}}
+{{- $title := partial "heading.html" . -}}
+{{- if $title -}}
+  {{- $body = replaceRE `\A\s*#[ \t]+.*(\n|\z)` "" $body 1 -}}
+{{- else -}}
+  {{- $title = .Title -}}
+{{- end -}}
+{{- $body = partial "markdown-links.html" (dict "page" . "body" $body) -}}
+{{- $body = strings.TrimSpace $body -}}
+{{- if .IsSection -}}
+  {{- $items := slice -}}
+  {{- range partial "section-pages.html" . -}}
+    {{- $items = $items | append (partial "llms-item.html" .) -}}
+  {{- end -}}
+  {{- $body = printf "%s\n\n## Pages in this section\n\n%s" $body (delimit $items "\n") -}}
+{{- end -}}
+{{- return dict "title" $title "body" $body -}}
