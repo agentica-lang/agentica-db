@@ -34,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `failed`).
 - `Orm` (`import Orm from "pkg/db/orm"`), a small typed layer over `Db`: `schema(table, T.members, JSON.codec(T))`,
   `check`, `query` (rows into plain structs; NULL into a `JsonField`, 0 and 1 into a Bool) and `query_as` (your own
-  decode of each row). Errors are `orm error: <table>: <message>`.
+  decode of each row).
 - `Orm` writes: `insert` (gives the row back with its generated key), `update`, `delete` and `patch` (a `Json` object
   of the changes, `null` clears a `JsonField` column). Names are quoted, values bound, and the same value checks as
   for reads apply.
@@ -49,4 +49,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The users example maps statuses by kind.
 - **Breaking:** an error of the Orm now carries its kind: `orm error <code>: <table>: <message>` (`orm error
   bad_request: users: ...`, not `orm error: users: ...`). Match it with `Orm.classify`, not by text.
-- Needs Agentica 0.15.0 (CI and README).
+- Needs Agentica 0.15.0 or later (CI runs 0.16.0).

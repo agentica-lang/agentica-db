@@ -34,3 +34,12 @@ Feature: Orm errors
       | sqlite   | integer primary key                | sqlite error 19: UNIQUE | sqlite error 1: no such table |
       | postgres | serial primary key                 | postgres error 23505:   | postgres error 42P01:         |
       | mysql    | integer primary key auto_increment | mysql error 1062:       | mysql error 1146:             |
+
+  Scenario: A foreign-key violation is a conflict on sqlite
+    Given a "sqlite" database
+    And I execute "pragma foreign_keys = on"
+    And I execute "create table parents (id integer primary key)"
+    And I execute "create table children (id integer primary key, parent integer not null references parents (id))"
+    When I execute "insert into children (parent) values (7)"
+    Then it fails with "sqlite error 19: FOREIGN KEY"
+    And the failure is a "Conflict" error

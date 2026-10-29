@@ -184,7 +184,8 @@ end
 
 # The status of a failure comes from its kind (`Orm.classify`), not from its text: a bad request is the client's
 # fault and its message says what to fix, a conflict (a name that is already taken) is a 409, and anything else is a
-# fault of the server that a client has no use for.
+# fault of the server that a client has no use for. The payload of a BadRequest is `<table>: <message>`: a real app
+# may drop the table name before it sends the message to a client.
 def refused(message: String) -> HttpResponse
   case Orm.classify(message)
     Orm.Error.BadRequest(text) -> return failure(400, text)

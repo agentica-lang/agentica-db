@@ -61,7 +61,8 @@ export def classify(message: String) -> Error
   return Error.Database(message)
 end
 
-## The name of the kind: `BadRequest`, `Conflict`, `NotDecodable`, `Schema` or `Database`.
+## The name of the kind: `BadRequest`, `Conflict`, `NotDecodable`, `Schema` or `Database`. It is for logs and tests;
+## code should `case` on the `Error`.
 export def kind(failure: Error) -> String
   case failure
     Error.BadRequest(_) -> return "BadRequest"
