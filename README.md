@@ -63,7 +63,7 @@ agentica test
 ```
 
 The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
-`AGENTS.md`.
+`AGENTS.md`. CI runs the SQLite suite on Linux, macOS and Windows, and the whole suite on Linux.
 
 License: Apache-2.0.
 

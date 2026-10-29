@@ -11,7 +11,8 @@ runs it and checks its output.
 ## Commands
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
-  under `.tools/` (gitignored), never `/tmp`.
+  under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
+  three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
 - `make check` (`agentica check` on every `.agc` file, so `orm/`, `examples/`, `specs/` and `test/` too), then
   `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
   the unit tests of `test/`. SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains

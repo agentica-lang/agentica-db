@@ -74,6 +74,14 @@ jobs:
           make check
           make site-samples
 
+      # The sqlite job of macOS and Windows runs the scenarios named "on sqlite" (an outline has "on <adapter>"), so a
+      # scenario with none of those names, which only the server-less runs would miss, is a failure here.
+      - name: Scenario names
+        run: |
+          bad=$(grep -HnE '^\s*Scenario' specs/*.feature | grep -vE '^specs/(postgres|mysql)\.feature' \
+            | grep -vE 'on (<adapter>|sqlite|postgres|mysql)|The users example' || true)
+          [ -z "$bad" ] || { echo "$bad"; echo "name each scenario 'on <adapter>' or 'on sqlite'"; exit 1; }
+
       # The features of specs/ and the unit tests of test/. The variables point the postgres and mysql scenarios at the
       # service containers; without them they fail. The mysql host is an address: `localhost` means the local socket
       # to the client library.
@@ -82,3 +90,64 @@ jobs:
           AGENTICA_DB_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
           AGENTICA_DB_MYSQL_URL: mysql://root:pw@127.0.0.1:3306/mysql
         run: agentica test
+
+  # The SQLite scenarios on macOS and Windows. A service container runs on Linux only, so the PostgreSQL and MySQL
+  # scenarios stay in the job above; here `--only "on sqlite"` keeps the SQLite ones (every one has that in its name).
+  # SQLite is the system library: libsqlite3.dylib on macOS, winsqlite3.dll in System32 on Windows.
+  sqlite:
+    name: sqlite (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            runner: macos-latest
+            sha256: c3b91eb7feb3dc669138ac97438f55a5f046b8d8afa9be4c0554c832333ee587
+          - name: macos-x86_64
+            runner: macos-15-intel
+            sha256: f749010381364ffee92096feb73d9bcc956c9a277b497ba60d13ad6b2ac94b20
+          - name: windows-x86_64
+            runner: windows-latest
+            sha256: 5a75c264a25af6de21df10f0bf2b6219456bbbe48109d09dea0d529b519696f7
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Agentica release (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          archive="agentica-${AGENTICA_VERSION}-${{ matrix.name }}.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/agentica-lang/agentica/releases/download/${AGENTICA_VERSION}/$archive"
+          echo "${{ matrix.sha256 }}  $RUNNER_TEMP/$archive" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/agentica-${AGENTICA_VERSION}-${{ matrix.name }}/bin" >> "$GITHUB_PATH"
+
+      - name: Install the pinned Agentica release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "agentica-$env:AGENTICA_VERSION-${{ matrix.name }}"
+          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
+          $base = "https://github.com/agentica-lang/agentica/releases/download/$env:AGENTICA_VERSION"
+          Invoke-WebRequest -Uri "$base/$dir.zip" -OutFile $archive
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          if ($hash -ne "${{ matrix.sha256 }}") { throw "sha256 mismatch: $hash" }
+          Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:RUNNER_TEMP "$dir\bin")
+
+      - name: Check
+        shell: bash
+        run: |
+          agentica --version
+          sh tools/check.sh
+
+      # The SQLite scenarios, the users example (a scenario of examples.feature) and the unit tests of test/, which
+      # need no connection.
+      - name: Test
+        shell: bash
+        run: |
+          agentica test --only "on sqlite"
+          agentica test --only "users example"
+          agentica test test

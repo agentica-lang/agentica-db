@@ -58,6 +58,6 @@ AGENTICA_DB_MYSQL_URL='mysql://root:pw@127.0.0.1:53306/mysql' agentica test
 docker stop agentica-db-mysql
 ```
 
-The MySQL url has an address and not `localhost`, because the client library takes `localhost` for the local socket. CI runs the whole suite against MariaDB 11 and MySQL 8.4, since the two servers differ.
+The MySQL url has an address and not `localhost`, because the client library takes `localhost` for the local socket. CI runs the whole suite against MariaDB 11 and MySQL 8.4, since the two servers differ. On macOS (arm64 and x86_64) and Windows it runs the SQLite scenarios only, with `agentica test --only "on sqlite"`, because a service container needs Linux.
 
 The site samples are checked too: `make site-samples` runs `agentica check` on every `agentica` block of this site, and runs the ones that show their output.
