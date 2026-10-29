@@ -74,6 +74,14 @@ jobs:
           make check
           make site-samples
 
+      # The sqlite job of macOS and Windows runs the scenarios named "on sqlite" (an outline has "on <adapter>"), so a
+      # scenario with none of those names, which only the server-less runs would miss, is a failure here.
+      - name: Scenario names
+        run: |
+          bad=$(grep -HnE '^\s*Scenario' specs/*.feature | grep -vE '^specs/(postgres|mysql)\.feature' \
+            | grep -vE 'on (<adapter>|sqlite|postgres|mysql)|The users example' || true)
+          [ -z "$bad" ] || { echo "$bad"; echo "name each scenario 'on <adapter>' or 'on sqlite'"; exit 1; }
+
       # The features of specs/ and the unit tests of test/. The variables point the postgres and mysql scenarios at the
       # service containers; without them they fail. The mysql host is an address: `localhost` means the local socket
       # to the client library.
@@ -133,15 +141,7 @@ jobs:
         shell: bash
         run: |
           agentica --version
-          if command -v make >/dev/null; then
-            make check
-          else
-            # The loop of `make check` (the runner has no make on Windows).
-            for file in *.agc */*.agc specs/fixtures/*/*.agc; do
-              case $file in deps/*|build/*|tmp/*) continue;; esac
-              agentica check "$file" || exit 1
-            done
-          fi
+          sh tools/check.sh
 
       # The SQLite scenarios, the users example (a scenario of examples.feature) and the unit tests of test/, which
       # need no connection.
