@@ -148,6 +148,8 @@ def act(state: State, req: Request) -> Handled
     "orm_query_as" -> return reply_ok(orm_query_as(state, Cells.expand(req.text)))
     "orm_check" -> return reply_ok(orm_check(state, req.text))
     "orm_insert" -> return reply_ok(orm_insert(state, req.table, req.text))
+    "orm_builder" -> return reply_ok(orm_builder(state, req.text, req.table))
+    "orm_find" -> return reply_ok(orm_find(state, req.text))
     "orm_marker" -> return reply_ok(orm_marker(state, req.text))
     "orm_update" -> return reply_ok(orm_update(state, req.table))
     "orm_patch" -> return reply_ok(orm_patch(state, req.number, req.text))
@@ -273,6 +275,96 @@ def query(state: State, sql: String, params: List[Db.Value]) -> State
     case Db.query(conn, sql, params)
       error(message) -> return failed(state, message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
+    end
+  end
+end
+
+# The query of the table of steps (the header row is skipped), then its end: the rows of the persons read, or the
+# count of the rows `count`, `update_all` and `delete_all` gave.
+def orm_builder(state: State, ending: String, table: List[List[String]]) -> State
+  return with_conn(state) do |conn|
+    case build(table.drop(1))
+      error(message) -> return failed(state, message)
+      ok(query) -> return finished(state, conn, ending, query, changes_of(table.drop(1)))
+    end
+  end
+end
+
+def finished(state: State, conn: Db.Connection, ending: String, query: Orm.Query[Person], changes: String) -> State
+  case ending
+    "all" -> return persons(state, Orm.all(query, conn))
+    "one" -> return persons(state, optional(Orm.one(query, conn)))
+    "count" -> return counted(state, Orm.count(query, conn))
+    "delete_all" -> return counted(state, Orm.delete_all(query, conn))
+    _ -> return counted(state, update_all(query, conn, changes))
+  end
+end
+
+def update_all(query: Orm.Query[Person], conn: Db.Connection, changes: String) -> Result[Int]
+  return Orm.update_all(query, conn, try JSON.parse(changes))
+end
+
+# The `changes` row of the table, or an empty object.
+def changes_of(rows: List[List[String]]) -> String
+  found = rows.select do |row| row[0] == "changes" end
+  if found.empty?
+    return "{}"
+  end
+
+  return found[0][1]
+end
+
+def build(rows: List[List[String]]) -> Result[Orm.Query[Person]]
+  query = Orm.from(people())
+  for row in rows
+    query = try step(query, row[0], row[1], row[2])
+  end
+
+  return ok(query)
+end
+
+def step(query: Orm.Query[Person], name: String, argument: String, cells: String) -> Result[Orm.Query[Person]]
+  case name
+    "where_eq" -> return ok(Orm.where_eq(query, argument, try Cells.parse(cells)))
+    "where_in" -> return ok(Orm.where_in(query, argument, try Cells.parse_all(listed(cells))))
+    "where" -> return ok(Orm.where(query, argument, try Cells.parse_all(listed(cells))))
+    "order_by" -> return ok(Orm.order_by(query, argument))
+    "order_by_desc" -> return ok(Orm.order_by_desc(query, argument))
+    "limit" -> return ok(Orm.limit(query, try argument.to_i))
+    "offset" -> return ok(Orm.offset(query, try argument.to_i))
+    "changes" -> return ok(query)
+    _ -> return error("unknown builder step #{name.inspect}")
+  end
+end
+
+# The typed cells of a table cell, apart by `; `.
+def listed(cells: String) -> List[String]
+  if cells.empty?
+    return []
+  end
+
+  return cells.split("; ")
+end
+
+def persons(state: State, found: Result[List[Person]]) -> State
+  case found
+    error(message) -> return failed(state, message)
+    ok(list) -> return recorded(state, Outcome.Rows(list.map do |person| person_row(person) end))
+  end
+end
+
+def optional(found: Result[Orm.Option[Person]]) -> Result[List[Person]]
+  case try found
+    Orm.Option.Some(person) -> return ok([person])
+    Orm.Option.None -> return ok([])
+  end
+end
+
+def orm_find(state: State, key: String) -> State
+  return with_conn(state) do |conn|
+    case Cells.parse(key)
+      error(message) -> return failed(state, message)
+      ok(id) -> return persons(state, optional(Orm.find(conn, people(), id)))
     end
   end
 end

@@ -52,6 +52,10 @@ def main() -> Void
     BDD.step("I delete the person with the key {string}") do |ctx, args|
       send(ctx, Request(op: "orm_delete", text: "people", cells: [args[0]]))
     end,
+    BDD.step("I run the people query ending in {string}:") do |ctx, args|
+      send(ctx, Request(op: "orm_builder", text: args[0], table: BDD.table(ctx)))
+    end,
+    text_step("I find the person with the key {string}", "orm_find"),
     BDD.step("I update the person:") do |ctx, args| send(ctx, Request(op: "orm_update", table: BDD.table(ctx))) end,
     BDD.step("I patch the person {int} with {string}") do |ctx, args|
       send(ctx, Request(op: "orm_patch", number: args[0].to_i!, text: args[1]))

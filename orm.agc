@@ -1,16 +1,19 @@
-## A small typed layer over `Db`: plain structs in and out, SQL with bound `?` parameters (see `Db`). The reads run
-## your sql; the writes (`insert`, `update`, `delete`, `patch`) write theirs from the schema, with quoted names.
+## A small typed layer over `Db`: plain structs in and out, SQL with bound `?` parameters (see `Db`). `query` runs
+## your sql; `find`, the writes (`insert`, `update`, `delete`, `patch`) and the query builder (`from`, `where_eq`, ...,
+## `all`) write theirs from the schema, with quoted names.
 ##
 ## A schema ties a struct to a table: `Orm.schema("users", User.members, JSON.codec(User))`. Every function takes
-## the `Db.Connection`, so a transaction body or a pooled connection passes its own. The functions give values and
-## never change one. An error is `error("orm error: <table>: <message>")`; an error of the database is the one of
-## `Db`.
+## the `Db.Connection`, so a transaction body or a pooled connection passes its own. `query`, `find` and the writes
+## take it first; the steps and the ends of a query take the query first, so that they chain with `|>`. The
+## functions give values and never change one. An error is `error("orm error: <table>: <message>")`; an error of the
+## database is the one of `Db`.
 ##
 ## The mapping: the table is a plain struct, a column has the name of its field (the Orm quotes it), and the key is
 ## `id` unless `.with(primary_key: "other")`. A generated key is a field with a default, `id: Int = 0`. A column that
 ## can be NULL is a `JsonField[T]` field: NULL is `Null`, a column the query does not select is `Absent`. The field
 ## types are Int, Float, Bool and String; a Bool column of SQLite and MySQL (0 or 1) reads as a Bool.
 
+import Build from "orm/build"
 import Codec from "orm/codec"
 import Db from "db"
 import Dialect from "orm/dialect"
@@ -25,6 +28,27 @@ export struct Schema[T]
   generated: Bool = true
 end
 
+## Some value, or none.
+export enum Option[T]
+  Some(T)
+  None
+end
+
+## A query over a schema, built with `from` and the functions below and run by `all`, `one`, `count`, `update_all` or
+## `delete_all`. It holds the conditions, the order and the page, and the first problem found while it was built (a
+## column that is not in the schema, a value of another kind): that problem is the error of the call that ends it.
+export struct Query[T]
+  schema: Schema[T]
+  plan: Build.Plan
+  failure: String = ""
+end
+
+# The `name = ?` pieces of an update and their values.
+struct Sets
+  sql: List[String]
+  params: List[Db.Value]
+end
+
 ## The schema of `table` for the struct whose `members` and `codec` are given:
 ## `Orm.schema("users", User.members, JSON.codec(User))`. Nothing is checked here; `check` does.
 export def schema[T](table: String, members: List[StructMember], codec: JSON.Codec[T]) -> Schema[T]
@@ -36,13 +60,9 @@ end
 ## `orm error: <table>: <message>`; a table or a column that is missing is the error of `Db`, unchanged.
 export def check[T](conn: Db.Connection, schema: Schema[T]) -> Result[Void]
   try valid(schema)
-  names: List[String] = []
-  for member in schema.members
-    names = names.push(try quoted(conn, schema, member.name))
-  end
-
+  columns = try columns_sql(conn, schema)
   table = try quoted(conn, schema, schema.table)
-  try Db.query(conn, "select #{names.join(", ")} from #{table} where 1 = 0", [])
+  try Db.query(conn, "select #{columns} from #{table} where 1 = 0", [])
   return ok()
 end
 
@@ -69,6 +89,145 @@ export def query_as[R](conn: Db.Connection, sql: String, params: List[Db.Value],
   end
 
   return ok(found)
+end
+
+## The row whose key is `id`: `Option.Some(row)`, or `Option.None` when there is no such row (a 404, not a 500). The
+## `id` must be the kind of the key field (`Db.Value.Int` for an Int key), else it is an error.
+export def find[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Result[Option[T]]
+  try valid(schema)
+  try key_kind(schema, id)
+  return one(where_eq(from(schema), schema.primary_key, id), conn)
+end
+
+## An empty query over the schema: every row, in the order of the database.
+export def from[T](schema: Schema[T]) -> Query[T]
+  return Query(schema: schema, plan: Build.Plan())
+end
+
+## Keeps the rows for which `sql` holds, with `?` for the `params`. The sql is yours (a constant of your program, as
+## for `query`): a column of a request must go through `where_eq` or `where_in`, which check it. All the conditions
+## must hold.
+export def where[T](q: Query[T], sql: String, params: List[Db.Value]) -> Query[T]
+  return with_cond(q, Build.Cond.Raw(sql, params))
+end
+
+## Keeps the rows whose `column` equals `value`; `Db.Value.Null` keeps the rows where it is NULL (only for a
+## `JsonField` column). The column must be in the schema, the value the kind of the column and a finite Float.
+export def where_eq[T](q: Query[T], column: String, value: Db.Value) -> Query[T]
+  case member_of(q.schema, column)
+    error(message) -> return failed(q, message)
+    ok(member) ->
+      problem = value_problem(member, value)
+      if not problem.empty?
+        return failed(q, problem)
+      end
+
+      return with_cond(q, Build.Cond.Eq(column, value))
+  end
+end
+
+## Keeps the rows whose `column` is one of `values`; no value keeps no row. The same checks as `where_eq`, and a `Null`
+## item is an error (an `in` list never matches NULL: use `where_eq(column, Null)`). A very long list may pass the
+## limit of placeholders of the database, which is an error of the database.
+export def where_in[T](q: Query[T], column: String, values: List[Db.Value]) -> Query[T]
+  case member_of(q.schema, column)
+    error(message) -> return failed(q, message)
+    ok(member) ->
+      for value in values
+        problem = value_problem(member, value)
+        if Codec.value_kind(value) == "Null"
+          return failed(q, "where_in takes no Null item, use where_eq(column, Null)")
+        elsif not problem.empty?
+          return failed(q, problem)
+        end
+      end
+
+      return with_cond(q, Build.Cond.In(column, values))
+  end
+end
+
+## Orders by `column`, after the columns already given. The column must be in the schema.
+export def order_by[T](q: Query[T], column: String) -> Query[T]
+  return ordered(q, column, false)
+end
+
+## Orders by `column`, largest first.
+export def order_by_desc[T](q: Query[T], column: String) -> Query[T]
+  return ordered(q, column, true)
+end
+
+## Keeps the first `count` rows of the order. A negative count is an error.
+export def limit[T](q: Query[T], count: Int) -> Query[T]
+  if count < 0
+    return failed(q, "limit must not be negative")
+  end
+
+  return q.with(plan: q.plan.with(limit: count))
+end
+
+## Skips the first `count` rows of the order. A negative count is an error.
+export def offset[T](q: Query[T], count: Int) -> Query[T]
+  if count < 0
+    return failed(q, "offset must not be negative")
+  end
+
+  return q.with(plan: q.plan.with(offset: count))
+end
+
+## The rows of the query, each read into a `T`. Without `order_by` the order is the one of the database.
+export def all[T](q: Query[T], conn: Db.Connection) -> Result[List[T]]
+  try ready(q)
+  columns = try columns_sql(conn, q.schema)
+  table = try quoted(conn, q.schema, q.schema.table)
+  where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
+  tail = try builder(Build.tail_piece(conn, q.plan), q.schema)
+  sql = "select #{columns} from #{table}#{where_part.sql}#{tail.sql}"
+  return query(conn, q.schema, sql, where_part.params.concat(tail.params))
+end
+
+## The first row of the query: `Option.Some(row)`, or `Option.None` when no row is kept.
+export def one[T](q: Query[T], conn: Db.Connection) -> Result[Option[T]]
+  rows = try all(q.with(plan: q.plan.with(limit: smaller(q.plan.limit, 1))), conn)
+  if rows.empty?
+    return ok(Option.None)
+  end
+
+  return ok(Option.Some(rows[0]))
+end
+
+## The number of rows the conditions keep; the order, the limit and the offset do not count.
+export def count[T](q: Query[T], conn: Db.Connection) -> Result[Int]
+  try ready(q)
+  table = try quoted(conn, q.schema, q.schema.table)
+  where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
+  rows = try Db.query(conn, "select count(*) as n from #{table}#{where_part.sql}", where_part.params)
+  case rows[0]["n"]
+    Db.Value.Int(n) -> return ok(n)
+    _ -> return fail(q.schema, "the database gave no count")
+  end
+end
+
+## Sets the columns of `changes` (a `Json` object, as for `patch`) in every row the conditions keep, and gives the rows
+## changed. The order, the limit and the offset are errors here, and so is a query with no condition (a pipeline whose
+## filters were all skipped must not change the table): `where(q, "1 = 1", [])` says that every row is meant.
+export def update_all[T](q: Query[T], conn: Db.Connection, changes: Json) -> Result[Int]
+  try ready(q)
+  try guarded(q, "update_all")
+  sets = try change_sets(conn, q.schema, changes)
+  table = try quoted(conn, q.schema, q.schema.table)
+  where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
+  sql = "update #{table} set #{sets.sql.join(", ")}#{where_part.sql}"
+  return Db.execute(conn, sql, sets.params.concat(where_part.params))
+end
+
+## Deletes every row the conditions keep and gives the rows removed. A query with no condition is an error (see
+## `update_all`). The order, the limit and the offset are errors here.
+export def delete_all[T](q: Query[T], conn: Db.Connection) -> Result[Int]
+  try ready(q)
+  try guarded(q, "delete_all")
+  table = try quoted(conn, q.schema, q.schema.table)
+  where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
+  return Db.execute(conn, "delete from #{table}#{where_part.sql}", where_part.params)
 end
 
 ## Inserts the row of `value` and gives it back as the database stored it. A generated key is left out of the insert
@@ -152,34 +311,8 @@ end
 export def patch[T](conn: Db.Connection, schema: Schema[T], id: Db.Value, changes: Json) -> Result[Int]
   try valid(schema)
   try key_kind(schema, id)
-  if JSON.kind(changes) != "object"
-    return fail(schema, "the changes are not a JSON object")
-  end
-
-  sets: List[String] = []
-  params: List[Db.Value] = []
-  known: Map[String, Json] = {}
-  for member in schema.members
-    found = JSON.get(changes, member.name)
-    if found.ok? and member.name == schema.primary_key
-      return fail(schema, "the primary key #{schema.primary_key} cannot be changed")
-    elsif found.ok?
-      known = known.put(member.name, found.unwrap!)
-      sets = sets.push("#{try quoted(conn, schema, member.name)} = ?")
-      params = params.push(try bound(schema, member, found.unwrap!))
-    end
-  end
-
-  # Json has no list of keys: an object with only the known keys is the same object when no key was unknown.
-  if (try canonical(JSON.object(known))) != (try canonical(changes))
-    return fail(schema, "the changes have a key that is not a column")
-  end
-
-  if sets.empty?
-    return fail(schema, "no column to change")
-  end
-
-  return update_by_key(conn, schema, sets, params.push(id))
+  sets = try change_sets(conn, schema, changes)
+  return update_by_key(conn, schema, sets.sql, sets.params.push(id))
 end
 
 # The name in quotes; a name that is not a plain identifier is an error of the Orm.
@@ -241,19 +374,139 @@ end
 
 # The row of the key, read again with all the columns of the schema.
 def reload[T](conn: Db.Connection, schema: Schema[T], key: Db.Value) -> Result[T]
+  case try find(conn, schema, key)
+    Option.Some(row) -> return ok(row)
+    Option.None -> return fail(schema, "the inserted row was not found by its key #{schema.primary_key}")
+  end
+end
+
+# The quoted names of all the columns of the schema, apart by commas.
+def columns_sql[T](conn: Db.Connection, schema: Schema[T]) -> Result[String]
   names: List[String] = []
   for member in schema.members
     names = names.push(try quoted(conn, schema, member.name))
   end
 
-  table = try quoted(conn, schema, schema.table)
-  column = try quoted(conn, schema, schema.primary_key)
-  rows = try query(conn, schema, "select #{names.join(", ")} from #{table} where #{column} = ?", [key])
-  if rows.empty?
-    return fail(schema, "the inserted row was not found by its key #{schema.primary_key}")
+  return ok(names.join(", "))
+end
+
+# The smaller of a limit (-1 for none) and `most`, so `one` keeps a limit of 0.
+def smaller(limit: Int, most: Int) -> Int
+  if limit >= 0 and limit < most
+    return limit
   end
 
-  return ok(rows[0])
+  return most
+end
+
+def with_cond[T](q: Query[T], cond: Build.Cond) -> Query[T]
+  return q.with(plan: q.plan.with(conds: q.plan.conds.push(cond)))
+end
+
+def ordered[T](q: Query[T], column: String, desc: Bool) -> Query[T]
+  case member_of(q.schema, column)
+    error(message) -> return failed(q, message)
+    ok(_) -> return q.with(plan: q.plan.with(orders: q.plan.orders.push(Build.Order(column: column, desc: desc))))
+  end
+end
+
+# The query with the first problem it met: later ones do not replace it.
+def failed[T](q: Query[T], message: String) -> Query[T]
+  if q.failure.empty?
+    return q.with(failure: message)
+  end
+
+  return q
+end
+
+def member_of[T](schema: Schema[T], column: String) -> Result[StructMember]
+  found = schema.members.select do |member| member.name == column end
+  if found.empty?
+    return error("#{column} is not a column of the table")
+  end
+
+  return ok(found[0])
+end
+
+# What is wrong with a value for a column, or an empty text when nothing: its kind, or a Float that is not finite.
+def value_problem(member: StructMember, value: Db.Value) -> String
+  if not Codec.accepts?(member.type, value)
+    return wrong_kind("column", member, value)
+  end
+
+  case value
+    Db.Value.Float(x) if x - x != 0.0 -> return "#{member.name}: not a finite Float"
+    _ -> return ""
+  end
+end
+
+def wrong_kind(what: String, member: StructMember, value: Db.Value) -> String
+  return "the #{what} #{member.name} has type #{member.type}, not #{Codec.value_kind(value)}"
+end
+
+# What every end of a query checks first: the problem met while it was built, and the schema.
+def ready[T](q: Query[T]) -> Result[Void]
+  if not q.failure.empty?
+    return fail(q.schema, q.failure)
+  end
+
+  return valid(q.schema)
+end
+
+# A write over a set of rows is one statement with no order or page (a delete with a limit is not portable), and it
+# has a condition: a query whose filters were all skipped must not change the whole table. `Orm.where(q, "1 = 1", [])`
+# says that every row is meant.
+def guarded[T](q: Query[T], what: String) -> Result[Void]
+  if Build.paged?(q.plan)
+    return fail(q.schema, "#{what} cannot use order_by, limit or offset")
+  end
+
+  if q.plan.conds.empty?
+    return fail(q.schema, "#{what} needs a condition; to change every row on purpose add Orm.where(q, \"1 = 1\", [])")
+  end
+
+  return ok()
+end
+
+# The sql of the builder is made of names the schema vouched for, but `Dialect.quote` still refuses a bad one.
+def builder[T](found: Result[Build.Piece], schema: Schema[T]) -> Result[Build.Piece]
+  case found
+    ok(piece) -> return ok(piece)
+    error(message) -> return fail(schema, message)
+  end
+end
+
+# The `name = ?` pieces for the keys of `changes` (a Json object): the columns of the schema, not the key, with values
+# of the kind of the field.
+def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Result[Sets]
+  if JSON.kind(changes) != "object"
+    return fail(schema, "the changes are not a JSON object")
+  end
+
+  sets: List[String] = []
+  params: List[Db.Value] = []
+  known: Map[String, Json] = {}
+  for member in schema.members
+    found = JSON.get(changes, member.name)
+    if found.ok? and member.name == schema.primary_key
+      return fail(schema, "the primary key #{schema.primary_key} cannot be changed")
+    elsif found.ok?
+      known = known.put(member.name, found.unwrap!)
+      sets = sets.push("#{try quoted(conn, schema, member.name)} = ?")
+      params = params.push(try bound(schema, member, found.unwrap!))
+    end
+  end
+
+  # Json has no list of keys: an object with only the known keys is the same object when no key was unknown.
+  if (try canonical(JSON.object(known))) != (try canonical(changes))
+    return fail(schema, "the changes have a key that is not a column")
+  end
+
+  if sets.empty?
+    return fail(schema, "no column to change")
+  end
+
+  return ok(Sets(sql: sets, params: params))
 end
 
 def read[T](schema: Schema[T], row: Db.Row) -> Result[T]

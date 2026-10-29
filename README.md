@@ -159,6 +159,7 @@ end
 | `check(conn, schema)` | `Result[Void]`: the schema is sound and the table has its columns |
 | `query(conn, schema, sql, params)` | `Result[List[T]]`, each row read into a `T` |
 | `query_as(conn, sql, params) do \|row\| ... end` | `Result[List[R]]`, each `Db.Row` read by your block |
+| `find(conn, schema, id)` | `Result[Orm.Option[T]]`: `Option.Some(row)` or `Option.None` (a 404, not an error) |
 | `insert(conn, schema, value)` | `Result[T]`, the row as stored, with its generated key |
 | `update(conn, schema, value)` | `Result[Int]`, the rows set (0: no row has the key of `value`) |
 | `delete(conn, schema, id)` | `Result[Int]`, the rows removed (`id` is a `Db.Value`) |
@@ -211,6 +212,53 @@ plain identifiers, that every field has a column type, that the key is a field a
   Int beyond 2^53 for a Float field are errors, before any sql runs; so is an object with no column to change.
 - Inside a transaction pass its connection: `Db.transaction(conn) do |tx| Orm.query(tx, users, sql, []) end` gives
   the rows.
+- `query`, `find` and the writes take the connection first; the steps and the ends of a query (below) take the query
+  first, so that they chain with `|>`.
+
+### The query builder
+
+`Orm.from(schema)` starts a query; the functions below take the query first, so they chain with `|>`, and the query
+ends in `all`, `one`, `count`, `update_all` or `delete_all`. A query is a value: every step gives a new one.
+
+```ruby
+rows = try (Orm.from(users)
+  |> Orm.where_eq("admin", Db.Value.Bool(true))
+  |> Orm.where("age > ?", [Db.Value.Int(18)])
+  |> Orm.order_by_desc("age")
+  |> Orm.limit(10)
+  |> Orm.all(conn))
+```
+
+(A line cannot start with `|>` unless the chain is in parentheses.)
+
+| Step | Does |
+|---|---|
+| `where(query, sql, params)` | adds sql of your program, with `?` for the params (not for anything from a request) |
+| `where_eq(query, column, value)` | `column = ?`; `Db.Value.Null` is `column is null` |
+| `where_in(query, column, values)` | `column in (?, ...)`; no value keeps no row |
+| `order_by(query, column)`, `order_by_desc(query, column)` | order by a column, after the ones already given |
+| `limit(query, n)`, `offset(query, n)` | page the rows; an offset with no limit works on every database |
+| `all(query, conn)` | `Result[List[T]]` |
+| `one(query, conn)` | `Result[Orm.Option[T]]`, the first row or `Option.None` |
+| `count(query, conn)` | `Result[Int]`, the rows the conditions keep (order and page do not count) |
+| `update_all(query, conn, changes)` | `Result[Int]`, sets the columns of the `Json` object `changes`, as `patch` |
+| `delete_all(query, conn)` | `Result[Int]`, removes the rows the conditions keep |
+
+- All the conditions must hold (`and`). A column that is not in the schema, or a value of another kind than its column
+  (`age` is an Int: `Db.Value.Text` is an error), is not an error of the step: the query keeps the first problem and
+  the call that ends it gives `orm error: users: nickname is not a column of the table`, before any sql runs. So a
+  column name from a request is safe in `where_eq`, `where_in` and `order_by`; the sql of `where` is yours.
+- `update_all` and `delete_all` with an order, a limit or an offset are errors (not every database allows them), and so
+  is a query with no condition: a pipeline whose optional filters were all skipped must not change the whole table.
+  `Orm.where(query, "1 = 1", [])` says that every row is meant.
+- `where_eq` and `where_in` refuse a Float that is NaN or an infinity, as the writes do. `where_in` takes no `Null`
+  item (an `in` list never matches NULL: use `where_eq(column, Null)`); a very long list may pass the limit of
+  placeholders of the database, which is an error of the database. `one` keeps a limit smaller than 1, so a limit of 0
+  gives `None`.
+- Rows come in the order of the database unless `order_by` says otherwise, for `all` and `one` alike (`one` is the
+  first row of that order). Where NULLs sort differs between the databases (SQLite and MySQL: first when ascending;
+  PostgreSQL: last): do not count on it, or order by a column that is never NULL.
+- `find` is `where_eq` on the key plus `one`, and refuses a key of another kind than the key field, as `delete` does.
 
 ## PostgreSQL
 
