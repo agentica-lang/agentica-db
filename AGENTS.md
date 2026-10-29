@@ -2,7 +2,9 @@
 
 One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc`, `postgres.agc`
 with its placeholder scanner `postgres_sql.agc`, `mysql.agc` with its statement scanner `mysql_sql.agc` and its url
-reader `mysql_url.agc`), all through the C FFI. No C code of ours.
+reader `mysql_url.agc`), all through the C FFI. No C code of ours. `orm.agc` is a typed layer over `Db` (plain structs
+in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `JSON.codec`) and `orm/dialect.agc`
+(identifier names and quotes); it takes a `Db.Connection` and never touches an adapter.
 
 ## Commands
 
@@ -43,7 +45,8 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
 - An adapter exports its own `BEGIN_SQL`; `transaction` in `db.agc` uses it.
 - Tests are BDD-first: behavior is a Gherkin scenario in `specs/*.feature`, run by `agentica test`, not a test file.
   The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
-  `transactions`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one
+  `transactions`) and by `orm.feature` for the Orm (its driver ops build the struct `Person` of
+  `specs/driver.agc`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one
   adapter promises is in `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on
   all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and
   not a temporary table where a statement reads one table twice. A new behavior is a scenario first. A value written
@@ -64,8 +67,8 @@ reader `mysql_url.agc`), all through the C FFI. No C code of ours.
   `Then`, since nothing comes after it to refuse.
 - Scenario names are unique: put a column of the Examples in the title of an outline with several rows.
 - `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would
-  say badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`) and the url reader
-  (`test/mysql_url_test.agc`). Anything that opens a connection is a scenario. A behavior is proven once: a common
+  say badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url reader
+  (`test/mysql_url_test.agc`) and the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a connection is a scenario. A behavior is proven once: a common
   scenario is an outline with one row per adapter that the behavior applies to, not one per variant of the input, and a
   case a unit test proves is not repeated in a feature, except the one integration row per adapter that shows the
   helper is wired in (a bad url, a NUL in the sql).

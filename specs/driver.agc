@@ -5,6 +5,7 @@
 
 import Cells from "cells"
 import Db from "../db"
+import Orm from "../orm"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
@@ -23,6 +24,22 @@ TICKS = 40
 TICK_MS = 20
 IO_TIMEOUT_MS = 5_000
 NO_DATABASE = "no database is open"
+
+# The struct of the Orm scenarios: the table `people`.
+struct Person
+  id: Int = 0
+  name: String
+  age: JsonField[Int]
+  admin: Bool
+  score: Float
+end
+
+# A struct with a column that `people` lacks.
+struct Ghost
+  id: Int = 0
+  name: String
+  nickname: String
+end
 
 # What the last request gave.
 enum Outcome
@@ -109,6 +126,9 @@ def act(state: State, req: Request) -> Handled
     "execute" -> return reply_ok(with_params(state, req, &execute))
     "query" -> return reply_ok(with_params(state, req, &query))
     "transaction" -> return reply_ok(transaction(state, req))
+    "orm_query" -> return reply_ok(with_params(state, req, &orm_query))
+    "orm_query_as" -> return reply_ok(orm_query_as(state, Cells.expand(req.text)))
+    "orm_check" -> return reply_ok(orm_check(state, req.text))
     "close" -> return reply_ok(close(state))
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
@@ -231,6 +251,74 @@ def query(state: State, sql: String, params: List[Db.Value]) -> State
       error(message) -> return failed(state, message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
     end
+  end
+end
+
+def people() -> Orm.Schema[Person]
+  return Orm.schema("people", Person.members, JSON.codec(Person))
+end
+
+# The persons read, shown as rows: a JsonField age shows its value, Null, or `Text absent` for a column left out.
+def orm_query(state: State, sql: String, params: List[Db.Value]) -> State
+  return with_conn(state) do |conn|
+    case Orm.query(conn, people(), sql, params)
+      error(message) -> return failed(state, message)
+      ok(found) -> return recorded(state, Outcome.Rows(found.map do |person| person_row(person) end))
+    end
+  end
+end
+
+def person_row(person: Person) -> Db.Row
+  return {
+    "id": Db.Value.Int(person.id),
+    "name": Db.Value.Text(person.name),
+    "age": age_value(person.age),
+    "admin": Db.Value.Bool(person.admin),
+    "score": Db.Value.Float(person.score),
+  }
+end
+
+def age_value(age: JsonField[Int]) -> Db.Value
+  case age
+    JsonField.Value(years) -> return Db.Value.Int(years)
+    JsonField.Null -> return Db.Value.Null
+    JsonField.Absent -> return Db.Value.Text("absent")
+  end
+end
+
+# Decodes by hand: the name of each row.
+def orm_query_as(state: State, sql: String) -> State
+  return with_conn(state) do |conn|
+    found = Orm.query_as(conn, sql, []) do |row| name_of(row) end
+    case found
+      error(message) -> return failed(state, message)
+      ok(names) -> return recorded(state, Outcome.Rows(names.map do |name| {"name": Db.Value.Text(name)} end))
+    end
+  end
+end
+
+def name_of(row: Db.Row) -> Result[String]
+  case row.get("name", Db.Value.Null)
+    Db.Value.Text(name) -> return ok(name)
+    _ -> return error("no name in the row")
+  end
+end
+
+# The schemas: `people`, `ghost` (a column the table lacks) and `keyless` (a primary key that is not a column).
+def orm_check(state: State, which: String) -> State
+  return with_conn(state) do |conn|
+    case which
+      "people" -> return checked(state, Orm.check(conn, people()))
+      "ghost" -> return checked(state, Orm.check(conn, Orm.schema("people", Ghost.members, JSON.codec(Ghost))))
+      _ -> return checked(state, Orm.check(conn, people().with(primary_key: "pk")))
+    end
+  end
+end
+
+def checked(state: State, done: Result[Void]) -> State
+  case done
+    error(message) -> return failed(state, message)
+    ok(_) -> return recorded(state, Outcome.Done)
   end
 end
 
