@@ -39,6 +39,10 @@ def main() -> Void
     BDD.step("the program answers a line starting with {string}", &answers_with),
     text_step("another task executes {string}", "execute_in_task"),
     text_step("another task opens its own connection and queries {string}", "query_in_new_task"),
+    text_step("I read people with {string}", "orm_query"),
+    BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
+    text_step("I read the names with {string}", "orm_query_as"),
+    text_step("I check the {string} schema", "orm_check"),
     BDD.step("the query {string} returns:") do |ctx, args|
       asked = send(ctx, Request(op: "query", text: args[0]))
       send(asked, rows_request(asked))
