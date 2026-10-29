@@ -103,23 +103,23 @@ Feature: Orm writes
     And I execute "create temporary table people (id integer primary key, name varchar(50) not null, age integer, admin boolean not null, score double precision not null)"
     And I execute "insert into people (id, name, age, admin, score) values (1, 'ana', 31, true, 1.5)"
     When I patch the person 1 with "{\"nickname\": \"x\"}"
-    Then it fails with exactly "orm error: people: the changes have a key that is not a column"
+    Then it fails with exactly "orm error bad_request: people: the changes have a key that is not a column"
     When I patch the person 1 with "{\"id\": 5}"
-    Then it fails with exactly "orm error: people: the primary key id cannot be changed"
+    Then it fails with exactly "orm error bad_request: people: the primary key id cannot be changed"
     When I patch the person 1 with "{\"name\": null}"
-    Then it fails with exactly "orm error: people: name: NULL in a field that is not a JsonField"
+    Then it fails with exactly "orm error bad_request: people: name: NULL in a field that is not a JsonField"
     When I patch the person 1 with "{\"age\": \"old\"}"
-    Then it fails with exactly "orm error: people: age: expected Int"
+    Then it fails with exactly "orm error bad_request: people: age: expected Int"
     When I patch the person 1 with "{\"score\": 9007199254740993}"
-    Then it fails with exactly "orm error: people: score: 9007199254740993 does not fit a Float exactly"
+    Then it fails with exactly "orm error bad_request: people: score: 9007199254740993 does not fit a Float exactly"
     When I patch the person 1 with "[1]"
-    Then it fails with exactly "orm error: people: the changes are not a JSON object"
+    Then it fails with exactly "orm error bad_request: people: the changes are not a JSON object"
     When I patch the person 1 with "{}"
-    Then it fails with exactly "orm error: people: no column to change"
+    Then it fails with exactly "orm error bad_request: people: no column to change"
     When I delete the person with the key "Text 1"
-    Then it fails with exactly "orm error: people: the key id has type Int, not Text"
+    Then it fails with exactly "orm error bad_request: people: the key id has type Int, not Text"
     When I delete the person 1 from the "injection" schema
-    Then it fails with exactly "orm error: a; drop table x: the table name is not a plain identifier"
+    Then it fails with exactly "orm error schema: a; drop table x: the table name is not a plain identifier"
     And the query "select id, name, age, score from people" returns:
       | id    | name     | age    | score     |
       | Int 1 | Text ana | Int 31 | Float 1.5 |
@@ -152,9 +152,9 @@ Feature: Orm writes
   Scenario Outline: A value with nothing to write fails before any sql runs on <adapter>
     Given a "<adapter>" database
     When I insert a marker with no note
-    Then it fails with exactly "orm error: markers: no column to insert"
+    Then it fails with exactly "orm error bad_request: markers: no column to insert"
     When I update a marker with no note
-    Then it fails with exactly "orm error: markers: no column to update"
+    Then it fails with exactly "orm error bad_request: markers: no column to update"
 
     Examples:
       | adapter  |

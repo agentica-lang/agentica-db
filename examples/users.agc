@@ -5,7 +5,7 @@
 ## It runs on its own against an in-memory SQLite database and prints each request with its response, so no server
 ## is needed. To serve it, open the connection in `main` and hand `HTTP.listen` a block that calls
 ## `handle(conn, schema, request)`. A real app adds more: a 405 with an `Allow` header, a cap on the size of an import,
-## URL decoding of the query, and the structured errors of the Orm (agentica-db issue 16) for exact status codes.
+## and URL decoding of the query.
 ## `specs/examples.feature` runs this file and checks what it prints.
 
 import Db from "../db"
@@ -149,8 +149,7 @@ def remove(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpRespon
 end
 
 # POST /users/import: all the users of the body, or none. The transaction rolls back when an insert fails (a name
-# that is already taken) and gives back the users it created when it commits. Whatever failed is a 500 with no detail:
-# telling a conflict (409) from a broken database needs the structured errors of agentica-db issue 16.
+# that is already taken: a conflict) and gives back the users it created when it commits.
 def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HttpResponse
   case JSON.decode(body, Batch)
     error(_) -> return failure(400, "the body is not a batch of users")
@@ -165,7 +164,7 @@ def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) ->
       end
 
       case done
-        error(_) -> return failure(500, "nothing was imported")
+        error(message) -> return refused_import(message)
         ok(created) -> return json(201, JSON.encode(created))
       end
   end
@@ -183,16 +182,23 @@ def failure(status: Int, message: String) -> HttpResponse
   return json(status, JSON.encode({"error": message}))
 end
 
-# A simplification until the Orm has structured errors (agentica-db issue 16): an error of the Orm is a 400 with its
-# text, and any other error is a 500 with no detail. Only the errors of the builder and of `patch` are really about
-# the request: a schema that fails `check` would also come out as a 400, and a duplicate name (a database error) is a
-# 500 instead of a 409. https://github.com/agentica-lang/agentica-db/issues/16
+# The status of a failure comes from its kind (`Orm.classify`), not from its text: a bad request is the client's
+# fault and its message says what to fix, a conflict (a name that is already taken) is a 409, and anything else is a
+# fault of the server that a client has no use for.
 def refused(message: String) -> HttpResponse
-  if message.start_with?("orm error:")
-    return failure(400, message)
+  case Orm.classify(message)
+    Orm.Error.BadRequest(text) -> return failure(400, text)
+    Orm.Error.Conflict(_) -> return failure(409, "conflict")
+    _ -> return failure(500, "internal error")
   end
+end
 
-  return failure(500, "internal error")
+# The same for an import: nothing was saved, whatever the reason.
+def refused_import(message: String) -> HttpResponse
+  case Orm.classify(message)
+    Orm.Error.Conflict(_) -> return failure(409, "nothing was imported")
+    _ -> return failure(500, "nothing was imported")
+  end
 end
 
 # The value of ?key=value in a request target.

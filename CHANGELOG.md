@@ -44,4 +44,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `delete_all` refuse a query with no condition (`Orm.where(q, "1 = 1", [])` says that every row is meant).
 - `examples/users.agc`: a web-handler style users API on the Orm (insert, find, the builder, patch, delete and a
   transaction), run by CI against SQLite.
+- `Orm.classify(error_text)` gives an `Orm.Error` to `case` on (`BadRequest`, `Conflict`, `NotDecodable`, `Schema`,
+  `Database`), with `Orm.kind` and `Orm.message`. A unique or foreign-key violation of any database is a `Conflict`.
+  The users example maps statuses by kind.
+- **Breaking:** an error of the Orm now carries its kind: `orm error <code>: <table>: <message>` (`orm error
+  bad_request: users: ...`, not `orm error: users: ...`). Match it with `Orm.classify`, not by text.
 - Needs Agentica 0.15.0 (CI and README).

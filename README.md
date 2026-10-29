@@ -181,9 +181,9 @@ plain identifiers, that every field has a column type, that the key is a field a
 - A Bool column of SQLite and MySQL comes back from `Db` as 0 or 1; the Orm reads it as a Bool. An Int column is
   read as a Float for a Float field, unless the Int is beyond 2^53 (it could round: that is an error). A NaN or an
   infinity (PostgreSQL) is an error too. A `numeric`, a date or a uuid is a `Text` (see above): use a String field.
-- A row that does not fit the struct is `error("orm error: users: name: missing column")`: the table, then
-  the field and what is wrong. An error of the database is the error of `Db`, unchanged, also from `check` (a table or
-  a column that is missing).
+- A row that does not fit the struct is `error("orm error decode: users: name: missing column")`: the kind, the table,
+  then the field and what is wrong. An error of the database is the error of `Db`, unchanged, also from `check` (a
+  table or a column that is missing). See "Errors" below to tell the kinds apart.
 - `check` writes a `select` with the table and the columns quoted (double quotes for PostgreSQL, backticks for MySQL
   and SQLite), so a name is exact in PostgreSQL: it folds an unquoted name to lower case, and a column it created
   that way is found by the lower case name only. A name that is not a letter or `_` followed by letters, digits or
@@ -197,7 +197,7 @@ plain identifiers, that every field has a column type, that the key is a field a
   of PostgreSQL. PostgreSQL gets the key with `returning`; SQLite and MySQL with `last_insert_rowid()` and
   `last_insert_id()` on the same connection. The insert and the read after it are two statements: put them in a
   transaction (`Db.transaction`), so that other writers cannot interleave. If the read finds no row, which happens when
-  the key is not the one the database generates, the row was inserted all the same: the error says `orm error:
+  the key is not the one the database generates, the row was inserted all the same: the error says `orm error database:
   <table>: the inserted row was not found by its key`. A key that is not generated (`.with(generated: false)`) is
   inserted as it is. A value with nothing to insert (a generated key and `Absent` fields only) is `no column to
   insert`. The error of the database (a unique key, a not null) is returned unchanged. A Float field with NaN or an
@@ -214,6 +214,34 @@ plain identifiers, that every field has a column type, that the key is a field a
   the rows.
 - `query`, `find` and the writes take the connection first; the steps and the ends of a query (below) take the query
   first, so that they chain with `|>`.
+
+### Errors
+
+An error is a text, since that is what a `Result` holds. A failure of the Orm is `orm error <code>: <table>:
+<message>`, and `Orm.classify(text)` gives its kind to `case` on, so that a handler never matches message text:
+
+- `BadRequest(message)`: a column, value or key the caller got wrong (a column that is not in the schema, a value of
+  another kind, an unknown key in `patch`, no condition in `delete_all`). Suggested status: 400.
+- `Conflict(message)`: a unique or foreign-key violation (SQLite 19 with `UNIQUE` or `FOREIGN KEY`; PostgreSQL 23505
+  and 23503; MySQL 1062, 1451 and 1452). Suggested status: 409.
+- `NotDecodable(message)`: a row that does not fit its struct (a missing column, a NULL in a field that is not a
+  `JsonField`). Suggested status: 500.
+- `Schema(message)`: a schema that is not sound (a name that is not an identifier, a field type no column holds, a
+  key that is not a field). Suggested status: 500.
+- `Database(message)`: any other error of the database (a lost connection, a missing table, a not null), or of the
+  Orm's bookkeeping (no generated key, a failed re-read). Suggested status: 500.
+
+`Orm.kind(error)` gives the name (`"Conflict"`) and `Orm.message(error)` the message for a log: `<table>: <message>`
+for a failure of the Orm, the text of the database as it is for the others. The Orm does not know about HTTP; the
+statuses are only suggestions. A text that no rule knows (an old `orm error: ...` text, `db error: ...`) is `Database`.
+
+```ruby
+case Orm.classify(message)
+  Orm.Error.BadRequest(text) -> respond(400, text)
+  Orm.Error.Conflict(_) -> respond(409, "conflict")
+  _ -> respond(500, "internal error")
+end
+```
 
 ### The query builder
 
@@ -246,8 +274,8 @@ rows = try (Orm.from(users)
 
 - All the conditions must hold (`and`). A column that is not in the schema, or a value of another kind than its column
   (`age` is an Int: `Db.Value.Text` is an error), is not an error of the step: the query keeps the first problem and
-  the call that ends it gives `orm error: users: nickname is not a column of the table`, before any sql runs. So a
-  column name from a request is safe in `where_eq`, `where_in` and `order_by`; the sql of `where` is yours.
+  the call that ends it gives `orm error bad_request: users: nickname is not a column of the table`, before any sql
+  runs. So a column name from a request is safe in `where_eq`, `where_in` and `order_by`; the sql of `where` is yours.
 - `update_all` and `delete_all` with an order, a limit or an offset are errors (not every database allows them), and so
   is a query with no condition: a pipeline whose optional filters were all skipped must not change the whole table.
   `Orm.where(query, "1 = 1", [])` says that every row is meant.
@@ -268,9 +296,8 @@ from an `HttpRequest` to an `HttpResponse` that takes the connection as an argum
 builder, with a column that comes from the request), `PATCH /users/7` (`patch` with the JSON body as it is),
 `DELETE /users/7`, and an import of several users in a `Db.transaction` that gives back the users it created and rolls
 back when one insert fails. It runs against in-memory SQLite and prints each request with its response
-(`agentica examples/users.agc`); CI runs it (`specs/examples.feature`). Its mapping of errors to status codes is a
-simplification until the Orm has structured errors
-([issue 16](https://github.com/agentica-lang/agentica-db/issues/16)): an error of the Orm is a 400, any other a 500.
+(`agentica examples/users.agc`); CI runs it (`specs/examples.feature`). It maps a failure to a status by its kind
+(`Orm.classify`, below): a bad request is a 400, a conflict a 409 and anything else a 500.
 
 ## PostgreSQL
 

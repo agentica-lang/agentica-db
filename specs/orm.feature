@@ -43,11 +43,11 @@ Feature: Orm
     And I execute "create temporary table people (id integer not null, name varchar(50) not null, age integer, admin boolean not null, score double precision not null)"
     And I execute "insert into people (id, name, age, admin, score) values (1, 'ana', 31, true, 1.5)"
     When I read people with "select id, name, admin from people"
-    Then it fails with exactly "orm error: people: score: missing column"
+    Then it fails with exactly "orm error decode: people: score: missing column"
     When I read people with "select id, null as name, admin, score from people"
-    Then it fails with exactly "orm error: people: name: NULL in a field that is not a JsonField"
+    Then it fails with exactly "orm error decode: people: name: NULL in a field that is not a JsonField"
     When I read people with "select id, name, admin, 'x' as score from people"
-    Then it fails with "orm error: people: score: "
+    Then it fails with "orm error decode: people: score: "
     When I read people with "select id, name from nowhere"
     Then it fails with "<prefix>"
 
@@ -66,7 +66,7 @@ Feature: Orm
       | id    | name     | age    | admin     | score     |
       | Int 1 | Text ana | Int 31 | Bool true | Float 2.0 |
     When I read people with "select id, name, age, admin, 9007199254740993 as score from people"
-    Then it fails with exactly "orm error: people: score: 9007199254740993 does not fit a Float exactly"
+    Then it fails with exactly "orm error decode: people: score: 9007199254740993 does not fit a Float exactly"
 
     Examples:
       | adapter  |
@@ -100,13 +100,13 @@ Feature: Orm
     When I check the "ghost" schema
     Then it fails with "<prefix>"
     When I check the "keyless" schema
-    Then it fails with exactly "orm error: people: the primary key pk is not a column"
+    Then it fails with exactly "orm error schema: people: the primary key pk is not a column"
     When I check the "injection" schema
-    Then it fails with exactly "orm error: a; drop table x: the table name is not a plain identifier"
+    Then it fails with exactly "orm error schema: a; drop table x: the table name is not a plain identifier"
     When I check the "textkey" schema
-    Then it fails with exactly "orm error: people: the generated key id must be an Int"
+    Then it fails with exactly "orm error schema: people: the generated key id must be an Int"
     When I check the "list" schema
-    Then it fails with exactly "orm error: people: the field tags has the type List[String], which a column cannot hold"
+    Then it fails with exactly "orm error schema: people: the field tags has the type List[String], which a column cannot hold"
 
     Examples:
       | adapter  | prefix                                        |
