@@ -47,10 +47,10 @@ in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `
   The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
   `transactions`) and by `orm.feature` and `orm_writes.feature` for the Orm (its driver ops build the struct `Person`
   of `specs/driver.agc`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only
-  one adapter promises is in `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on
-  all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and
-  not a temporary table where a statement reads one table twice. A new behavior is a scenario first. A value written
-  must read back unchanged.
+  one adapter promises is in `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario
+  runs on all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE
+  and not a temporary table where a statement reads one table twice. A new behavior is a scenario first. A value
+  written must read back unchanged.
 - The steps are in `specs/steps.agc`, few and generic (`a "sqlite" database`, `I execute "sql" with:` and a table of
   typed params, `the query "sql" returns:` and a table, `it fails with "prefix"`). They drive `Db` through
   `specs/driver.agc`, a program under test that holds the connection (a step program cannot keep a connection between
