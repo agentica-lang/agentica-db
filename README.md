@@ -269,8 +269,8 @@ builder, with a column that comes from the request), `PATCH /users/7` (`patch` w
 `DELETE /users/7`, and an import of several users in a `Db.transaction` that gives back the users it created and rolls
 back when one insert fails. It runs against in-memory SQLite and prints each request with its response
 (`agentica examples/users.agc`); CI runs it (`specs/examples.feature`). Its mapping of errors to status codes is a
-simplification until the Orm has structured errors ([issue 16](https://github.com/agentica-lang/agentica-db/issues/16)):
-an error of the Orm is a 400, any other error a 500.
+simplification until the Orm has structured errors
+([issue 16](https://github.com/agentica-lang/agentica-db/issues/16)): an error of the Orm is a 400, any other a 500.
 
 ## PostgreSQL
 
