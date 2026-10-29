@@ -160,18 +160,23 @@ plain identifiers, that every field has a column type, that the key is a field a
 
 - A column has the name of its field. A field is an Int, Float, Bool or String, alone or in a `JsonField`. A column
   that can be NULL is a `JsonField[T]`: NULL is `JsonField.Null`, and a column the query does not select is
-  `JsonField.Absent`. A NULL in any other field is an error. The key of a table the database numbers is
-  `id: Int = 0`, so a value can be built before the database gives it its id.
-- The columns a query returns are matched with the fields by name, in any order. An extra column is ignored; a
-  missing one is an error unless its field is a `JsonField`.
+  `JsonField.Absent`. A NULL in any other field is an error (`users: name: NULL in a field that is not a
+  JsonField`). The key of a table the database numbers is `id: Int = 0`, so a value can be built before the database
+  gives it its id.
+- The columns a query returns are matched with the fields by name, in any order, and the case must be the same: the
+  name of a result column is the one the database gives (SQLite and MySQL give a column in the case of the table, even
+  when the query wrote it in another; use `as` to choose it). An extra column is ignored; a missing one is an error
+  (`users: name: missing column`) unless its field is a `JsonField`.
 - A Bool column of SQLite and MySQL comes back from `Db` as 0 or 1; the Orm reads it as a Bool. An Int column is
-  read as a Float for a Float field. A `numeric`, a date or a uuid is a `Text` (see above): use a String field.
-- A row that does not fit the struct is `error("orm error: users: name: expected required field")`: the table, then
-  the field and what is wrong. An error of the database is the error of `Db`, unchanged.
+  read as a Float for a Float field, unless the Int is beyond 2^53 (it could round: that is an error). A NaN or an
+  infinity (PostgreSQL) is an error too. A `numeric`, a date or a uuid is a `Text` (see above): use a String field.
+- A row that does not fit the struct is `error("orm error: users: name: missing column")`: the table, then
+  the field and what is wrong. An error of the database is the error of `Db`, unchanged, also from `check` (a table or
+  a column that is missing).
 - `check` writes a `select` with the table and the columns quoted (double quotes for PostgreSQL, backticks for MySQL
-  and SQLite), so a name is exact: PostgreSQL folds an unquoted name to lower case, and a column it created that way
-  is found by the lower case name only. A name that is not a letter or `_` followed by letters, digits or `_` is an
-  error of `check`: a name never comes from a request.
+  and SQLite), so a name is exact in PostgreSQL: it folds an unquoted name to lower case, and a column it created
+  that way is found by the lower case name only. A name that is not a letter or `_` followed by letters, digits or
+  `_` is an error of `check`: a name never comes from a request.
 - Inside a transaction pass its connection: `Db.transaction(conn) do |tx| Orm.query(tx, users, sql, []) end` gives
   the rows.
 

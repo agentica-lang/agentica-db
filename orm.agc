@@ -31,15 +31,18 @@ export def schema[T](table: String, members: List[StructMember], codec: JSON.Cod
 end
 
 ## Checks the schema and then the table: the names are plain identifiers, every field is a type a column can hold,
-## the key is a field, and the table has every column. Run it once at start up. It reads no row.
+## the key is a field, and the table has every column. Run it once at start up. It reads no row. The first three are
+## `orm error: <table>: <message>`; a table or a column that is missing is the error of `Db`, unchanged.
 export def check[T](conn: Db.Connection, schema: Schema[T]) -> Result[Void]
   try valid(schema)
-  names = schema.members.map do |member| Dialect.quote(conn, member.name) end
-  sql = "select #{names.join(", ")} from #{Dialect.quote(conn, schema.table)} where 1 = 0"
-  case Db.query(conn, sql, [])
-    ok(_) -> return ok()
-    error(message) -> return fail(schema, message)
+  names: List[String] = []
+  for member in schema.members
+    names = names.push(try quoted(conn, schema, member.name))
   end
+
+  table = try quoted(conn, schema, schema.table)
+  try Db.query(conn, "select #{names.join(", ")} from #{table} where 1 = 0", [])
+  return ok()
 end
 
 ## Runs the sql and reads each row into a `T`. The sql is yours, with `?` for the parameters; the columns it names
@@ -65,6 +68,14 @@ export def query_as[R](conn: Db.Connection, sql: String, params: List[Db.Value],
   end
 
   return ok(found)
+end
+
+# The name in quotes; a name that is not a plain identifier is an error of the Orm.
+def quoted[T](conn: Db.Connection, schema: Schema[T], name: String) -> Result[String]
+  case Dialect.quote(conn, name)
+    ok(text) -> return ok(text)
+    error(message) -> return fail(schema, message)
+  end
 end
 
 def read[T](schema: Schema[T], row: Db.Row) -> Result[T]

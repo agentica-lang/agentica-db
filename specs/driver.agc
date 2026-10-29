@@ -41,6 +41,12 @@ struct Ghost
   nickname: String
 end
 
+# A struct with a field that no column holds.
+struct Tagged
+  id: Int = 0
+  tags: List[String]
+end
+
 # What the last request gave.
 enum Outcome
   Nothing
@@ -304,13 +310,16 @@ def name_of(row: Db.Row) -> Result[String]
   end
 end
 
-# The schemas: `people`, `ghost` (a column the table lacks) and `keyless` (a primary key that is not a column).
+# The schemas: `people`, `ghost` (a column the table lacks), `keyless` (a primary key that is not a column),
+# `injection` (a table name that is sql) and `list` (a field no column holds).
 def orm_check(state: State, which: String) -> State
   return with_conn(state) do |conn|
     case which
       "people" -> return checked(state, Orm.check(conn, people()))
       "ghost" -> return checked(state, Orm.check(conn, Orm.schema("people", Ghost.members, JSON.codec(Ghost))))
-      _ -> return checked(state, Orm.check(conn, people().with(primary_key: "pk")))
+      "keyless" -> return checked(state, Orm.check(conn, people().with(primary_key: "pk")))
+      "injection" -> return checked(state, Orm.check(conn, people().with(table: "a; drop table x")))
+      _ -> return checked(state, Orm.check(conn, Orm.schema("people", Tagged.members, JSON.codec(Tagged))))
     end
   end
 end

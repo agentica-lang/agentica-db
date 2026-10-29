@@ -14,13 +14,19 @@ export def valid_name?(name: String) -> Bool
 end
 
 ## The name in the quotes of the database: double quotes for PostgreSQL, backticks for MySQL and SQLite (SQLite reads a
-## double-quoted name that is no column as a string, so a missing column would pass unseen). The name must pass
-## `valid_name?`, so it holds nothing to escape. A quoted name is exact: PostgreSQL folds an unquoted name to lower
-## case, so a column it created that way is found by its lower case name only.
-export def quote(conn: Db.Connection, name: String) -> String
+## double-quoted name that is no column as a string, so a missing column would pass unseen). A name that fails
+## `valid_name?` is an error, so no sql is built from a name that could inject. A quoted name keeps its case:
+## PostgreSQL folds an unquoted name to lower case, so a column it created that way is found by its lower case name
+## only. SQLite and MySQL find a column in any case but give its name in the case of the table, and the Orm matches
+## the fields with the names of the result exactly.
+export def quote(conn: Db.Connection, name: String) -> Result[String]
+  if not valid_name?(name)
+    return error("the name #{name.inspect} is not a plain identifier")
+  end
+
   case conn
-    Db.Connection.Postgres(_) -> return "\"#{name}\""
-    _ -> return "`#{name}`"
+    Db.Connection.Postgres(_) -> return ok("\"#{name}\"")
+    _ -> return ok("`#{name}`")
   end
 end
 
