@@ -43,6 +43,17 @@ def main() -> Void
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
     text_step("I read the names with {string}", "orm_query_as"),
     text_step("I check the {string} schema", "orm_check"),
+    BDD.step("I insert the person:") do |ctx, args| send(ctx, Request(op: "orm_insert", table: BDD.table(ctx))) end,
+    BDD.step("I update the person:") do |ctx, args| send(ctx, Request(op: "orm_update", table: BDD.table(ctx))) end,
+    BDD.step("I patch the person {int} with {string}") do |ctx, args|
+      send(ctx, Request(op: "orm_patch", number: args[0].to_i!, text: args[1]))
+    end,
+    BDD.step("I delete the person {int}") do |ctx, args|
+      send(ctx, Request(op: "orm_delete", number: args[0].to_i!, text: "people"))
+    end,
+    BDD.step("I delete the person {int} from the {string} schema") do |ctx, args|
+      send(ctx, Request(op: "orm_delete", number: args[0].to_i!, text: args[1]))
+    end,
     BDD.step("the query {string} returns:") do |ctx, args|
       asked = send(ctx, Request(op: "query", text: args[0]))
       send(asked, rows_request(asked))

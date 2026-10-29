@@ -14,6 +14,8 @@ export OK = "ok"
 ## `execute_in_task`, `query_in_new_task` (text: sql), `keep_running` (text: sql, number: the longest gap in
 ## milliseconds), `leave_open` (text: connection name, number: milliseconds the server may take to drop it),
 ## `orm_query` (text: sql, cells: params), `orm_query_as` (text: sql) and `orm_check` (text: schema name),
+## `orm_insert` and `orm_update` (table: a header and the row of a Person), `orm_patch` (number: the key, text: the
+## changes as JSON), `orm_delete` (number: the key, text: schema name),
 ## `round_trips` (table: column type and cell), `float_oracle` (text: a float literal), and the
 ## expectations `expect_rows` (table: header and rows), `expect_last` (number, table), `expect_count` (number),
 ## `expect_ok`, `expect_prefix`, `expect_exact`, `expect_mentions` and `expect_hides` (text).

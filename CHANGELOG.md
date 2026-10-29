@@ -35,4 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Orm` (`import Orm from "pkg/db/orm"`), a small typed layer over `Db`: `schema(table, T.members, JSON.codec(T))`,
   `check`, `query` (rows into plain structs; NULL into a `JsonField`, 0 and 1 into a Bool) and `query_as` (your own
   decode of each row). Errors are `orm error: <table>: <message>`.
+- `Orm` writes: `insert` (gives the row back with its generated key), `update`, `delete` and `patch` (a `Json` object
+  of the changes, `null` clears a `JsonField` column). Names are quoted, values bound, and the same value checks as
+  for reads apply.
 - Needs Agentica 0.15.0 (CI and README).
