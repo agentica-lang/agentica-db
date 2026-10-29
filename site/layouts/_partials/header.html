@@ -1,0 +1,13 @@
+<header class="site-header">
+  <a class="skip" href="#main">Skip to content</a>
+  <a class="skip skip-nav" href="#sidebar">Skip to navigation</a>
+  {{- /* Hidden without JavaScript; the icon follows aria-expanded in CSS (_header.scss). Icons: assets/icons/lucide/LICENSE. */ -}}
+  <button class="nav-toggle" type="button" aria-label="Menu" aria-controls="sidebar" aria-expanded="false">
+    <span class="icon icon-menu" aria-hidden="true">{{ (resources.Get "icons/lucide/menu.svg").Content | safeHTML }}</span>
+    <span class="icon icon-close" aria-hidden="true">{{ (resources.Get "icons/lucide/x.svg").Content | safeHTML }}</span>
+  </button>
+  <a class="brand" href="{{ site.Home.RelPermalink }}">{{ site.Title }}</a>
+  {{- partial "search.html" . }}
+  {{- partial "theme-toggle.html" . }}
+  <a class="repo" href="{{ site.Params.repo }}">GitHub</a>
+</header>

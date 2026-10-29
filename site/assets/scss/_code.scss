@@ -1,0 +1,98 @@
+code,
+pre {
+  font-family: var(--mono);
+  font-size: 0.875em;
+}
+
+:not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+}
+
+pre {
+  margin: 1rem 0;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  line-height: 1.5;
+
+  code {
+    font-size: inherit;
+  }
+}
+
+.sample {
+  margin: -0.5rem 0 1rem;
+
+  pre {
+    margin: 0;
+    border-style: dashed;
+    background: transparent;
+    color: var(--muted);
+  }
+}
+
+.sample-label {
+  display: block;
+  margin: 0 0 0.2rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.chroma {
+  .k,
+  .kc,
+  .kd,
+  .kn,
+  .kp,
+  .kr,
+  .ow {
+    color: var(--syn-keyword);
+  }
+
+  .s,
+  .s1,
+  .s2,
+  .sa,
+  .sb,
+  .sc,
+  .se,
+  .sh,
+  .sx {
+    color: var(--syn-string);
+  }
+
+  .si,
+  .ss,
+  .m,
+  .mf,
+  .mi,
+  .mh {
+    color: var(--syn-number);
+  }
+
+  .nf,
+  .nb,
+  .bp {
+    color: var(--syn-name);
+  }
+
+  .no,
+  .nc,
+  .nn,
+  .kt {
+    color: var(--syn-type);
+  }
+
+  .c,
+  .c1,
+  .cm {
+    color: var(--syn-comment);
+    font-style: italic;
+  }
+}

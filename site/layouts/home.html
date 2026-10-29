@@ -1,0 +1,6 @@
+{{ define "main" }}
+<article class="content">
+  <div class="page-head"><h1>{{ site.Title }}</h1>{{ partial "page-actions.html" . }}</div>
+  {{ .Content }}
+</article>
+{{ end }}

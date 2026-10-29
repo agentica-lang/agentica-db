@@ -1,0 +1,22 @@
+{{- with .OutputFormats.Get "markdown" }}
+{{- $prompt := printf "Read %s so I can ask questions about it." .Permalink }}
+<div class="page-actions" data-markdown="{{ .RelPermalink }}">
+  <div class="page-actions-split">
+    <button type="button" class="page-actions-copy" data-copy>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg>
+      <span class="page-actions-text">Copy page</span>
+    </button>
+    <button type="button" class="page-actions-toggle" aria-expanded="false" aria-controls="page-actions-menu" aria-label="More page actions">
+      <span class="page-actions-label">Page</span>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+    </button>
+  </div>
+  <ul class="page-actions-menu" id="page-actions-menu" hidden>
+    <li><button type="button" data-copy>Copy page</button></li>
+    <li><a href="{{ .Permalink }}" target="_blank" rel="noopener">View Source <span aria-hidden="true">↗</span></a></li>
+    <li><a href="https://chatgpt.com/?hints=search&amp;q={{ $prompt }}" target="_blank" rel="noopener">Open in ChatGPT <span aria-hidden="true">↗</span></a></li>
+    <li><a href="https://claude.ai/new?q={{ $prompt }}" target="_blank" rel="noopener">Open in Claude <span aria-hidden="true">↗</span></a></li>
+  </ul>
+  <span class="visually-hidden" role="status"></span>
+</div>
+{{- end }}

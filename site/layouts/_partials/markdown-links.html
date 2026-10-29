@@ -1,0 +1,21 @@
+{{- $page := .page -}}
+{{- $self := ($page.OutputFormats.Get "markdown").Permalink -}}
+{{- $parts := slice -}}
+{{- range findRE "(?ms)^```.*?^```[ \\t]*$|!?\\[[^\\]\\n]*\\]\\([^)\\s]+\\)|`[^`\\n]*`|[^`\\[!]+|." .body -}}
+  {{- $part := . -}}
+  {{- with findRESubmatch `\A\[([^\]\n]*)\]\(([^)\s]+)\)\z` . 1 -}}
+    {{- $text := index . 0 1 -}}
+    {{- $dest := index . 0 2 -}}
+    {{- $href := $dest -}}
+    {{- if hasPrefix $dest "#" -}}
+      {{- $href = printf "%s%s" $self $dest -}}
+    {{- else -}}
+      {{- $link := partial "link-target.html" (dict "from" $page "dest" $dest) -}}
+      {{- $href = $link.href -}}
+      {{- with $link.page }}{{ with .OutputFormats.Get "markdown" }}{{ $href = printf "%s%s" .Permalink $link.fragment }}{{ end }}{{ end -}}
+    {{- end -}}
+    {{- $part = cond (eq $href "") $text (printf "[%s](%s)" $text $href) -}}
+  {{- end -}}
+  {{- $parts = $parts | append $part -}}
+{{- end -}}
+{{- return delimit $parts "" -}}

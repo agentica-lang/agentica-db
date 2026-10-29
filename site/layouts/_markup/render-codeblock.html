@@ -1,0 +1,10 @@
+{{- $lang := .Type -}}
+{{- if in (slice "output" "input") $lang -}}
+<div class="sample sample-{{ $lang }}"><span class="sample-label">{{ cond (eq $lang "input") "Input" "Output" }}</span><pre><code>{{ .Inner }}</code></pre></div>
+{{- else -}}
+{{- $agentica := in (slice "agentica" "agc") $lang -}}
+{{- if $agentica }}{{ $lang = "ruby" }}{{ end -}}
+{{- if $agentica }}<div class="agc-code">{{ end -}}
+{{- transform.Highlight .Inner $lang (cond $agentica (dict) .Options) -}}
+{{- if $agentica }}</div>{{ end -}}
+{{- end -}}

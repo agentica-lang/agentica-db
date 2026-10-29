@@ -1,0 +1,143 @@
+@use "tokens" as *;
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  height: var(--header);
+  padding: 0 var(--gutter);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  flex-shrink: 0;
+  color: var(--fg);
+  white-space: nowrap;
+  font-size: 1.15rem;
+  font-weight: 700;
+  text-decoration: none;
+
+  &::before {
+    content: "";
+    display: inline-block;
+    width: 0.7rem;
+    height: 0.7rem;
+    margin-right: 0.5rem;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+}
+
+.repo {
+  margin-left: auto;
+}
+
+.nav-toggle {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: var(--target);
+  height: var(--target);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  color: var(--fg);
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  .icon {
+    display: inline-flex;
+  }
+
+  .icon-close,
+  &[aria-expanded="true"] .icon-menu {
+    display: none;
+  }
+
+  &[aria-expanded="true"] .icon-close {
+    display: inline-flex;
+  }
+
+  svg {
+    width: 1.4rem;
+    height: 1.4rem;
+  }
+}
+
+@media (max-width: $narrow) {
+  .site-header {
+    gap: 0.5rem;
+  }
+
+  .js .nav-toggle {
+    display: inline-flex;
+  }
+}
+
+.theme-toggle {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  color: var(--fg);
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  .icon {
+    display: inline-flex;
+  }
+
+  .icon-sun {
+    display: none;
+  }
+
+  svg {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
+.js .theme-toggle {
+  display: inline-flex;
+}
+
+// A touch target of 44px, like the menu button.
+@media (max-width: $narrow) {
+  .theme-toggle {
+    width: var(--target);
+    height: var(--target);
+  }
+}
+
+// The button shows the theme it switches to: the moon on a light page, the sun on a dark one.
+@include dark {
+  .theme-toggle {
+    .icon-moon {
+      display: none;
+    }
+
+    .icon-sun {
+      display: inline-flex;
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{{ define "main" }}
+<article class="content">
+  {{- $actions := partial "page-actions.html" . }}
+  {{- if partial "heading.html" . }}
+  {{ replace (replace .Content "<h1" `<div class="page-head"><h1` 1) "</h1>" (printf "</h1>%s</div>" $actions) 1 | safeHTML }}
+  {{- else }}
+  <div class="page-head"><h1>{{ .Title }}</h1>{{ $actions }}</div>
+  {{ .Content }}
+  {{- end }}
+</article>
+{{ partial "pager.html" . }}
+{{ end }}

@@ -1,0 +1,9 @@
+{{- /* The pages under a page in the order of the sidebar tree, flattened depth-first: each section page, then its children, as sidebar-item.html lists them. Both use .Pages.ByWeight, so the pager (pager.html) and the sidebar share one order. Returns a slice of pages. */ -}}
+{{- $out := slice -}}
+{{- range .Pages.ByWeight -}}
+  {{- $out = $out | append . -}}
+  {{- if .IsSection -}}
+    {{- $out = $out | append (partial "nav-order.html" .) -}}
+  {{- end -}}
+{{- end -}}
+{{- return $out -}}

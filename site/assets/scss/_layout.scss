@@ -1,0 +1,219 @@
+@use "tokens" as *;
+
+.layout {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  max-width: var(--layout-width);
+  margin: 0 auto;
+}
+
+.sidebar {
+  --nav-row: 2rem;
+  position: sticky;
+  top: var(--header);
+  align-self: start;
+  max-height: calc(100vh - var(--header));
+  overflow-y: auto;
+  padding: 1.5rem var(--gutter) 2rem;
+  font-size: 0.95rem;
+
+  ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  ul ul {
+    margin: 0.15rem 0 0.4rem 0.75rem;
+    padding-left: 0.6rem;
+    border-left: 1px solid var(--border);
+  }
+
+  &:focus {
+    outline: none;
+  }
+
+  li {
+    position: relative;
+  }
+
+  // The toggle sits over the right end of the section link's row (see sidebar-item.html).
+  // The chevron is a mask on ::before, so the focus ring of the summary is not masked away.
+  summary {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: var(--nav-row);
+    height: var(--nav-row);
+    list-style: none;
+    cursor: pointer;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+
+    &::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: var(--muted);
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / 1rem no-repeat;
+      transition: transform var(--motion-base) var(--ease);
+    }
+  }
+
+  details[open] > summary::before {
+    transform: rotate(90deg);
+  }
+
+  summary:focus-visible,
+  a:focus-visible {
+    outline: var(--focus-ring);
+    outline-offset: -2px;
+  }
+
+  // A section link leaves room for the toggle.
+  li > a:has(+ details) {
+    padding-right: var(--nav-row);
+  }
+
+  a {
+    display: flex;
+    align-items: center;
+    min-height: var(--nav-row);
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    text-decoration: none;
+  }
+
+  a:hover {
+    background: var(--code-bg);
+  }
+
+  a[aria-current="page"] {
+    background: var(--mark-bg);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  #TableOfContents a {
+    min-height: 0;
+    padding: 0.1rem 0.5rem;
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
+}
+
+main {
+  min-width: 0;
+  padding: 2rem 2.5rem 4rem;
+  border-left: 1px solid var(--border);
+}
+
+.scrim {
+  display: none;
+}
+
+// The mask draws the chevron in the background color, which forced colors would replace.
+@media (forced-colors: active) {
+  .sidebar summary::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
+@media (max-width: $narrow) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  // Without JavaScript the menu is a plain list: the page first, the list after it.
+  .sidebar {
+    position: static;
+    order: 1;
+    max-height: none;
+    padding: 0.75rem var(--gutter);
+    border-top: 1px solid var(--border);
+  }
+
+  .sidebar {
+    --nav-row: var(--target);
+  }
+
+  .sidebar a {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .sidebar #TableOfContents a {
+    min-height: var(--nav-row);
+  }
+
+  .skip-nav {
+    display: block;
+  }
+
+  .js .skip-nav {
+    display: none;
+  }
+
+  // A drawer that slides in from the left. It stays rendered and is hidden with
+  // `visibility`, so the slide can run both ways and a closed menu is out of the tab order.
+  .js .sidebar {
+    position: fixed;
+    top: var(--header);
+    left: 0;
+    z-index: 9;
+    align-self: auto;
+    box-sizing: border-box;
+    width: min(20rem, 85vw);
+    height: calc(100vh - var(--header));
+    height: calc(100dvh - var(--header));
+    max-height: none;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0.75rem var(--gutter) calc(1rem + env(safe-area-inset-bottom));
+    border-top: 0;
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+    box-shadow: var(--shadow);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform var(--motion-base) var(--ease), visibility 0s linear var(--motion-base);
+  }
+
+  .js .sidebar.open {
+    transform: none;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .js .scrim {
+    position: fixed;
+    top: var(--header);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 8;
+    display: block;
+    background: var(--scrim);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--motion-base) var(--ease), visibility 0s linear var(--motion-base);
+  }
+
+  .nav-open .scrim {
+    opacity: 1;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .nav-open body {
+    overflow: hidden;
+  }
+
+  main {
+    padding: 1.25rem var(--gutter) 3rem;
+    border-left: 0;
+  }
+}

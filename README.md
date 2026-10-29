@@ -1,25 +1,9 @@
 # agentica-db
 
-Database package for [Agentica](https://github.com/agentica-lang/agentica): one API for PostgreSQL, SQLite and MySQL,
-with one adapter per database, all through the C FFI (no C code of ours).
+Database package for [Agentica](https://github.com/agentica-lang/agentica): one API for SQLite, PostgreSQL and MySQL or
+MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI.
 
-| Database | Adapter | Status |
-|---|---|---|
-| SQLite | `sqlite.agc`, the system `libsqlite3` | available |
-| PostgreSQL | `postgres.agc`, the system `libpq` | available |
-| MySQL, MariaDB | `mysql.agc`, the system `libmariadb` | available |
-
-Needs Agentica 0.15.0 or later and the system library of the database you open: SQLite (`libsqlite3.so.0` on
-Linux, `libsqlite3.dylib` on macOS, `winsqlite3.dll` on Windows), libpq (`libpq.so.5`, `libpq.5.dylib`,
-`libpq.dll`; PostgreSQL 12 or later) or MariaDB Connector/C (`libmariadb.so.3`, `libmariadb.3.dylib`,
-`libmariadb.dll`; package `libmariadb3` on Debian and Ubuntu). A library is loaded when the first call needs it, so
-SQLite alone works without libpq or libmariadb. A library that is missing makes `open` give an `error` that says so
-(`sqlite error: cannot load the SQLite library: ...`); it never stops the program. CI runs on Linux only; the macOS and
-Windows library names are declared but not tested yet. On macOS the manifest cannot name an absolute path, so run with
-Homebrew's libraries as `DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib" agentica ...` (for MySQL,
-`mariadb-connector-c`). On Windows, `libpq.dll` and `libmariadb.dll` are looked up next to `agentica.exe` and in
-System32, never in `PATH`, and so are the DLLs they need (`libssl`, `libcrypto`, `libintl`, ... for libpq; `libcrypto`
-and `libssl` for libmariadb): copy them there.
+Needs Agentica 0.15.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
 
 ## Install
 
@@ -30,36 +14,23 @@ In your `agentica.toml`:
 db = { git = "https://github.com/agentica-lang/agentica-db", tag = "v0.1.0" }
 ```
 
-`v0.1.0` is a placeholder: there is no release yet, so pin a commit with `--ref COMMIT` until the first tag.
-Then `agentica add db https://github.com/agentica-lang/agentica-db --tag v0.1.0` (or `agentica install` for a manifest
-you edited) writes `agentica.lock` and `deps/db/`.
+`v0.1.0` is a placeholder: there is no release yet, so pin a commit with `ref` until the first tag.
 
 ## Example
 
 ```ruby
 import Db from "pkg/db/db"
 
-def save(conn: Db.Connection, name: String, age: Int) -> Result[Int]
-  return Db.execute(conn, "insert into users (name, age) values (?, ?)", [Db.Value.Text(name), Db.Value.Int(age)])
-end
-
 def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, "create table users (name text not null, age integer)", [])
   try Db.transaction(conn) do |tx|
-    try save(tx, "Ana", 31)
-    try save(tx, "Bob", 27)
+    try Db.execute(tx, "insert into users (name, age) values (?, ?)", [Db.Value.Text("Ana"), Db.Value.Int(31)])
     ok()
   end
 
-  # The block's value comes back when the transaction commits.
-  saved = try Db.transaction(conn) do |tx|
-    save(tx, "Cy", 40)
-  end
-
-  puts(saved)   # 1
   rows = try Db.query(conn, "select name, age from users where age > ?", [Db.Value.Int(28)])
-  puts(rows)   # [{"name": Value.Text("Ana"), ...}, {"name": Value.Text("Cy"), ...}]
+  puts(rows)   # [{"name": Value.Text("Ana"), "age": Value.Int(31)}]
   Db.close(conn)
   return ok()
 end
@@ -72,384 +43,40 @@ def main() -> Void
 end
 ```
 
-## API
+## Documentation
 
-`db.agc` (`import Db from "pkg/db/db"`) is the whole API, types included:
-
-| Function | Gives |
-|---|---|
-| `open(url)` | `Result[Connection]`; `sqlite:PATH` (`sqlite::memory:`), `postgres[ql]://`, `mysql://`, `mariadb://` |
-| `open_sqlite(path)` | `Result[Connection]` |
-| `open_postgres(url)` | `Result[Connection]`, a libpq url or a conninfo string (`host=localhost dbname=app`) |
-| `open_mysql(url)` | `Result[Connection]`, a `mysql://` or `mariadb://` url |
-| `query(conn, sql, params)` | `Result[List[Db.Row]]`, a `Db.Row` is `Map[String, Db.Value]` in column order |
-| `execute(conn, sql, params)` | `Result[Int]`, the rows inserted, updated or deleted |
-| `transaction(conn) do \|tx\| ... end` | `Result[R]`, the block's `ok` value; COMMIT on `ok`, ROLLBACK on `error` |
-| `close(conn)` | `Void`; closing twice is safe |
-
-`Db` also re-exports the types of `value.agc`, so one import is enough: `Db.Value` (`Db.Value.Null`,
-`Db.Value.Int(Int)`, `Db.Value.Float(Float)`, `Db.Value.Text(String)`, `Db.Value.Blob(List[Int])`,
-`Db.Value.Bool(Bool)`) and `Db.Row`.
-
-- Placeholders are `?`, always bound (PostgreSQL gets `$1..$n`, MySQL takes `?` as it is; see below); values are
-  never spliced into the sql.
-  The sql text is a constant of your program. A list does not expand a placeholder: for `in (...)` build `?, ?, ?`
-  from the list length yourself (only the placeholders, never the values) and pass the values as parameters.
-- An error is `error(message)` in one of two shapes. An engine failure is `<adapter> error <code>: <message>`, as in
-  `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs (wrong parameter count, a
-  NUL in text (PostgreSQL and MySQL), a blob item outside 0..255, no statement, two statements, a repeated result
-  column), is `<adapter> error: <message>`. An unknown url is `db error: <message>`. The code of PostgreSQL is its five
-  character SQLSTATE, the code of MySQL is the number of the server or the client library (see below).
-- Only the first and only statement of the string runs; two statements are an error. A result with two columns of
-  one name is an error: alias them.
-- Types: a database type without a `Value` variant comes back as `Db.Value.Text` (the contract for PostgreSQL and
-  MySQL types such as numeric, date or uuid). SQLite has no boolean: `Db.Value.Bool` is stored as 0 or 1 and reads
-  back as `Db.Value.Int`. NaN is stored as NULL.
-- SQLite keeps its defaults: foreign keys are off until you run `PRAGMA foreign_keys = ON`.
-- `transaction` starts with `BEGIN IMMEDIATE` on SQLite, which needs write access to the database (a read-only
-  database cannot open a transaction). A runtime error (a halt) inside the body stops the task
-  and leaves the transaction open; closing the connection rolls it back, which the end of the task does (see below).
-- A connection belongs to the task that opened it, and one task uses it at a time. `close` ends it, and so does the
-  end of the task; a connection still open when `main` returns is closed too. Open the connection in the task that
-  keeps it (usually `main`), or hand it over with `Task.spawn_owning(&f, conn)`: one opened in a task that ends comes
-  back closed. Using a SQLite connection after `close` is a runtime error (`RUNTIME-NATIVE-CLOSED`).
-
-## Orm
-
-`orm.agc` (`import Orm from "pkg/db/orm"`) reads the rows of a query into plain structs. It is a small layer over
-`Db`: a schema, a function that takes the `Db.Connection` and gives a new value; there is no global connection and no
-lazy loading. The sql is always yours, with bound `?` parameters.
-
-```ruby
-import Db from "pkg/db/db"
-import Orm from "pkg/db/orm"
-
-struct User
-  id: Int = 0
-  name: String
-  age: JsonField[Int]
-end
-
-def run(conn: Db.Connection) -> Result[Void]
-  users = Orm.schema("users", User.members, JSON.codec(User))
-  try Orm.check(conn, users)
-  found = try Orm.query(conn, users, "select id, name, age from users where age > ?", [Db.Value.Int(28)])
-  puts(found)   # [User(id: 1, name: "Ana", age: JsonField.Value(31))]
-  names = try Orm.query_as(conn, "select name from users", []) do |row|
-    case row["name"]
-      Db.Value.Text(name) -> return ok(name)
-      _ -> return error("no name")
-    end
-  end
-
-  puts(names)   # ["Ana", "Bob"]
-  ana = try Orm.insert(conn, users, User(name: "Cy", age: JsonField.Absent))
-  puts(ana.id)   # 3, the key the database gave
-  try Orm.update(conn, users, ana.with(name: "Cyd"))
-  changes = try JSON.parse("{\"age\": 40}")
-  try Orm.patch(conn, users, Db.Value.Int(ana.id), changes)
-  try Orm.delete(conn, users, Db.Value.Int(ana.id))
-  return ok()
-end
-```
-
-| Function | Gives |
-|---|---|
-| `schema(table, T.members, JSON.codec(T))` | `Orm.Schema[T]`; `.with(primary_key:, generated:)` sets the key |
-| `check(conn, schema)` | `Result[Void]`: the schema is sound and the table has its columns |
-| `query(conn, schema, sql, params)` | `Result[List[T]]`, each row read into a `T` |
-| `query_as(conn, sql, params) do \|row\| ... end` | `Result[List[R]]`, each `Db.Row` read by your block |
-| `find(conn, schema, id)` | `Result[Orm.Option[T]]`: `Option.Some(row)` or `Option.None` (a 404, not an error) |
-| `insert(conn, schema, value)` | `Result[T]`, the row as stored, with its generated key |
-| `update(conn, schema, value)` | `Result[Int]`, the rows set (0: no row has the key of `value`) |
-| `delete(conn, schema, id)` | `Result[Int]`, the rows removed (`id` is a `Db.Value`) |
-| `patch(conn, schema, id, changes)` | `Result[Int]`, the rows changed; `changes` is a `Json` object |
-
-The key is `id` and generated by the database unless `.with(...)` says otherwise. `check` makes sure that the names are
-plain identifiers, that every field has a column type, that the key is a field and that the table has every column
-(it reads no row). The error of your block in `query_as` is the error of the call.
-
-- A column has the name of its field. A field is an Int, Float, Bool or String, alone or in a `JsonField`. A column
-  that can be NULL is a `JsonField[T]`: NULL is `JsonField.Null`, and a column the query does not select is
-  `JsonField.Absent`. A NULL in any other field is an error (`users: name: NULL in a field that is not a
-  JsonField`). The key of a table the database numbers is `id: Int = 0`, so a value can be built before the database
-  gives it its id.
-- The columns a query returns are matched with the fields by name, in any order, and the case must be the same: the
-  name of a result column is the one the database gives (SQLite and MySQL give a column in the case of the table, even
-  when the query wrote it in another; use `as` to choose it). An extra column is ignored; a missing one is an error
-  (`users: name: missing column`) unless its field is a `JsonField`.
-- A Bool column of SQLite and MySQL comes back from `Db` as 0 or 1; the Orm reads it as a Bool. An Int column is
-  read as a Float for a Float field, unless the Int is beyond 2^53 (it could round: that is an error). A NaN or an
-  infinity (PostgreSQL) is an error too. A `numeric`, a date or a uuid is a `Text` (see above): use a String field.
-- A row that does not fit the struct is `error("orm error decode: users: name: missing column")`: the kind, the table,
-  then the field and what is wrong. An error of the database is the error of `Db`, unchanged, also from `check` (a
-  table or a column that is missing). See "Errors" below to tell the kinds apart.
-- `check` writes a `select` with the table and the columns quoted (double quotes for PostgreSQL, backticks for MySQL
-  and SQLite), so a name is exact in PostgreSQL: it folds an unquoted name to lower case, and a column it created
-  that way is found by the lower case name only. A name that is not a letter or `_` followed by letters, digits or
-  `_` is an error of `check`: a name never comes from a request.
-- Writes bind every value (`?`) and run the name, type and key rules of `check` before any sql: a table or column
-  name that is not a plain identifier, a field type a column cannot hold, a key that is not a field and a generated key
-  that is not an Int are errors (they do not look at the database).
-- `insert` leaves out a generated key (whatever the value holds) and a `JsonField` that is `Absent`, so the database
-  default applies, and gives the row back read again by its key. The key must be the one the database generates for
-  the table: the `INTEGER PRIMARY KEY` of SQLite, the `AUTO_INCREMENT` column of MySQL, a `serial` or identity column
-  of PostgreSQL. PostgreSQL gets the key with `returning`; SQLite and MySQL with `last_insert_rowid()` and
-  `last_insert_id()` on the same connection. The insert and the read after it are two statements: put them in a
-  transaction (`Db.transaction`), so that other writers cannot interleave. If the read finds no row, which happens when
-  the key is not the one the database generates, the row was inserted all the same: the error says `orm error database:
-  <table>: the inserted row was not found by its key`. A key that is not generated (`.with(generated: false)`) is
-  inserted as it is. A value with nothing to insert (a generated key and `Absent` fields only) is `no column to
-  insert`. The error of the database (a unique key, a not null) is returned unchanged. A Float field with NaN or an
-  infinity halts at the encode of the codec (`RUNTIME-JSON-ENCODE`), before any sql.
-- `update` sets every column but the key to the field (`Absent` keeps the column, `Null` clears it) in the row with the
-  key of the value. A value whose only fields are the key and `Absent` ones has nothing to set: `no column to
-  update`. `delete` and `patch` take the key as a `Db.Value` of the kind of the key field (`Db.Value.Int(7)` for an Int
-  key); another kind is an error (`users: the key id has type Int, not Text`).
-- `patch` takes the changes as a `Json` object, such as the body of a request: a key that is a column sets it
-  (`null` clears a `JsonField` column), a column the object leaves out keeps its value. A key that is not a column, the
-  primary key, a value of the wrong kind (`age: expected Int`), a `null` for a field that is not a `JsonField` and an
-  Int beyond 2^53 for a Float field are errors, before any sql runs; so is an object with no column to change.
-- Inside a transaction pass its connection: `Db.transaction(conn) do |tx| Orm.query(tx, users, sql, []) end` gives
-  the rows.
-- `query`, `find` and the writes take the connection first; the steps and the ends of a query (below) take the query
-  first, so that they chain with `|>`.
-
-### Errors
-
-An error is a text, since that is what a `Result` holds. A failure of the Orm is `orm error <code>: <table>:
-<message>`, and `Orm.classify(text)` gives its kind to `case` on, so that a handler never matches message text:
-
-- `BadRequest(message)`: a column, value or key the caller got wrong (a column that is not in the schema, a value of
-  another kind, an unknown key in `patch`, no condition in `delete_all`). Suggested status: 400.
-- `Conflict(message)`: a unique or foreign-key violation (SQLite 19 with `UNIQUE` or `FOREIGN KEY`; PostgreSQL 23505
-  and 23503; MySQL 1062, 1451 and 1452). Suggested status: 409.
-- `NotDecodable(message)`: a row that does not fit its struct (a missing column, a NULL in a field that is not a
-  `JsonField`). Suggested status: 500.
-- `Schema(message)`: a schema that is not sound (a name that is not an identifier, a field type no column holds, a
-  key that is not a field). Suggested status: 500.
-- `Database(message)`: any other error of the database (a lost connection, a missing table, a not null), or of the
-  Orm's bookkeeping (no generated key, a failed re-read). Suggested status: 500.
-
-`Orm.kind(error)` gives the name (`"Conflict"`) and `Orm.message(error)` the message for a log: `<table>: <message>`
-for a failure of the Orm, the text of the database as it is for the others. The Orm does not know about HTTP; the
-statuses are only suggestions. A text that no rule knows (an old `orm error: ...` text, `db error: ...`) is `Database`.
-
-```ruby
-case Orm.classify(message)
-  Orm.Error.BadRequest(text) -> respond(400, text)
-  Orm.Error.Conflict(_) -> respond(409, "conflict")
-  _ -> respond(500, "internal error")
-end
-```
-
-### The query builder
-
-`Orm.from(schema)` starts a query; the functions below take the query first, so they chain with `|>`, and the query
-ends in `all`, `one`, `count`, `update_all` or `delete_all`. A query is a value: every step gives a new one.
-
-```ruby
-rows = try (Orm.from(users)
-  |> Orm.where_eq("admin", Db.Value.Bool(true))
-  |> Orm.where("age > ?", [Db.Value.Int(18)])
-  |> Orm.order_by_desc("age")
-  |> Orm.limit(10)
-  |> Orm.all(conn))
-```
-
-(A line cannot start with `|>` unless the chain is in parentheses.)
-
-| Step | Does |
-|---|---|
-| `where(query, sql, params)` | adds sql of your program, with `?` for the params (not for anything from a request) |
-| `where_eq(query, column, value)` | `column = ?`; `Db.Value.Null` is `column is null` |
-| `where_in(query, column, values)` | `column in (?, ...)`; no value keeps no row |
-| `order_by(query, column)`, `order_by_desc(query, column)` | order by a column, after the ones already given |
-| `limit(query, n)`, `offset(query, n)` | page the rows; an offset with no limit works on every database |
-| `all(query, conn)` | `Result[List[T]]` |
-| `one(query, conn)` | `Result[Orm.Option[T]]`, the first row or `Option.None` |
-| `count(query, conn)` | `Result[Int]`, the rows the conditions keep (order and page do not count) |
-| `update_all(query, conn, changes)` | `Result[Int]`, sets the columns of the `Json` object `changes`, as `patch` |
-| `delete_all(query, conn)` | `Result[Int]`, removes the rows the conditions keep |
-
-- All the conditions must hold (`and`). A column that is not in the schema, or a value of another kind than its column
-  (`age` is an Int: `Db.Value.Text` is an error), is not an error of the step: the query keeps the first problem and
-  the call that ends it gives `orm error bad_request: users: nickname is not a column of the table`, before any sql
-  runs. So a column name from a request is safe in `where_eq`, `where_in` and `order_by`; the sql of `where` is yours.
-- `update_all` and `delete_all` with an order, a limit or an offset are errors (not every database allows them), and so
-  is a query with no condition: a pipeline whose optional filters were all skipped must not change the whole table.
-  `Orm.where(query, "1 = 1", [])` says that every row is meant.
-- `where_eq` and `where_in` refuse a Float that is NaN or an infinity, as the writes do. `where_in` takes no `Null`
-  item (an `in` list never matches NULL: use `where_eq(column, Null)`); a very long list may pass the limit of
-  placeholders of the database, which is an error of the database. `one` keeps a limit smaller than 1, so a limit of 0
-  gives `None`.
-- Rows come in the order of the database unless `order_by` says otherwise, for `all` and `one` alike (`one` is the
-  first row of that order). Where NULLs sort differs between the databases (SQLite and MySQL: first when ascending;
-  PostgreSQL: last): do not count on it, or order by a column that is never NULL.
-- `find` is `where_eq` on the key plus `one`, and refuses a key of another kind than the key field, as `delete` does.
-
-### Example: a users API
-
-[`examples/users.agc`](examples/users.agc) is a small web-handler style program built on the Orm: a route is a function
-from an `HttpRequest` to an `HttpResponse` that takes the connection as an argument. It has a schema and `check`,
-`POST /users` (`insert`), `GET /users/7` (`find`: 200, or 404 for `None`), `GET /users?min_age=30&sort=name` (the query
-builder, with a column that comes from the request), `PATCH /users/7` (`patch` with the JSON body as it is),
-`DELETE /users/7`, and an import of several users in a `Db.transaction` that gives back the users it created and rolls
-back when one insert fails. It runs against in-memory SQLite and prints each request with its response
-(`agentica examples/users.agc`); CI runs it (`specs/examples.feature`). It maps a failure to a status by its kind
-(`Orm.classify`, below): a bad request is a 400, a conflict a 409 and anything else a 500.
-
-## PostgreSQL
-
-```ruby
-conn = try Db.open("postgres://user:pass@localhost:5432/app?sslmode=disable")
-rows = try Db.query(conn, "select id, name from users where age > ?::int", [Db.Value.Int(28)])
-```
-
-- The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`,
-  `options`). Set `connect_timeout` (seconds): without it an unreachable host waits as long as the
-  operating system does. The client encoding is always UTF8.
-  A connection that cannot open, or a url libpq cannot parse, is `postgres error: <libpq message>`. For a url libpq
-  cannot parse, its message may quote the url, password included: do not log it blindly.
-- Types, read and written (parameters travel as text, and the server infers their types from the sql):
-
-  | PostgreSQL | `Value` |
-  |---|---|
-  | `smallint`, `integer`, `bigint` | `Int` |
-  | `real`, `double precision` (also `Infinity`, `-Infinity`, `NaN`) | `Float` |
-  | `boolean` | `Bool` (a real boolean, so it reads back as `Bool`) |
-  | `bytea` | `Blob` |
-  | NULL | `Null` |
-  | `text`, `varchar`, `char`, `name`, and the rest: `numeric`, `date`, `timestamp`, `uuid`, `json`, arrays | `Text` |
-
-  A `Text` parameter goes into a column of any of those types (`'12.50'` into `numeric`, `'2024-02-29'` into `date`).
-  The server takes the type of a placeholder from its context (`where id = ?` takes the type of `id`). Where the
-  context gives none (`select ? is null`) it is an error (`42P18`): cast it, `?::int` or `cast(? as text)`. A cast
-  also picks a type where several fit, as in `?::numeric`.
-- The placeholder `?` is rewritten to `$n` outside string literals (`'?'`, `E'...'`), quoted identifiers (`"a?"`),
-  dollar quotes (`$$ ? $$`) and comments (`-- ?`, nested `/* ? */`). The operators `?`, `?|` and `?&` of `jsonb` are
-  not available: use `jsonb_exists`, `jsonb_exists_any` and `jsonb_exists_all`. Write `?`, never `$1`.
-- Errors: an engine failure is `postgres error <SQLSTATE>: <primary message>`, as in
-  `postgres error 23505: duplicate key value violates unique constraint "users_name_key"` (`42601` syntax, `23505`
-  unique, `23503` foreign key, `23502` not null, `42P01` missing table; the full list is in the PostgreSQL manual,
-  appendix A). The message is the server's, in the language of its `lc_messages`. A failure without a SQLSTATE (the
-  connection dropped) is `postgres error: <message>`.
-- `execute` counts the rows of `INSERT`, `UPDATE`, `DELETE` and `MERGE` (also with `RETURNING`); other statements,
-  `SELECT` too, give 0.
-- `COPY` is not supported: the server starts the copy before the adapter sees it, so the adapter ends it, reads the
-  rest of the results (for `COPY ... TO STDOUT` all the data, which can take long for a big table) and gives
-  `postgres error: COPY is not supported`. The connection keeps working.
-- `transaction` starts with `BEGIN`. Transactions do not nest (`postgres error 25001`; PostgreSQL itself only warns).
-  A statement that fails inside a transaction aborts it: a `COMMIT` after that does not fail on the server (it rolls
-  back), so this package turns it into `postgres error 25P02`, and `transaction` gives that error.
-- The end of the task that opened the connection closes it (the connection is a native resource freed by `PQfinish`),
-  or call `Db.close` earlier; one still open when `main` returns is closed then. Using a connection after `close` is
-  `postgres error: the connection is closed`.
-- `open`, `query` and `execute` run on the compute pool: other tasks keep running while the server works.
-- Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
-  `Task.await(task, ms)` times out, while a query is running, the libpq call still runs to its end and its result is
-  dropped, so the connection may be left in the middle of a query (and that one result is not freed). Close that
-  connection and open a new one.
-
-## MySQL and MariaDB
-
-```ruby
-conn = try Db.open("mysql://user:pass@127.0.0.1:3306/app")
-rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.Int(28)])
-```
-
-- The url is `mysql://user:password@host:port/database?parameter=value` (`mariadb://` is the same). The user, the
-  password and the database are percent-decoded, so write `p%40ss` for `p@ss`. The host is required, the port is 3306
-  by default, an IPv6 host is `[::1]`, and the database is optional. Use an address: the host `localhost` makes
-  the client library use the local socket, which is not where a container listens. The parameters are
-  `connect_timeout` (seconds; set it, since an unreachable host otherwise waits as long as the operating system
-  does) and `ssl_mode` (below); any other parameter is an error. A bad url is `mysql error: <message>` and the message
-  never repeats a part of the url. A server that does not accept the connection is `mysql error <code>: <message>`
-  with the code of the client library or the server (`2002` unreachable, `1045` access denied, `1049` unknown
-  database); the messages of the library name the user and the host but never the password.
-- The adapter goes through MariaDB Connector/C (`libmariadb.so.3`), which talks to MySQL and MariaDB servers. It is
-  tested with MariaDB 11 and MySQL 8.4. The layout of its `MYSQL_BIND` and `MYSQL_FIELD` structs (declared in
-  `mysql.agc`) and the numbers of its options are those of Connector/C 3.x, so `libmysqlclient` cannot take its place.
-- Every statement with parameters is prepared (`mysql_stmt_*`): the sql is sent with its `?` placeholders and the
-  values are bound as
-  `BIGINT`, `DOUBLE`, strings and blobs. The `?` of a string, a quoted identifier or a comment is not a placeholder:
-  the server decides, as always. A NUL in the sql or in a text is a bad input.
-- Types, read and written. A `float` column has 32 bits, so `0.1` reads back as `0.10000000149011612`: use `double`
-  for exact decimals. A statement the server does not prepare comes back through the text protocol, where it reads
-  `0.1`.
-
-  | MySQL | `Value` |
-  |---|---|
-  | `tinyint`, `smallint`, `mediumint`, `int`, `bigint`, `year`, and the `unsigned` ones that fit an `Int` | `Int` |
-  | `float`, `double` | `Float`; no `NaN` or infinity (a parameter that is one is a bad input) |
-  | `boolean` (a `tinyint(1)`) | `Int`: a `Bool` is stored as 1 or 0 and reads back as `Int` |
-  | `binary`, `varbinary`, the blobs, `bit`, `geometry` | `Blob` |
-  | NULL | `Null` |
-  | `char`, `varchar`, the texts, `json`, `enum`, `set` | `Text` |
-  | the rest: `decimal`, `date`, `time`, `datetime`, `timestamp`, a `bigint unsigned` past `Int` | `Text` |
-
-  A `Text` parameter goes into a column of any of those types (`'12.50'` into `decimal`, `'2024-02-29'` into
-  `date`). A `datetime` reads as `2024-02-29 13:14:15`. The connection character set is `utf8mb4`.
-- `execute` counts the rows of `INSERT`, `UPDATE`, `DELETE` and `REPLACE` that match (an `UPDATE` that sets a column
-  to the value it has counts the row, as in the other adapters); other statements, `SELECT` too, give 0.
-  `INSERT ... ON DUPLICATE KEY UPDATE` over an existing row and `REPLACE` over an existing row count 2 (MySQL deletes
-  and inserts, or inserts and updates), a new row counts 1. `CALL` gives its first result set; the others are
-  dropped. The `use` statement changes the database of the connection for good.
-- MySQL does not prepare some statements (`START TRANSACTION`, `BEGIN`, `SAVEPOINT`, `USE`, `LOCK TABLES`,
-  `CHECK TABLE`, `SHOW WARNINGS` on MySQL 8.4; MariaDB prepares more of them). When the server answers `1295` to a
-  statement with no placeholder, the adapter sends it through the text protocol (`mysql_real_query`) and reads the
-  result with the same types. A statement with parameters never does: its values are always bound. A text-protocol
-  float with an exponent (`1e-7`) that does not read as a decimal stays `Text`.
-- The sql is one statement. The scanner knows the strings, the backticks, the `-- `, `#` and `/* */` comments of
-  MySQL, and refuses a second statement before the server sees it. So a `CREATE PROCEDURE` with a `BEGIN ... END`
-  body of several statements cannot be sent: create it with the `mysql` client. The scanner assumes backslash
-  escapes in strings: with the `NO_BACKSLASH_ESCAPES` sql mode it may refuse valid sql (a string that ends with a
-  backslash).
-- `transaction` starts with `START TRANSACTION`. Transactions do not nest: MySQL would silently commit the open one at
-  a `BEGIN`, so `BEGIN` and `START TRANSACTION` fail with `mysql error: a transaction is already in progress` while
-  the server reports one open. A statement that fails inside a transaction does not abort it (a `COMMIT` after it
-  commits the statements that worked; `Db.transaction` rolls back because the block returned the error). A DDL
-  statement (`CREATE TABLE`, `DROP TABLE`, ...) commits the transaction before it runs, as in MySQL itself; `CREATE
-  TEMPORARY TABLE` does not.
-- TLS: `?ssl_mode=required` uses TLS and accepts any certificate (it hides the traffic, it does not prove the server).
-  `?ssl_mode=verify&ssl_ca=PATH` uses TLS and checks the certificate of the server against the PEM file of authorities
-  at `PATH` (percent-encode the path if needed): libmariadb checks nothing when it has no authority file, so `verify`
-  without `ssl_ca`, and `ssl_ca` without `verify`, are errors. A server whose certificate those authorities do not
-  vouch for fails with `mysql error 2026`. Without `ssl_mode` the library decides: Connector/C 3.4 (Debian 13)
-  connected without TLS to MariaDB 11 and MySQL 8.4. Use `verify` over any network you do not trust. A client
-  certificate is not supported. The path of `ssl_ca` is read by the process, so a relative path is relative to its
-  working directory. Verifying a good certificate is not tested here: the test servers have self-signed ones.
-- `LOAD DATA LOCAL INFILE` is off, so a server cannot ask for a file of this machine.
-- The end of the task that opened the connection closes it (the connection is a native resource freed by
-  `mysql_close`), or call `Db.close` earlier; one still open when `main` returns is closed then. The server session and
-  the locks of an open transaction stay until then. `mysql_close` talks to the server and blocks the scheduler while it
-  runs, so other tasks wait for it; it can also wait on a write the server does not accept (the library has no write
-  timeout set here). Open the connection in the task that keeps it, or hand it over with `Task.spawn_owning(&f, conn)`.
-  Using a connection after `close` is `mysql error: the connection is closed`.
-- `open`, `query` and `execute` wait for the server on the compute pool: other tasks keep running.
-- Use a connection from one task at a time, and never `close` it while a query runs. If a task is cancelled, or
-  `Task.await(task, ms)` times out, while a query is running, the call still runs to its end and its result is
-  dropped: close that connection and open a new one.
+- [Getting started][getting-started]: install and the system libraries.
+- [Connecting][connecting], [queries][queries], [values][values] and [transactions][transactions].
+- [SQLite][sqlite], [PostgreSQL][postgresql] and [MySQL and MariaDB][mysql].
+- The ORM: [schema][orm-schema], [reads][orm-reads], [query builder][orm-builder], [writes][orm-writes] and
+  [errors][orm-errors].
+- [Testing][testing].
+- [`examples/users.agc`](examples/users.agc): a users API on the ORM that runs against in-memory SQLite.
+- [CHANGELOG](CHANGELOG.md).
 
 ## Development
 
-The behavior of the API is written as Gherkin scenarios in `specs/`, run by `agentica test`; read them as the
-specification. `specs/*.feature` hold the contract that every adapter meets (open and close, query and execute,
-value round trips, transactions, errors), each scenario an outline with one row per adapter that the behavior
-applies to, and `sqlite.feature`, `postgres.feature` and `mysql.feature` hold what only one adapter promises.
-`specs/steps.agc` has the steps, and `orm.feature` the scenarios of the Orm. Only the edge cases of the pure helpers
-have unit tests: the scanners and the url reader (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`,
-`test/mysql_url_test.agc`) and the identifier check of the Orm (`test/orm_dialect_test.agc`); a feature repeats one of
-them only as the single integration row per adapter (a bad url, a NUL in the sql).
-
 ```sh
-for file in *.agc */*.agc specs/fixtures/*/*.agc; do agentica check "$file"; done
+make check
 agentica test
 ```
 
-`agentica test` finds `specs/steps.agc` by itself. The PostgreSQL scenarios need a server: set
-`AGENTICA_DB_POSTGRES_URL`; the MySQL ones set `AGENTICA_DB_MYSQL_URL` (`mysql://root:pw@127.0.0.1:3306/mysql`).
-CI always does; without them the scenarios fail. With no server, run only the SQLite scenarios, which have
-"on sqlite" in their name: `agentica test --only "on sqlite"`. See `AGENTS.md`.
+The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
+`AGENTS.md`.
 
 License: Apache-2.0.
+
+[getting-started]: https://agentica-lang.github.io/agentica-db/getting-started/
+[connecting]: https://agentica-lang.github.io/agentica-db/guide/connecting/
+[queries]: https://agentica-lang.github.io/agentica-db/guide/queries/
+[values]: https://agentica-lang.github.io/agentica-db/guide/values/
+[transactions]: https://agentica-lang.github.io/agentica-db/guide/transactions/
+[sqlite]: https://agentica-lang.github.io/agentica-db/guide/sqlite/
+[postgresql]: https://agentica-lang.github.io/agentica-db/guide/postgresql/
+[mysql]: https://agentica-lang.github.io/agentica-db/guide/mysql/
+[orm-schema]: https://agentica-lang.github.io/agentica-db/guide/orm-schema/
+[orm-reads]: https://agentica-lang.github.io/agentica-db/guide/orm-reads/
+[orm-builder]: https://agentica-lang.github.io/agentica-db/guide/orm-builder/
+[orm-writes]: https://agentica-lang.github.io/agentica-db/guide/orm-writes/
+[orm-errors]: https://agentica-lang.github.io/agentica-db/guide/orm-errors/
+[testing]: https://agentica-lang.github.io/agentica-db/guide/testing/

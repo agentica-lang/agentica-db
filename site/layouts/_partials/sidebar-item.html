@@ -1,0 +1,20 @@
+{{- /* A section is a <details>, open only on the way to the current page, so the tree stays short and works without JavaScript. The link is not inside the <summary>: each section has two tab stops, the link and the toggle, which CSS lays over the link's row. */ -}}
+{{- $page := .page -}}
+{{- $current := .current -}}
+<li>
+  {{- if $page.IsSection }}
+  <a href="{{ $page.RelPermalink }}"{{ if eq $page $current }} aria-current="page"{{ end }}>{{ $page.LinkTitle }}</a>
+  <details{{ if or (eq $page $current) ($page.IsAncestor $current) }} open{{ end }}>
+    <summary aria-label="{{ $page.LinkTitle }} pages"></summary>
+    {{- if eq $page $current }}{{ partial "toc.html" $page }}{{ end }}
+    <ul>
+      {{- range $page.Pages.ByWeight }}
+      {{ partial "sidebar-item.html" (dict "page" . "current" $current) }}
+      {{- end }}
+    </ul>
+  </details>
+  {{- else }}
+  <a href="{{ $page.RelPermalink }}"{{ if eq $page $current }} aria-current="page"{{ end }}>{{ $page.LinkTitle }}</a>
+  {{- if eq $page $current }}{{ partial "toc.html" $page }}{{ end }}
+  {{- end }}
+</li>

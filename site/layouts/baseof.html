@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="{{ site.Language.Locale }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{ if .IsHome }}{{ site.Title }}: a small web framework for Agentica{{ else }}{{ .Title }} · {{ site.Title }}{{ end }}</title>
+  <meta name="description" content="{{ if .Params.name }}{{ site.Params.description }}{{ else }}{{ .Description | default site.Params.description }}{{ end }}">
+  {{- /* The colors are --accent of the light and the dark theme (_tokens.scss); a favicon follows the system scheme, not the theme button. */ -}}
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Cstyle%3E.r%7Bfill:%23b4232a%7D.m%7Bstroke:%23fff%7D%40media%20(prefers-color-scheme:dark)%7B.r%7Bfill:%23ff7b72%7D.m%7Bstroke:%230f1217%7D%7D%3C/style%3E%3Crect%20class='r'%20width='16'%20height='16'%20rx='3'/%3E%3Cpath%20class='m'%20d='M5%203v10h2.5a5%205%200%200%200%200-10z'%20stroke-width='1.6'%20fill='none'/%3E%3C/svg%3E">
+  {{- $sass := dict "transpiler" "dartsass" "outputStyle" "compressed" "targetPath" "css/main.css" "vars" (dict "narrow" site.Params.narrow) }}
+  {{- with resources.Get "scss/main.scss" | css.Sass $sass | fingerprint }}
+  <link rel="stylesheet" href="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous">
+  {{- end }}
+  {{- with .OutputFormats.Get "markdown" }}
+  <link rel="{{ .Rel }}" type="{{ .MediaType.Type }}" href="{{ .Permalink }}">
+  {{- end }}
+  <script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+  {{ partial "header.html" . }}
+  <div class="layout">
+    {{ partial "sidebar.html" . }}
+    <main id="main">
+      {{ block "main" . }}{{ end }}
+    </main>
+  </div>
+  <div class="scrim" aria-hidden="true"></div>
+  {{ partial "footer.html" . }}
+  {{- with resources.Get "js/theme.js" | js.Build (dict "minify" true "targetPath" "js/theme.js") | fingerprint }}
+  <script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous" defer></script>
+  {{- end }}
+  {{- with resources.Get "js/nav.js" | js.Build (dict "minify" true "targetPath" "js/nav.js" "params" (dict "narrow" site.Params.narrow)) | fingerprint }}
+  <script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous" defer></script>
+  {{- end }}
+  {{- if .OutputFormats.Get "markdown" }}
+  {{- with resources.Get "js/page-actions.js" | js.Build (dict "minify" true "targetPath" "js/page-actions.js") | fingerprint }}
+  <script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous" defer></script>
+  {{- end }}
+  {{- end }}
+</body>
+</html>

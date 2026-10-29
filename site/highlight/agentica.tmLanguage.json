@@ -1,0 +1,593 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Agentica",
+  "scopeName": "source.agentica",
+  "fileTypes": ["agc"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#heredoc" },
+    { "include": "#string" },
+    { "include": "#declarations" },
+    { "include": "#block" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#paths" },
+    { "include": "#calls" },
+    { "include": "#types" },
+    { "include": "#bindings" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.agentica",
+          "match": "^\\s*(##).*$",
+          "captures": {
+            "1": { "name": "punctuation.definition.comment.agentica" }
+          }
+        },
+        {
+          "name": "comment.line.number-sign.agentica",
+          "match": "(#).*$",
+          "captures": {
+            "1": { "name": "punctuation.definition.comment.agentica" }
+          }
+        }
+      ]
+    },
+    "escape": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.agentica",
+          "match": "\\\\[\"\\\\#nrt]"
+        },
+        {
+          "name": "invalid.illegal.escape.agentica",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "interpolation": {
+      "name": "meta.interpolation.agentica",
+      "begin": "#\\{",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.interpolation.begin.agentica" }
+      },
+      "end": "\\}|$",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.agentica" }
+      },
+      "contentName": "meta.embedded.line.agentica",
+      "patterns": [{ "include": "#interpolation-content" }]
+    },
+    "interpolation-content": {
+      "patterns": [
+        {
+          "begin": "\\{",
+          "beginCaptures": {
+            "0": { "name": "punctuation.section.braces.begin.agentica" }
+          },
+          "end": "\\}|(?=$)",
+          "endCaptures": {
+            "0": { "name": "punctuation.section.braces.end.agentica" }
+          },
+          "patterns": [{ "include": "#interpolation-content" }]
+        },
+        { "include": "$self" }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.agentica",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.agentica" }
+      },
+      "end": "\"|$",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.agentica" }
+      },
+      "patterns": [
+        { "include": "#escape" },
+        { "include": "#interpolation" }
+      ]
+    },
+    "heredoc": {
+      "patterns": [
+        {
+          "name": "meta.heredoc.agentica",
+          "begin": "(?=<<~[A-Z][A-Z0-9_]*(?:[^#\"]|\"(?:[^\"\\\\]|\\\\.)*\")*?<<~([A-Z][A-Z0-9_]*))",
+          "end": "^\\s*(\\1)$",
+          "endCaptures": {
+            "1": { "name": "string.unquoted.heredoc.agentica punctuation.definition.string.end.agentica" }
+          },
+          "patterns": [
+            { "include": "#heredoc-single" },
+            { "include": "#heredoc-body-line" }
+          ]
+        },
+        { "include": "#heredoc-single" }
+      ]
+    },
+    "heredoc-single": {
+      "name": "meta.heredoc.agentica",
+      "begin": "(<<~)([A-Z][A-Z0-9_]*)",
+      "beginCaptures": {
+        "0": { "name": "string.unquoted.heredoc.agentica punctuation.definition.string.begin.agentica" }
+      },
+      "end": "^\\s*(\\2)$",
+      "endCaptures": {
+        "1": { "name": "string.unquoted.heredoc.agentica punctuation.definition.string.end.agentica" }
+      },
+      "patterns": [
+        {
+          "begin": "\\G(?=.)",
+          "end": "$",
+          "patterns": [
+            {
+              "match": "<<~[A-Z][A-Z0-9_]*",
+              "name": "string.unquoted.heredoc.agentica punctuation.definition.string.begin.agentica"
+            },
+            { "include": "$self" }
+          ]
+        },
+        { "include": "#heredoc-body-line" }
+      ]
+    },
+    "heredoc-body-line": {
+      "name": "string.unquoted.heredoc.agentica",
+      "begin": "^(?=.)",
+      "end": "$",
+      "patterns": [
+        { "include": "#escape" },
+        { "include": "#interpolation" }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.function.agentica",
+          "begin": "\\b(def)\\s+([a-z_][A-Za-z0-9_]*(?:\\?|!(?!=))?)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.function.agentica" },
+            "2": { "name": "entity.name.function.agentica" }
+          },
+          "end": "(?=#)|$",
+          "patterns": [
+            {
+              "begin": "\\(",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.parameters.begin.agentica" }
+              },
+              "end": "\\)",
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.parameters.end.agentica" }
+              },
+              "patterns": [
+                { "include": "#comments" },
+                {
+                  "begin": "(?:^\\s*)?\\b([a-z_][A-Za-z0-9_]*)\\s*(:)",
+                  "beginCaptures": {
+                    "1": { "name": "variable.parameter.agentica" },
+                    "2": { "name": "punctuation.separator.type.agentica" }
+                  },
+                  "end": "(?=[,)=])",
+                  "patterns": [{ "include": "#type-expression" }]
+                },
+                { "include": "#parens" },
+                { "include": "$self" }
+              ]
+            },
+            {
+              "begin": "->",
+              "beginCaptures": {
+                "0": { "name": "keyword.operator.arrow.agentica" }
+              },
+              "end": "(?=#)|$",
+              "patterns": [{ "include": "#type-expression" }]
+            },
+            { "include": "#type-expression" }
+          ]
+        },
+        {
+          "name": "meta.struct.agentica",
+          "begin": "\\b(struct)\\s+([A-Z][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.struct.agentica" },
+            "2": { "name": "entity.name.type.struct.agentica" }
+          },
+          "end": "^\\s*(end)\\b",
+          "endCaptures": {
+            "1": { "name": "keyword.control.agentica" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "^\\s*([a-z_][A-Za-z0-9_]*)\\s*(:)",
+              "captures": {
+                "1": { "name": "variable.other.property.agentica" },
+                "2": { "name": "punctuation.separator.type.agentica" }
+              }
+            },
+            { "include": "#types" },
+            { "include": "#punctuation" }
+          ]
+        },
+        {
+          "name": "meta.enum.agentica",
+          "begin": "\\b(enum)\\s+([A-Z][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.enum.agentica" },
+            "2": { "name": "entity.name.type.enum.agentica" }
+          },
+          "end": "^\\s*(end)\\b",
+          "endCaptures": {
+            "1": { "name": "keyword.control.agentica" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "^\\s*([A-Z][A-Za-z0-9_]*)",
+              "captures": {
+                "1": { "name": "variable.other.enummember.agentica" }
+              }
+            },
+            { "include": "#types" },
+            { "include": "#punctuation" }
+          ]
+        },
+        {
+          "begin": "^\\s*(?:(export)\\s+)?(type)\\s+([A-Z][A-Za-z0-9_]*)",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.export.agentica" },
+            "2": { "name": "storage.type.type.agentica" },
+            "3": { "name": "entity.name.type.alias.agentica" }
+          },
+          "end": "(?=#)|$",
+          "patterns": [
+            { "match": "=", "name": "keyword.operator.assignment.agentica" },
+            { "include": "#type-expression" }
+          ]
+        },
+        {
+          "match": "^\\s*(?:(export)\\s+)?([A-Z][A-Za-z0-9_]*)\\s*(?=(?::[^=]*)?=(?!=))",
+          "captures": {
+            "1": { "name": "keyword.control.export.agentica" },
+            "2": { "name": "variable.other.constant.agentica" }
+          }
+        },
+        {
+          "name": "meta.import.agentica",
+          "begin": "\\b(import)\\b",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.import.agentica" }
+          },
+          "end": "(?=#)|$",
+          "patterns": [
+            {
+              "match": "\\G\\s+([A-Z][A-Za-z0-9_]*)",
+              "captures": {
+                "1": { "name": "entity.name.namespace.agentica" }
+              }
+            },
+            {
+              "begin": "\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.braces.begin.agentica" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.section.braces.end.agentica" }
+              },
+              "patterns": [
+                { "include": "#comments" },
+                {
+                  "match": "\\bas\\b(?=\\s+[A-Za-z_])",
+                  "name": "keyword.control.import.agentica"
+                },
+                { "include": "#types" },
+                { "include": "#punctuation" },
+                { "include": "#identifiers" }
+              ]
+            },
+            {
+              "match": "\\bfrom\\b",
+              "name": "keyword.control.import.agentica"
+            },
+            { "include": "#string" },
+            { "include": "#types" },
+            { "include": "#punctuation" },
+            { "include": "#identifiers" }
+          ]
+        }
+      ]
+    },
+    "parens": {
+      "begin": "\\(",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.parens.begin.agentica" }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.parens.end.agentica" }
+      },
+      "patterns": [
+        { "include": "#parens" },
+        { "include": "$self" }
+      ]
+    },
+    "block": {
+      "begin": "\\b(do)\\s*(\\|)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.agentica" },
+        "2": { "name": "punctuation.definition.parameters.begin.agentica" }
+      },
+      "end": "\\|",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.parameters.end.agentica" }
+      },
+      "patterns": [
+        {
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+          "name": "variable.parameter.agentica"
+        },
+        { "include": "#types" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "^\\s*(break|next)\\s*(?=$|#)",
+          "captures": {
+            "1": { "name": "keyword.control.loop.agentica" }
+          }
+        },
+        {
+          "match": "(?<=->)\\s*(break|next)\\s*(?=$|#)",
+          "captures": {
+            "1": { "name": "keyword.control.loop.agentica" }
+          }
+        },
+        {
+          "match": "\\b(if|elsif|else|case)\\b",
+          "name": "keyword.control.conditional.agentica"
+        },
+        {
+          "match": "\\b(while|for|in)\\b",
+          "name": "keyword.control.loop.agentica"
+        },
+        {
+          "match": "\\breturn\\b",
+          "name": "keyword.control.return.agentica"
+        },
+        {
+          "match": "\\btry\\b",
+          "name": "keyword.control.exception.agentica"
+        },
+        {
+          "match": "\\b(do|end)\\b",
+          "name": "keyword.control.agentica"
+        },
+        {
+          "match": "\\bimport\\b",
+          "name": "keyword.control.import.agentica"
+        },
+        {
+          "match": "\\bexport\\b",
+          "name": "keyword.control.export.agentica"
+        },
+        {
+          "match": "\\bdef\\b",
+          "name": "storage.type.function.agentica"
+        },
+        {
+          "match": "\\bstruct\\b",
+          "name": "storage.type.struct.agentica"
+        },
+        {
+          "match": "\\benum\\b",
+          "name": "storage.type.enum.agentica"
+        },
+        {
+          "match": "\\b(and|or|not)\\b",
+          "name": "keyword.operator.logical.agentica"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "match": "\\b(true|false)\\b",
+          "name": "constant.language.boolean.agentica"
+        },
+        {
+          "match": "\\bnil\\b",
+          "name": "constant.language.nil.agentica"
+        },
+        {
+          "match": "\\b_\\b",
+          "name": "variable.language.anonymous.agentica"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "\\b[0-9](?:_?[0-9])*(?:\\.[0-9](?:_?[0-9])*)?[eE][+-]?[0-9](?:_?[0-9])*\\b",
+          "name": "constant.numeric.float.agentica"
+        },
+        {
+          "match": "\\b[0-9](?:_?[0-9])*\\.[0-9](?:_?[0-9])*\\b",
+          "name": "constant.numeric.float.agentica"
+        },
+        {
+          "match": "\\b[0-9](?:_?[0-9])*\\b",
+          "name": "constant.numeric.integer.agentica"
+        }
+      ]
+    },
+    "paths": {
+      "patterns": [
+        {
+          "match": "\\b([A-Z][A-Za-z0-9_]*)(\\.)([a-z_][A-Za-z0-9_]*(?:\\?|!(?!=))?)",
+          "captures": {
+            "1": {
+              "name": "entity.name.namespace.agentica",
+              "patterns": [{ "include": "#builtin-types" }]
+            },
+            "2": { "name": "punctuation.accessor.agentica" },
+            "3": { "name": "entity.name.function.agentica" }
+          }
+        },
+        {
+          "match": "\\b([A-Z][A-Za-z0-9_]*)((?:\\.[A-Z][A-Za-z0-9_]*)*)(\\.)([A-Z][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": {
+              "name": "entity.name.type.agentica",
+              "patterns": [{ "include": "#builtin-types" }]
+            },
+            "2": {
+              "patterns": [
+                { "include": "#types" },
+                { "include": "#punctuation" }
+              ]
+            },
+            "3": { "name": "punctuation.accessor.agentica" },
+            "4": { "name": "variable.other.enummember.agentica" }
+          }
+        }
+      ]
+    },
+    "calls": {
+      "patterns": [
+        {
+          "match": "(&)(?:([A-Z][A-Za-z0-9_]*)(\\.))?([a-z_][A-Za-z0-9_]*(?:\\?|!(?!=))?)",
+          "captures": {
+            "1": { "name": "keyword.operator.reference.agentica" },
+            "2": { "name": "entity.name.namespace.agentica" },
+            "3": { "name": "punctuation.accessor.agentica" },
+            "4": { "name": "entity.name.function.agentica" }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([a-z_][A-Za-z0-9_]*(?:\\?|!(?!=)))",
+          "captures": {
+            "1": { "name": "punctuation.accessor.agentica" },
+            "2": { "name": "entity.name.function.member.agentica" }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([a-z_][A-Za-z0-9_]*)(?=\\s*\\(|\\s+do\\b)",
+          "captures": {
+            "1": { "name": "punctuation.accessor.agentica" },
+            "2": { "name": "entity.name.function.member.agentica" }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([a-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "punctuation.accessor.agentica" },
+            "2": { "name": "variable.other.property.agentica" }
+          }
+        },
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*(?:\\?|!(?!=))?)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.agentica" }
+          }
+        }
+      ]
+    },
+    "type-expression": {
+      "patterns": [
+        { "include": "#comments" },
+        {
+          "begin": "\\[",
+          "beginCaptures": {
+            "0": { "name": "punctuation.section.brackets.begin.agentica" }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": { "name": "punctuation.section.brackets.end.agentica" }
+          },
+          "patterns": [{ "include": "#type-expression" }]
+        },
+        { "include": "#types" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "builtin-types": {
+      "match": "\\b(Int|Float|Bool|String|Nil|Void|List|Map|Set|Result|Range|Fn|Json|JsonField|JSON|Task|Await|Channel|Process|ProcessOutput|IO|System|Time|Random|Test|TestCase|File|Dir|Path|FileHandle|FileInfo|TCP|TLS|HttpWire|LogRegistry|LogEvent|LogLevel|Socket|Listener|HttpClient|HttpServer|Header|HttpRequest|HttpResponse|HttpClientOptions|HttpServerOptions)\\b",
+      "name": "support.type.builtin.agentica"
+    },
+    "types": {
+      "patterns": [
+        { "include": "#builtin-types" },
+        {
+          "match": "\\b[A-Z][A-Z0-9_]+\\b",
+          "name": "variable.other.constant.agentica"
+        },
+        {
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+          "name": "entity.name.type.agentica"
+        }
+      ]
+    },
+    "bindings": {
+      "patterns": [
+        {
+          "begin": "^\\s*([a-z_][A-Za-z0-9_]*)\\s*(:)(?=[^=<>!\"#|]*=(?!=))",
+          "beginCaptures": {
+            "1": { "name": "variable.other.readwrite.agentica" },
+            "2": { "name": "punctuation.separator.type.agentica" }
+          },
+          "end": "(?==)",
+          "patterns": [{ "include": "#type-expression" }]
+        },
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(:)(?=\\s)",
+          "captures": {
+            "1": { "name": "variable.parameter.named.agentica" },
+            "2": { "name": "punctuation.separator.key-value.agentica" }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "match": "\\|>", "name": "keyword.operator.pipe.agentica" },
+        { "match": "->", "name": "keyword.operator.arrow.agentica" },
+        { "match": "\\.\\.\\.?", "name": "keyword.operator.range.agentica" },
+        { "match": "==|!=|<=|>=|<|>", "name": "keyword.operator.comparison.agentica" },
+        { "match": "[+\\-*/%]=", "name": "keyword.operator.assignment.compound.agentica" },
+        { "match": "=", "name": "keyword.operator.assignment.agentica" },
+        { "match": "&&|\\|\\||!", "name": "keyword.operator.logical.agentica" },
+        { "match": "[+\\-*/%]", "name": "keyword.operator.arithmetic.agentica" },
+        { "match": "&", "name": "keyword.operator.reference.agentica" }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": ",", "name": "punctuation.separator.comma.agentica" },
+        { "match": "\\.", "name": "punctuation.accessor.agentica" },
+        { "match": ":", "name": "punctuation.separator.colon.agentica" },
+        { "match": "\\|", "name": "punctuation.separator.pipe.agentica" },
+        { "match": "[()]", "name": "punctuation.section.parens.agentica" },
+        { "match": "[\\[\\]]", "name": "punctuation.section.brackets.agentica" },
+        { "match": "[{}]", "name": "punctuation.section.braces.agentica" }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "match": "\\b[a-z_][A-Za-z0-9_]*(?:\\?|!(?!=))?",
+          "name": "variable.other.readwrite.agentica"
+        }
+      ]
+    }
+  }
+}

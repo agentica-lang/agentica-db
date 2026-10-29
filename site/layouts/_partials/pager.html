@@ -1,0 +1,21 @@
+{{- /* Previous and next page in the sidebar order (nav-order.html). The home page is not in the pager: it starts at its first child. A page outside the tree gets none. */ -}}
+{{- /* The order depends only on the site tree, not on the page, so it is built once. */ -}}
+{{- $order := partialCached "nav-order.html" site.Home -}}
+{{- $prev := false -}}
+{{- $next := false -}}
+{{- range $i, $p := $order -}}
+  {{- if eq $p $ -}}
+    {{- if gt $i 0 }}{{ $prev = index $order (sub $i 1) }}{{ end -}}
+    {{- if lt (add $i 1) (len $order) }}{{ $next = index $order (add $i 1) }}{{ end -}}
+  {{- end -}}
+{{- end -}}
+{{- if or $prev $next }}
+<nav class="pager" aria-label="Previous and next pages">
+  {{- with $prev }}
+  <a class="pager-prev" href="{{ .RelPermalink }}" rel="prev"><span class="pager-label">Previous</span><span class="pager-title"><span aria-hidden="true">← </span>{{ .LinkTitle }}</span></a>
+  {{- end }}
+  {{- with $next }}
+  <a class="pager-next" href="{{ .RelPermalink }}" rel="next"><span class="pager-label">Next</span><span class="pager-title">{{ .LinkTitle }}<span aria-hidden="true"> →</span></span></a>
+  {{- end }}
+</nav>
+{{- end -}}

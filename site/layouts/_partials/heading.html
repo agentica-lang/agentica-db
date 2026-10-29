@@ -1,0 +1,5 @@
+{{- $heading := "" -}}
+{{- with findRESubmatch `(?m)\A\s*#[ \t]+(.+?)[ \t]*$` .RawContent 1 -}}
+  {{- $heading = index . 0 1 -}}
+{{- end -}}
+{{- return $heading -}}

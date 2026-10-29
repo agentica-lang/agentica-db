@@ -1,0 +1,9 @@
+{{- $current := . -}}
+<nav class="sidebar" id="sidebar" aria-label="Site" tabindex="-1">
+  <ul>
+    <li><a href="{{ site.Home.RelPermalink }}"{{ if .IsHome }} aria-current="page"{{ end }}>Home</a></li>
+    {{- range site.Home.Pages.ByWeight }}
+    {{ partial "sidebar-item.html" (dict "page" . "current" $current) }}
+    {{- end }}
+  </ul>
+</nav>

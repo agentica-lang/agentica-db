@@ -50,3 +50,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Breaking:** an error of the Orm now carries its kind: `orm error <code>: <table>: <message>` (`orm error
   bad_request: users: ...`, not `orm error: users: ...`). Match it with `Orm.classify`, not by text.
 - Needs Agentica 0.15.0 or later (CI runs 0.16.0).
+- Documentation site at https://agentica-lang.github.io/agentica-db/.

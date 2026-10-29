@@ -1,0 +1,5 @@
+{{- /* Hidden without JavaScript (the system preference still applies); assets/js/theme.js sets the label. The icon shown follows the theme in CSS (_header.scss). Icons: assets/icons/lucide/LICENSE. */ -}}
+<button class="theme-toggle" type="button" aria-label="Switch to dark theme">
+  <span class="icon icon-moon" aria-hidden="true">{{ (resources.Get "icons/lucide/moon.svg").Content | safeHTML }}</span>
+  <span class="icon icon-sun" aria-hidden="true">{{ (resources.Get "icons/lucide/sun.svg").Content | safeHTML }}</span>
+</button>

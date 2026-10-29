@@ -1,0 +1,26 @@
+{{- $dest := .dest -}}
+{{- $url := urls.Parse $dest -}}
+{{- $fragment := cond (eq $url.Fragment "") "" (printf "#%s" $url.Fragment) -}}
+{{- $page := false -}}
+{{- $href := $dest -}}
+{{- if or $url.IsAbs (eq $url.Path "") -}}
+{{- else if hasPrefix $url.Path "/" -}}
+  {{- with site.GetPage $url.Path -}}
+    {{- $page = . -}}
+  {{- else -}}
+    {{- warnf "%s: no page for link %q" $.from.Path $dest -}}
+  {{- end -}}
+{{- else -}}
+  {{- $source := partial "source-path.html" $.from -}}
+  {{- $target := path.Join (path.Dir $source) $url.Path -}}
+  {{- range site.Pages -}}
+    {{- if eq (partial "source-path.html" .) $target }}{{ $page = . }}{{ end -}}
+  {{- end -}}
+  {{- if not $page -}}
+    {{- $href = "" -}}
+    {{- if site.Params.repoPublic -}}
+      {{- $href = printf "%s/blob/main/%s%s" site.Params.repo $target $fragment -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- return dict "page" $page "fragment" $fragment "href" $href "external" $url.IsAbs -}}

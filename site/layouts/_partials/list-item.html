@@ -1,0 +1,12 @@
+<li>
+  <a href="{{ .RelPermalink }}">{{ .LinkTitle }}</a>
+  {{- $heading := partial "heading.html" . }}
+  {{- if and $heading (ne $heading .LinkTitle) }} <span>{{ $heading }}</span>{{ else if and .IsSection .Description }} <span>{{ .Description }}</span>{{ end }}
+  {{- if and .IsSection .Pages }}
+  <ul>
+    {{- range .Pages.ByWeight }}
+    {{ partial "list-item.html" . }}
+    {{- end }}
+  </ul>
+  {{- end }}
+</li>

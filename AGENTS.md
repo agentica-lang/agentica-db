@@ -12,8 +12,8 @@ runs it and checks its output.
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`.
-- `for file in *.agc */*.agc specs/fixtures/*/*.agc; do agentica check "$file"; done` (so `orm/`, `examples/`,
-  `specs/` and `test/` too), then `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
+- `make check` (`agentica check` on every `.agc` file, so `orm/`, `examples/`, `specs/` and `test/` too), then
+  `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
   the unit tests of `test/`. SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains
   `TEXT`.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
@@ -29,6 +29,11 @@ runs it and checks its output.
   too (CI does): `-e MYSQL_ROOT_PASSWORD=pw ... mysql:8.4` on another port. The two servers differ (MySQL does not
   prepare `START TRANSACTION`), so a MySQL change passes on both. Scenarios use temporary tables, so
   they leave nothing behind.
+- The documentation site is in `site/` (Hugo; `site/DESIGN.md` says how it differs from the Agentica site):
+  `make site` builds it (needs Hugo and Dart Sass, see `.github/workflows/pages.yml`), `make site-samples` checks
+  every `agentica` block of `site/content/` with `agentica check` (and runs the ones followed by an `output` block).
+  A page of `site/content/` never starts with a `# ` heading (the layout prints the title) and keeps one line per
+  paragraph or list item. A change to the API updates its page.
 
 ## Rules
 

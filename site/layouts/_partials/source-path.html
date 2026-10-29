@@ -1,0 +1,5 @@
+{{- $path := "" -}}
+{{- with .File -}}
+  {{- $path = strings.TrimPrefix (printf "%s/" (path.Dir (path.Clean hugo.WorkingDir))) (path.Clean .Filename) -}}
+{{- end -}}
+{{- return $path -}}
