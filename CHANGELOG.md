@@ -34,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `failed`).
 - `Orm` (`import Orm from "pkg/db/orm"`), a small typed layer over `Db`: `schema(table, T.members, JSON.codec(T))`,
   `check`, `query` (rows into plain structs; NULL into a `JsonField`, 0 and 1 into a Bool) and `query_as` (your own
-  decode of each row). Errors are `orm error: <table>: <message>`.
+  decode of each row).
 - `Orm` writes: `insert` (gives the row back with its generated key), `update`, `delete` and `patch` (a `Json` object
   of the changes, `null` clears a `JsonField` column). Names are quoted, values bound, and the same value checks as
   for reads apply.
@@ -44,4 +44,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `delete_all` refuse a query with no condition (`Orm.where(q, "1 = 1", [])` says that every row is meant).
 - `examples/users.agc`: a web-handler style users API on the Orm (insert, find, the builder, patch, delete and a
   transaction), run by CI against SQLite.
-- Needs Agentica 0.15.0 (CI and README).
+- `Orm.classify(error_text)` gives an `Orm.Error` to `case` on (`BadRequest`, `Conflict`, `NotDecodable`, `Schema`,
+  `Database`), with `Orm.kind` and `Orm.message`. A unique or foreign-key violation of any database is a `Conflict`.
+  The users example maps statuses by kind.
+- **Breaking:** an error of the Orm now carries its kind: `orm error <code>: <table>: <message>` (`orm error
+  bad_request: users: ...`, not `orm error: users: ...`). Match it with `Orm.classify`, not by text.
+- Needs Agentica 0.15.0 or later (CI runs 0.16.0).

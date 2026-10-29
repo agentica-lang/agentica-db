@@ -833,8 +833,18 @@ def judge(last: Outcome, req: Request) -> String
     "expect_prefix" -> return judge_failure(last, "starting with", wanted) do |message| message.start_with?(wanted) end
     "expect_exact" -> return judge_failure(last, "exactly", wanted) do |message| message == wanted end
     "expect_mentions" -> return judge_failure(last, "mentioning", wanted) do |message| message.include?(wanted) end
+    "expect_kind" -> return judge_kind(last, wanted)
     "expect_hides" -> return judge_failure(last, "never showing", wanted) do |message| not message.include?(wanted) end
     _ -> return "unknown op #{req.op.inspect}"
+  end
+end
+
+# The failure must be of the kind that `Orm.classify` gives its message.
+def judge_kind(last: Outcome, wanted: String) -> String
+  case last
+    Outcome.Failed(message) if Orm.kind(Orm.classify(message)) == wanted -> return ""
+    Outcome.Failed(message) -> return "expected a #{wanted} error, got #{Orm.kind(Orm.classify(message))}: #{message}"
+    _ -> return "expected a #{wanted} error, but it succeeded"
   end
 end
 
