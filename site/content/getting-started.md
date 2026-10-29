@@ -48,7 +48,7 @@ You need the client library of each database you open. A library loads when the 
 | PostgreSQL 12 or later | `libpq.so.5` | `libpq5` |
 | MySQL, MariaDB | `libmariadb.so.3` | `libmariadb3` |
 
-macOS and Windows names are declared (`libsqlite3.dylib`, `libpq.5.dylib`, `libmariadb.3.dylib`, `winsqlite3.dll`, `libpq.dll`, `libmariadb.dll`), but CI runs on Linux only. On macOS the manifest cannot name an absolute path, so run with Homebrew's libraries, as in `DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib" agentica app.agc` (for MySQL, `mariadb-connector-c`). On Windows the DLLs are looked up next to `agentica.exe` and in System32, never in `PATH`, and so are the DLLs they need.
+macOS and Windows names are declared (`libsqlite3.dylib`, `libpq.5.dylib`, `libmariadb.3.dylib`, `winsqlite3.dll`, `libpq.dll`, `libmariadb.dll`), but CI runs the SQLite suite on macOS and Windows, and the whole suite on Linux. On macOS the manifest cannot name an absolute path, so run with Homebrew's libraries, as in `DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib" agentica app.agc` (for MySQL, `mariadb-connector-c`). On Windows the DLLs are looked up next to `agentica.exe` and in System32, never in `PATH`, and so are the DLLs they need.
 
 A library that is missing does not stop the program: `open` gives an `error` that says so, as in `sqlite error: cannot load the SQLite library: ...`.
 
