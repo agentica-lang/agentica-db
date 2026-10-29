@@ -187,16 +187,24 @@ plain identifiers, that every field has a column type, that the key is a field a
   and SQLite), so a name is exact in PostgreSQL: it folds an unquoted name to lower case, and a column it created
   that way is found by the lower case name only. A name that is not a letter or `_` followed by letters, digits or
   `_` is an error of `check`: a name never comes from a request.
-- Writes bind every value (`?`) and quote the table and the columns as `check` does; a schema that `check` refuses is
-  refused by every write, before any sql runs.
+- Writes bind every value (`?`) and run the name, type and key rules of `check` before any sql: a table or column
+  name that is not a plain identifier, a field type a column cannot hold, a key that is not a field and a generated key
+  that is not an Int are errors (they do not look at the database).
 - `insert` leaves out a generated key (whatever the value holds) and a `JsonField` that is `Absent`, so the database
-  default applies, and gives the row back read again by its key. PostgreSQL gets the key with `returning`; SQLite and
-  MySQL with `last_insert_rowid()` and `last_insert_id()` on the same connection, so use a transaction when other
-  writers could interleave. A key that is not generated (`.with(generated: false)`) is inserted as it is. A generated
-  key must be an Int. The error of the database (a unique key, a not null) is returned unchanged. A Float field with
-  NaN or an infinity halts at the encode of the codec (`RUNTIME-JSON-ENCODE`), before any sql.
+  default applies, and gives the row back read again by its key. The key must be the one the database generates for
+  the table: the `INTEGER PRIMARY KEY` of SQLite, the `AUTO_INCREMENT` column of MySQL, a `serial` or identity column
+  of PostgreSQL. PostgreSQL gets the key with `returning`; SQLite and MySQL with `last_insert_rowid()` and
+  `last_insert_id()` on the same connection. The insert and the read after it are two statements: put them in a
+  transaction (`Db.transaction`), so that other writers cannot interleave. If the read finds no row, which happens when
+  the key is not the one the database generates, the row was inserted all the same: the error says `orm error:
+  <table>: the inserted row was not found by its key`. A key that is not generated (`.with(generated: false)`) is
+  inserted as it is. A value with nothing to insert (a generated key and `Absent` fields only) is `no column to
+  insert`. The error of the database (a unique key, a not null) is returned unchanged. A Float field with NaN or an
+  infinity halts at the encode of the codec (`RUNTIME-JSON-ENCODE`), before any sql.
 - `update` sets every column but the key to the field (`Absent` keeps the column, `Null` clears it) in the row with the
-  key of the value.
+  key of the value. A value whose only fields are the key and `Absent` ones has nothing to set: `no column to
+  update`. `delete` and `patch` take the key as a `Db.Value` of the kind of the key field (`Db.Value.Int(7)` for an Int
+  key); another kind is an error (`users: the key id has type Int, not Text`).
 - `patch` takes the changes as a `Json` object, such as the body of a request: a key that is a column sets it
   (`null` clears a `JsonField` column), a column the object leaves out keeps its value. A key that is not a column, the
   primary key, a value of the wrong kind (`age: expected Int`), a `null` for a field that is not a `JsonField` and an

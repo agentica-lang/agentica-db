@@ -44,6 +44,14 @@ def main() -> Void
     text_step("I read the names with {string}", "orm_query_as"),
     text_step("I check the {string} schema", "orm_check"),
     BDD.step("I insert the person:") do |ctx, args| send(ctx, Request(op: "orm_insert", table: BDD.table(ctx))) end,
+    BDD.step("I insert the person with its own key:") do |ctx, args|
+      send(ctx, Request(op: "orm_insert", text: "manual", table: BDD.table(ctx)))
+    end,
+    BDD.step("I insert a marker with no note") do |ctx, args| send(ctx, Request(op: "orm_marker", text: "insert")) end,
+    BDD.step("I update a marker with no note") do |ctx, args| send(ctx, Request(op: "orm_marker", text: "update")) end,
+    BDD.step("I delete the person with the key {string}") do |ctx, args|
+      send(ctx, Request(op: "orm_delete", text: "people", cells: [args[0]]))
+    end,
     BDD.step("I update the person:") do |ctx, args| send(ctx, Request(op: "orm_update", table: BDD.table(ctx))) end,
     BDD.step("I patch the person {int} with {string}") do |ctx, args|
       send(ctx, Request(op: "orm_patch", number: args[0].to_i!, text: args[1]))

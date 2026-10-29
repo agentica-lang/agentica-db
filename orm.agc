@@ -100,7 +100,7 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
   marks = params.map do |param| "?" end.join(", ")
   sql = "insert into #{table} (#{names.join(", ")}) values (#{marks})"
   if schema.generated
-    id = try Dialect.insert_generated(conn, sql, params, try quoted(conn, schema, schema.primary_key))
+    id = try generated_key(conn, schema, sql, params)
     return reload(conn, schema, Db.Value.Int(id))
   end
 
@@ -109,7 +109,8 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
 end
 
 ## Sets every column of the row whose key is the key of `value` and gives the rows changed, 0 when there is no such
-## row. A `JsonField` that is `Absent` keeps its column; `Null` clears it.
+## row. A `JsonField` that is `Absent` keeps its column; `Null` clears it. A value with no field but the key and
+## `Absent` ones has nothing to set: `no column to update`.
 export def update[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result[Int]
   try valid(schema)
   object = schema.codec.from(value)
@@ -133,9 +134,11 @@ export def update[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
   return update_by_key(conn, schema, sets, params.push(key))
 end
 
-## Deletes the row whose key is `id` and gives the rows removed, 0 when there is no such row.
+## Deletes the row whose key is `id` and gives the rows removed, 0 when there is no such row. The `id` must be the
+## kind of the key field (`Db.Value.Int` for an Int key), else it is an error.
 export def delete[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Result[Int]
   try valid(schema)
+  try key_kind(schema, id)
   table = try quoted(conn, schema, schema.table)
   key = try quoted(conn, schema, schema.primary_key)
   return Db.execute(conn, "delete from #{table} where #{key} = ?", [id])
@@ -148,6 +151,7 @@ end
 ## the body of a request can be passed as it is.
 export def patch[T](conn: Db.Connection, schema: Schema[T], id: Db.Value, changes: Json) -> Result[Int]
   try valid(schema)
+  try key_kind(schema, id)
   if JSON.kind(changes) != "object"
     return fail(schema, "the changes are not a JSON object")
   end
@@ -186,6 +190,27 @@ def quoted[T](conn: Db.Connection, schema: Schema[T], name: String) -> Result[St
   end
 end
 
+# The key the insert generated. The error of the database is returned as it is; no key at all is an error of the Orm.
+def generated_key[T](conn: Db.Connection, schema: Schema[T], sql: String, params: List[Db.Value]) -> Result[Int]
+  column = try quoted(conn, schema, schema.primary_key)
+  case Dialect.insert_generated(conn, sql, params, column)
+    ok(id) -> return ok(id)
+    error(message) if message == Dialect.NO_KEY -> return fail(schema, message)
+    error(message) -> return error(message)
+  end
+end
+
+# The key given to `delete` and `patch` must be the kind of the key field, so a wrong key is an error of the Orm and
+# not a quiet no-match (or a conversion by the database).
+def key_kind[T](schema: Schema[T], id: Db.Value) -> Result[Void]
+  keys = schema.members.select do |member| member.name == schema.primary_key end
+  if Codec.field_kind(keys[0].type) != Codec.value_kind(id)
+    return fail(schema, "the key #{schema.primary_key} has type #{keys[0].type}, not #{Codec.value_kind(id)}")
+  end
+
+  return ok()
+end
+
 def bound[T](schema: Schema[T], member: StructMember, json: Json) -> Result[Db.Value]
   case Codec.to_value(member, json)
     ok(value) -> return ok(value)
@@ -200,7 +225,9 @@ def or_fail[T](schema: Schema[T], found: Result[Json], message: String) -> Resul
   end
 end
 
-# The text of a Json value with its keys in order, so two objects with the same entries have the same text.
+# The text of a Json value. It relies on `JSON.encode` writing the keys of a parsed object in sorted order (and the
+# parse of the encode gives a parsed object), so two objects with the same entries have the same text, whatever order
+# their keys came in.
 def canonical(json: Json) -> Result[String]
   return ok(JSON.encode(try JSON.parse(JSON.encode(json))))
 end

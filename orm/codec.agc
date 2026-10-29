@@ -46,6 +46,27 @@ export def to_value(member: StructMember, json: Json) -> Result[Db.Value]
   end
 end
 
+## The name of the variant of a value: `Null`, `Int`, `Float`, `Text`, `Blob` or `Bool`.
+export def value_kind(value: Db.Value) -> String
+  case value
+    Db.Value.Null -> return "Null"
+    Db.Value.Int(_) -> return "Int"
+    Db.Value.Float(_) -> return "Float"
+    Db.Value.Text(_) -> return "Text"
+    Db.Value.Blob(_) -> return "Blob"
+    Db.Value.Bool(_) -> return "Bool"
+  end
+end
+
+## The variant of the value that a field of this type is bound with: a String field is a `Text`.
+export def field_kind(type: String) -> String
+  if inner_type(type) == "String"
+    return "Text"
+  end
+
+  return inner_type(type)
+end
+
 ## Whether a field of this type can come from one column: Int, Float, Bool or String, alone or in a `JsonField`.
 export def column_type?(type: String) -> Bool
   return ["Int", "Float", "Bool", "String"].any? do |name| name == inner_type(type) end

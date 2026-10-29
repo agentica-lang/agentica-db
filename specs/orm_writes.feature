@@ -58,10 +58,14 @@ Feature: Orm writes
       | id    | name     | age    | admin      | score     |
       | Int 9 | Text nob | Int 5 | Bool false | Float 3.0 |
     Then the changed row count is 0
+    When I update the person:
+      | id    | name     | age    | admin      | score     |
+      | Int 2 | Text rob | Absent | Bool false | Float 5.0 |
+    Then the changed row count is 1
     And the query "select id, name, age, score from people order by id" returns:
       | id    | name     | age    | score     |
       | Int 1 | Text ann | Null   | Float 3.0 |
-      | Int 2 | Text bob | Int 20 | Float 2.0 |
+      | Int 2 | Text rob | Int 20 | Float 5.0 |
 
     Examples:
       | adapter  |
@@ -75,6 +79,8 @@ Feature: Orm writes
     And I execute "insert into people (id, name, age, admin, score) values (1, 'ana', 31, true, 1.5), (2, 'bob', 20, false, 2.0), (3, 'cy', 9, true, 0.25)"
     When I patch the person 1 with "{\"age\": null, \"score\": 3}"
     Then the changed row count is 1
+    When I patch the person 3 with "{\"score\": 4, \"age\": null}"
+    Then the changed row count is 1
     When I patch the person 9 with "{\"name\": \"nobody\"}"
     Then the changed row count is 0
     When I delete the person 2
@@ -84,7 +90,7 @@ Feature: Orm writes
     And the query "select id, name, age, score from people order by id" returns:
       | id    | name     | age   | score      |
       | Int 1 | Text ana | Null  | Float 3.0  |
-      | Int 3 | Text cy  | Int 9 | Float 0.25 |
+      | Int 3 | Text cy  | Null  | Float 4.0  |
 
     Examples:
       | adapter  |
@@ -110,11 +116,45 @@ Feature: Orm writes
     Then it fails with exactly "orm error: people: the changes are not a JSON object"
     When I patch the person 1 with "{}"
     Then it fails with exactly "orm error: people: no column to change"
+    When I delete the person with the key "Text 1"
+    Then it fails with exactly "orm error: people: the key id has type Int, not Text"
     When I delete the person 1 from the "injection" schema
     Then it fails with exactly "orm error: a; drop table x: the table name is not a plain identifier"
     And the query "select id, name, age, score from people" returns:
       | id    | name     | age    | score     |
       | Int 1 | Text ana | Int 31 | Float 1.5 |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
+  Scenario Outline: An insert with a key that is not generated keeps the key of the value on <adapter>
+    Given a "<adapter>" database
+    And I execute "create temporary table people (id integer primary key, name varchar(50) not null, age integer, admin boolean not null, score double precision not null)"
+    When I insert the person with its own key:
+      | id     | name     | age  | admin     | score     |
+      | Int 40 | Text ana | Null | Bool true | Float 1.5 |
+    Then the result is:
+      | id     | name     | age  | admin     | score     |
+      | Int 40 | Text ana | Null | Bool true | Float 1.5 |
+    And the query "select id from people" returns:
+      | id     |
+      | Int 40 |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
+  Scenario Outline: A value with nothing to write fails before any sql runs on <adapter>
+    Given a "<adapter>" database
+    When I insert a marker with no note
+    Then it fails with exactly "orm error: markers: no column to insert"
+    When I update a marker with no note
+    Then it fails with exactly "orm error: markers: no column to update"
 
     Examples:
       | adapter  |

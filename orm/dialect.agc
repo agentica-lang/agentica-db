@@ -2,7 +2,8 @@
 
 import Db from "../db"
 
-NO_KEY = "orm error: the database gave no generated key"
+## The error of `insert_generated` when the database gave no key; the Orm adds the table to it.
+export NO_KEY = "the database gave no generated key"
 
 ## Whether `name` is safe to use as a table or column name: a letter or `_`, then letters, digits or `_`. The Orm
 ## puts only such names in the sql it writes, so a name from a request cannot inject sql.

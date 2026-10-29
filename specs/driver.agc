@@ -47,6 +47,12 @@ struct Named
   name: String
 end
 
+# A struct with nothing to write but its generated key.
+struct Marker
+  id: Int = 0
+  note: JsonField[String]
+end
+
 # A struct with a field that no column holds.
 struct Tagged
   id: Int = 0
@@ -141,10 +147,11 @@ def act(state: State, req: Request) -> Handled
     "orm_query" -> return reply_ok(with_params(state, req, &orm_query))
     "orm_query_as" -> return reply_ok(orm_query_as(state, Cells.expand(req.text)))
     "orm_check" -> return reply_ok(orm_check(state, req.text))
-    "orm_insert" -> return reply_ok(orm_insert(state, req.table))
+    "orm_insert" -> return reply_ok(orm_insert(state, req.table, req.text))
+    "orm_marker" -> return reply_ok(orm_marker(state, req.text))
     "orm_update" -> return reply_ok(orm_update(state, req.table))
     "orm_patch" -> return reply_ok(orm_patch(state, req.number, req.text))
-    "orm_delete" -> return reply_ok(orm_delete(state, req.number, req.text))
+    "orm_delete" -> return reply_ok(orm_delete(state, req))
     "close" -> return reply_ok(close(state))
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
@@ -396,12 +403,14 @@ def age_cell(cell: String) -> Result[JsonField[Int]]
   end
 end
 
-def orm_insert(state: State, table: List[List[String]]) -> State
+# The schema `manual` is `people` with a key the value gives.
+def orm_insert(state: State, table: List[List[String]], which: String) -> State
   return with_conn(state) do |conn|
     case person_of(table)
       error(message) -> return failed(state, message)
       ok(person) ->
-        case Orm.insert(conn, people(), person)
+        schema = people().with(generated: which != "manual")
+        case Orm.insert(conn, schema, person)
           error(message) -> return failed(state, message)
           ok(stored) -> return recorded(state, Outcome.Rows([person_row(stored)]))
         end
@@ -427,13 +436,38 @@ def orm_patch(state: State, id: Int, changes: String) -> State
   end
 end
 
-def orm_delete(state: State, id: Int, which: String) -> State
+# The key is the number, or the one typed cell when there is one.
+def orm_delete(state: State, req: Request) -> State
   return with_conn(state) do |conn|
-    if which == "injection"
-      return counted(state, Orm.delete(conn, injected(), Db.Value.Int(id)))
+    id = Db.Value.Int(req.number)
+    if not req.cells.empty?
+      case Cells.parse(req.cells[0])
+        error(message) -> return failed(state, message)
+        ok(value) -> id = value
+      end
     end
 
-    return counted(state, Orm.delete(conn, people(), Db.Value.Int(id)))
+    if req.text == "injection"
+      return counted(state, Orm.delete(conn, injected(), id))
+    end
+
+    return counted(state, Orm.delete(conn, people(), id))
+  end
+end
+
+# A marker has no field to write but its key, so an insert and an update have no column.
+def orm_marker(state: State, which: String) -> State
+  return with_conn(state) do |conn|
+    markers = Orm.schema("markers", Marker.members, JSON.codec(Marker))
+    marker = Marker(note: JsonField.Absent)
+    if which == "insert"
+      case Orm.insert(conn, markers, marker)
+        error(message) -> return failed(state, message)
+        ok(_) -> return recorded(state, Outcome.Done)
+      end
+    end
+
+    return counted(state, Orm.update(conn, markers, marker))
   end
 end
 
