@@ -3,8 +3,9 @@
 One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc`, `postgres.agc`
 with its placeholder scanner `postgres_sql.agc`, `mysql.agc` with its statement scanner `mysql_sql.agc` and its url
 reader `mysql_url.agc`), all through the C FFI. No C code of ours. `orm.agc` is a typed layer over `Db` (plain structs
-in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `JSON.codec`) and `orm/dialect.agc`
-(identifier names and quotes); it takes a `Db.Connection` and never touches an adapter.
+in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the
+sql of the query builder) and `orm/dialect.agc` (identifier names and quotes); it takes a `Db.Connection` and never
+touches an adapter.
 
 ## Commands
 

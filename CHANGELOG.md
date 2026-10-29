@@ -38,4 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Orm` writes: `insert` (gives the row back with its generated key), `update`, `delete` and `patch` (a `Json` object
   of the changes, `null` clears a `JsonField` column). Names are quoted, values bound, and the same value checks as
   for reads apply.
+- `Orm.find` (gives `Orm.Option[T]`) and a query builder: `from`, `where`, `where_eq`, `where_in`, `order_by`,
+  `order_by_desc`, `limit`, `offset`, then `all`, `one`, `count`, `update_all` or `delete_all`. A column that is not in
+  the schema, or a value of another kind, is an error when the query ends, before any sql runs.
 - Needs Agentica 0.15.0 (CI and README).

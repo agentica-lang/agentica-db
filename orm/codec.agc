@@ -58,6 +58,15 @@ export def value_kind(value: Db.Value) -> String
   end
 end
 
+## Whether a value can be compared with, or stored in, a field of this type: its variant is the one of the field, or
+## it is `Null` and the field is a `JsonField`.
+export def accepts?(type: String, value: Db.Value) -> Bool
+  case value
+    Db.Value.Null -> return json_field?(type)
+    _ -> return field_kind(type) == value_kind(value)
+  end
+end
+
 ## The variant of the value that a field of this type is bound with: a String field is a `Text`.
 export def field_kind(type: String) -> String
   if inner_type(type) == "String"
