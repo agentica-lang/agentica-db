@@ -103,6 +103,8 @@ Feature: Orm
     Then it fails with exactly "orm error: people: the primary key pk is not a column"
     When I check the "injection" schema
     Then it fails with exactly "orm error: a; drop table x: the table name is not a plain identifier"
+    When I check the "textkey" schema
+    Then it fails with exactly "orm error: people: the generated key id must be an Int"
     When I check the "list" schema
     Then it fails with exactly "orm error: people: the field tags has the type List[String], which a column cannot hold"
 

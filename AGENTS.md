@@ -45,7 +45,7 @@ in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `
 - An adapter exports its own `BEGIN_SQL`; `transaction` in `db.agc` uses it.
 - Tests are BDD-first: behavior is a Gherkin scenario in `specs/*.feature`, run by `agentica test`, not a test file.
   The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
-  `transactions`) and by `orm.feature` for the Orm (its driver ops build the struct `Person` of
+  `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct `Person` of
   `specs/driver.agc`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one
   adapter promises is in `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on
   all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and
