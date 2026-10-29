@@ -5,15 +5,17 @@ with its placeholder scanner `postgres_sql.agc`, `mysql.agc` with its statement 
 reader `mysql_url.agc`), all through the C FFI. No C code of ours. `orm.agc` is a typed layer over `Db` (plain structs
 in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the
 sql of the query builder) and `orm/dialect.agc` (identifier names and quotes); it takes a `Db.Connection` and never
-touches an adapter.
+touches an adapter. `examples/users.agc` is a runnable web-handler style example of the Orm; `specs/examples.feature`
+runs it and checks its output.
 
 ## Commands
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`.
-- `for file in *.agc specs/*.agc specs/fixtures/*/*.agc test/*.agc; do agentica check "$file"; done`, then
-  `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and the unit tests of `test/`.
-  SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`.
+- `for file in *.agc */*.agc specs/fixtures/*/*.agc; do agentica check "$file"; done` (so `orm/`, `examples/`,
+  `specs/` and `test/` too), then `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
+  the unit tests of `test/`. SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains
+  `TEXT`.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
   a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
   and in CI: there is no skipped scenario. Without a server run only the SQLite ones:
