@@ -40,5 +40,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for reads apply.
 - `Orm.find` (gives `Orm.Option[T]`) and a query builder: `from`, `where`, `where_eq`, `where_in`, `order_by`,
   `order_by_desc`, `limit`, `offset`, then `all`, `one`, `count`, `update_all` or `delete_all`. A column that is not in
-  the schema, or a value of another kind, is an error when the query ends, before any sql runs.
+  the schema, or a value of another kind, is an error when the query ends, before any sql runs. `update_all` and
+  `delete_all` refuse a query with no condition (`Orm.where(q, "1 = 1", [])` says that every row is meant).
 - Needs Agentica 0.15.0 (CI and README).

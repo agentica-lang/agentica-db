@@ -3,9 +3,10 @@
 ## `all`) write theirs from the schema, with quoted names.
 ##
 ## A schema ties a struct to a table: `Orm.schema("users", User.members, JSON.codec(User))`. Every function takes
-## the `Db.Connection`, so a transaction body or a pooled connection passes its own. The functions give values and
-## never change one. An error is `error("orm error: <table>: <message>")`; an error of the database is the one of
-## `Db`.
+## the `Db.Connection`, so a transaction body or a pooled connection passes its own. `query`, `find` and the writes
+## take it first; the steps and the ends of a query take the query first, so that they chain with `|>`. The
+## functions give values and never change one. An error is `error("orm error: <table>: <message>")`; an error of the
+## database is the one of `Db`.
 ##
 ## The mapping: the table is a plain struct, a column has the name of its field (the Orm quotes it), and the key is
 ## `id` unless `.with(primary_key: "other")`. A generated key is a field with a default, `id: Int = 0`. A column that
@@ -110,28 +111,34 @@ export def where[T](q: Query[T], sql: String, params: List[Db.Value]) -> Query[T
   return with_cond(q, Build.Cond.Raw(sql, params))
 end
 
-## Keeps the rows whose `column` equals `value`; `Db.Value.Null` keeps the rows where it is NULL. The column must be
-## in the schema and the value the kind of the column.
+## Keeps the rows whose `column` equals `value`; `Db.Value.Null` keeps the rows where it is NULL (only for a
+## `JsonField` column). The column must be in the schema, the value the kind of the column and a finite Float.
 export def where_eq[T](q: Query[T], column: String, value: Db.Value) -> Query[T]
   case member_of(q.schema, column)
     error(message) -> return failed(q, message)
     ok(member) ->
-      if not Codec.accepts?(member.type, value)
-        return failed(q, wrong_kind("column", member, value))
+      problem = value_problem(member, value)
+      if not problem.empty?
+        return failed(q, problem)
       end
 
       return with_cond(q, Build.Cond.Eq(column, value))
   end
 end
 
-## Keeps the rows whose `column` is one of `values`; no value keeps no row. The same checks as `where_eq`.
+## Keeps the rows whose `column` is one of `values`; no value keeps no row. The same checks as `where_eq`, and a `Null`
+## item is an error (an `in` list never matches NULL: use `where_eq(column, Null)`). A very long list may pass the
+## limit of placeholders of the database, which is an error of the database.
 export def where_in[T](q: Query[T], column: String, values: List[Db.Value]) -> Query[T]
   case member_of(q.schema, column)
     error(message) -> return failed(q, message)
     ok(member) ->
       for value in values
-        if not Codec.accepts?(member.type, value)
-          return failed(q, wrong_kind("column", member, value))
+        problem = value_problem(member, value)
+        if Codec.value_kind(value) == "Null"
+          return failed(q, "where_in takes no Null item, use where_eq(column, Null)")
+        elsif not problem.empty?
+          return failed(q, problem)
         end
       end
 
@@ -180,7 +187,7 @@ end
 
 ## The first row of the query: `Option.Some(row)`, or `Option.None` when no row is kept.
 export def one[T](q: Query[T], conn: Db.Connection) -> Result[Option[T]]
-  rows = try all(q.with(plan: q.plan.with(limit: 1)), conn)
+  rows = try all(q.with(plan: q.plan.with(limit: smaller(q.plan.limit, 1))), conn)
   if rows.empty?
     return ok(Option.None)
   end
@@ -201,10 +208,11 @@ export def count[T](q: Query[T], conn: Db.Connection) -> Result[Int]
 end
 
 ## Sets the columns of `changes` (a `Json` object, as for `patch`) in every row the conditions keep, and gives the rows
-## changed. Without a condition it is every row. The order, the limit and the offset are errors here.
+## changed. The order, the limit and the offset are errors here, and so is a query with no condition (a pipeline whose
+## filters were all skipped must not change the table): `where(q, "1 = 1", [])` says that every row is meant.
 export def update_all[T](q: Query[T], conn: Db.Connection, changes: Json) -> Result[Int]
   try ready(q)
-  try unpaged(q, "update_all")
+  try guarded(q, "update_all")
   sets = try change_sets(conn, q.schema, changes)
   table = try quoted(conn, q.schema, q.schema.table)
   where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
@@ -212,11 +220,11 @@ export def update_all[T](q: Query[T], conn: Db.Connection, changes: Json) -> Res
   return Db.execute(conn, sql, sets.params.concat(where_part.params))
 end
 
-## Deletes every row the conditions keep and gives the rows removed. Without a condition it is every row. The order,
-## the limit and the offset are errors here.
+## Deletes every row the conditions keep and gives the rows removed. A query with no condition is an error (see
+## `update_all`). The order, the limit and the offset are errors here.
 export def delete_all[T](q: Query[T], conn: Db.Connection) -> Result[Int]
   try ready(q)
-  try unpaged(q, "delete_all")
+  try guarded(q, "delete_all")
   table = try quoted(conn, q.schema, q.schema.table)
   where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
   return Db.execute(conn, "delete from #{table}#{where_part.sql}", where_part.params)
@@ -382,6 +390,15 @@ def columns_sql[T](conn: Db.Connection, schema: Schema[T]) -> Result[String]
   return ok(names.join(", "))
 end
 
+# The smaller of a limit (-1 for none) and `most`, so `one` keeps a limit of 0.
+def smaller(limit: Int, most: Int) -> Int
+  if limit >= 0 and limit < most
+    return limit
+  end
+
+  return most
+end
+
 def with_cond[T](q: Query[T], cond: Build.Cond) -> Query[T]
   return q.with(plan: q.plan.with(conds: q.plan.conds.push(cond)))
 end
@@ -411,6 +428,18 @@ def member_of[T](schema: Schema[T], column: String) -> Result[StructMember]
   return ok(found[0])
 end
 
+# What is wrong with a value for a column, or an empty text when nothing: its kind, or a Float that is not finite.
+def value_problem(member: StructMember, value: Db.Value) -> String
+  if not Codec.accepts?(member.type, value)
+    return wrong_kind("column", member, value)
+  end
+
+  case value
+    Db.Value.Float(x) if x - x != 0.0 -> return "#{member.name}: not a finite Float"
+    _ -> return ""
+  end
+end
+
 def wrong_kind(what: String, member: StructMember, value: Db.Value) -> String
   return "the #{what} #{member.name} has type #{member.type}, not #{Codec.value_kind(value)}"
 end
@@ -424,10 +453,16 @@ def ready[T](q: Query[T]) -> Result[Void]
   return valid(q.schema)
 end
 
-# A write over a set of rows is one statement with no order or page (a delete with a limit is not portable).
-def unpaged[T](q: Query[T], what: String) -> Result[Void]
+# A write over a set of rows is one statement with no order or page (a delete with a limit is not portable), and it
+# has a condition: a query whose filters were all skipped must not change the whole table. `Orm.where(q, "1 = 1", [])`
+# says that every row is meant.
+def guarded[T](q: Query[T], what: String) -> Result[Void]
   if Build.paged?(q.plan)
     return fail(q.schema, "#{what} cannot use order_by, limit or offset")
+  end
+
+  if q.plan.conds.empty?
+    return fail(q.schema, "#{what} needs a condition; to change every row on purpose add Orm.where(q, \"1 = 1\", [])")
   end
 
   return ok()

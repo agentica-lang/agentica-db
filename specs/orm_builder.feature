@@ -71,8 +71,28 @@ Feature: Orm builder
       | id    | name     | age    | admin     | score     |
       | Int 4 | Text dee | Int 40 | Bool true | Float 3.0 |
     When I run the people query ending in "one":
-      | step     | argument | value   |
+      | step     | argument | value    |
       | where_eq | name     | Text zed |
+    Then the result is:
+      | id |
+    When I run the people query ending in "one":
+      | step  | argument | value |
+      | limit | 0        |       |
+    Then the result is:
+      | id |
+    When I run the people query ending in "all":
+      | step     | argument | value  |
+      | where    | age > ?  | Int 10 |
+      | order_by | id       |        |
+      | offset   | 1        |        |
+      | limit    | 1        |        |
+    Then the result is:
+      | id    | name     | age    | admin     | score     |
+      | Int 4 | Text dee | Int 40 | Bool true | Float 3.0 |
+    When I run the people query ending in "all":
+      | step   | argument | value |
+      | offset | 1        |       |
+      | limit  | 0        |       |
     Then the result is:
       | id |
 
@@ -112,20 +132,26 @@ Feature: Orm builder
       | limit    | 1        |           |
     Then the changed row count is 3
     When I run the people query ending in "update_all":
-      | step     | argument         | value     |
-      | where_eq | admin            | Bool true |
-      | where    | score < ?        | Float 2.0 |
-      | changes  | {"age": null}    |           |
+      | step     | argument      | value     |
+      | where_eq | admin         | Bool true |
+      | where    | score < ?     | Float 2.0 |
+      | changes  | {"age": null} |           |
     Then the changed row count is 2
     When I run the people query ending in "delete_all":
-      | step  | argument  | value     |
-      | where | name = ?  | Text bob  |
+      | step  | argument | value    |
+      | where | name = ? | Text bob |
     Then the changed row count is 1
     And the query "select id, age from people order by id" returns:
       | id    | age    |
       | Int 1 | Null   |
       | Int 3 | Null   |
       | Int 4 | Int 40 |
+    When I run the people query ending in "delete_all":
+      | step  | argument | value |
+      | where | 1 = 1    |       |
+    Then the changed row count is 3
+    And the query "select id from people" returns:
+      | id |
 
     Examples:
       | adapter  |
@@ -133,24 +159,24 @@ Feature: Orm builder
       | postgres |
       | mysql    |
 
-  Scenario Outline: A query that names no column of the schema, or a value of another kind, fails when it ends on <adapter>
+  Scenario Outline: A query with a bad column or a value of another kind fails when it ends on <adapter>
     Given a "<adapter>" database
     And I execute "create temporary table people (id integer primary key, name varchar(50) not null, age integer, admin boolean not null, score double precision not null)"
     And I execute "insert into people (id, name, age, admin, score) values (1, 'ana', 31, true, 1.5)"
     When I run the people query ending in "all":
-      | step     | argument | value |
+      | step     | argument | value  |
       | where_eq | nickname | Text x |
     Then it fails with exactly "orm error: people: nickname is not a column of the table"
     When I run the people query ending in "all":
-      | step     | argument                 | value |
-      | order_by | name; drop table people  |       |
+      | step     | argument                | value |
+      | order_by | name; drop table people |       |
     Then it fails with exactly "orm error: people: name; drop table people is not a column of the table"
     When I run the people query ending in "all":
       | step     | argument | value  |
       | where_eq | age      | Text x |
     Then it fails with exactly "orm error: people: the column age has type JsonField[Int], not Text"
     When I run the people query ending in "all":
-      | step     | argument | value  |
+      | step     | argument | value         |
       | where_in | age      | Int 1; Text x |
     Then it fails with exactly "orm error: people: the column age has type JsonField[Int], not Text"
     When I run the people query ending in "all":
@@ -162,13 +188,48 @@ Feature: Orm builder
       | limit | 1        |       |
     Then it fails with exactly "orm error: people: delete_all cannot use order_by, limit or offset"
     When I run the people query ending in "update_all":
-      | step     | argument         | value     |
-      | where_eq | admin            | Bool true |
-      | changes  | {"nickname": 1}  |           |
+      | step     | argument        | value     |
+      | where_eq | admin           | Bool true |
+      | changes  | {"nickname": 1} |           |
     Then it fails with exactly "orm error: people: the changes have a key that is not a column"
-    And the query "select id, name from people" returns:
-      | id    | name     |
-      | Int 1 | Text ana |
+    When I run the people query ending in "all":
+      | step     | argument | value       |
+      | where_in | age      | Int 1; Null |
+    Then it fails with exactly "orm error: people: where_in takes no Null item, use where_eq(column, Null)"
+    When I run the people query ending in "all":
+      | step     | argument | value |
+      | where_eq | name     | Null  |
+    Then it fails with exactly "orm error: people: the column name has type String, not Null"
+    When I run the people query ending in "all":
+      | step     | argument | value     |
+      | where_eq | score    | Float NaN |
+    Then it fails with exactly "orm error: people: score: not a finite Float"
+    When I run the people query ending in "all":
+      | step     | argument | value                     |
+      | where_in | score    | Float 1.0; Float Infinity |
+    Then it fails with exactly "orm error: people: score: not a finite Float"
+    When I run the people query ending in "update_all":
+      | step    | argument   | value |
+      | where   | 1 = 1      |       |
+      | offset  | 1          |       |
+      | changes | {"age": 5} |       |
+    Then it fails with exactly "orm error: people: update_all cannot use order_by, limit or offset"
+    When I run the people query ending in "update_all":
+      | step     | argument   | value |
+      | where    | 1 = 1      |       |
+      | order_by | id         |       |
+      | changes  | {"age": 5} |       |
+    Then it fails with exactly "orm error: people: update_all cannot use order_by, limit or offset"
+    When I run the people query ending in "update_all":
+      | step    | argument   | value |
+      | changes | {"age": 5} |       |
+    Then it fails mentioning "update_all needs a condition"
+    When I run the people query ending in "delete_all":
+      | step | argument | value |
+    Then it fails mentioning "delete_all needs a condition"
+    And the query "select id, name, age from people" returns:
+      | id    | name     | age    |
+      | Int 1 | Text ana | Int 31 |
 
     Examples:
       | adapter  |

@@ -210,6 +210,11 @@ plain identifiers, that every field has a column type, that the key is a field a
   (`null` clears a `JsonField` column), a column the object leaves out keeps its value. A key that is not a column, the
   primary key, a value of the wrong kind (`age: expected Int`), a `null` for a field that is not a `JsonField` and an
   Int beyond 2^53 for a Float field are errors, before any sql runs; so is an object with no column to change.
+- Inside a transaction pass its connection: `Db.transaction(conn) do |tx| Orm.query(tx, users, sql, []) end` gives
+  the rows.
+- `query`, `find` and the writes take the connection first; the steps and the ends of a query (below) take the query
+  first, so that they chain with `|>`.
+
 ### The query builder
 
 `Orm.from(schema)` starts a query; the functions below take the query first, so they chain with `|>`, and the query
@@ -237,17 +242,23 @@ rows = try (Orm.from(users)
 | `one(query, conn)` | `Result[Orm.Option[T]]`, the first row or `Option.None` |
 | `count(query, conn)` | `Result[Int]`, the rows the conditions keep (order and page do not count) |
 | `update_all(query, conn, changes)` | `Result[Int]`, sets the columns of the `Json` object `changes`, as `patch` |
-| `delete_all(query, conn)` | `Result[Int]`, removes the rows; with no condition, all of them |
+| `delete_all(query, conn)` | `Result[Int]`, removes the rows the conditions keep |
 
 - All the conditions must hold (`and`). A column that is not in the schema, or a value of another kind than its column
   (`age` is an Int: `Db.Value.Text` is an error), is not an error of the step: the query keeps the first problem and
   the call that ends it gives `orm error: users: nickname is not a column of the table`, before any sql runs. So a
   column name from a request is safe in `where_eq`, `where_in` and `order_by`; the sql of `where` is yours.
-- `update_all` and `delete_all` with an order, a limit or an offset are errors (not every database allows them).
+- `update_all` and `delete_all` with an order, a limit or an offset are errors (not every database allows them), and so
+  is a query with no condition: a pipeline whose optional filters were all skipped must not change the whole table.
+  `Orm.where(query, "1 = 1", [])` says that every row is meant.
+- `where_eq` and `where_in` refuse a Float that is NaN or an infinity, as the writes do. `where_in` takes no `Null`
+  item (an `in` list never matches NULL: use `where_eq(column, Null)`); a very long list may pass the limit of
+  placeholders of the database, which is an error of the database. `one` keeps a limit smaller than 1, so a limit of 0
+  gives `None`.
+- Rows come in the order of the database unless `order_by` says otherwise, for `all` and `one` alike (`one` is the
+  first row of that order). Where NULLs sort differs between the databases (SQLite and MySQL: first when ascending;
+  PostgreSQL: last): do not count on it, or order by a column that is never NULL.
 - `find` is `where_eq` on the key plus `one`, and refuses a key of another kind than the key field, as `delete` does.
-
-- Inside a transaction pass its connection: `Db.transaction(conn) do |tx| Orm.query(tx, users, sql, []) end` gives
-  the rows.
 
 ## PostgreSQL
 
