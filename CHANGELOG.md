@@ -4,6 +4,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-30
+
 ### Changed
 
 - **Breaking:** needs Agentica 0.17.0 or later.
@@ -35,5 +37,6 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.1.0...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/agentica-lang/agentica-db/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/agentica-lang/agentica-db/releases/tag/0.1.0
