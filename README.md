@@ -3,7 +3,7 @@
 Database package for [Agentica](https://github.com/agentica-lang/agentica): one API for SQLite, PostgreSQL and MySQL or
 MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI.
 
-agentica-db 0.1.0 needs Agentica 0.16.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
+agentica-db 0.2.0 needs Agentica 0.17.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
 
 ## Install
 
@@ -11,10 +11,10 @@ In your `agentica.toml`:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.1.0" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.2.0" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.1.0`. Both (and `agentica install`
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.2.0`. Both (and `agentica install`
 for a manifest you edited) write `agentica.lock` and `deps/db/`.
 
 ## Example
