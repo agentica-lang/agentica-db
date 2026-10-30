@@ -1,9 +1,9 @@
 Feature: Orm
   Orm reads the rows of a query into plain structs, with the schema of a struct (the table, the columns and the
   codec of the struct). The scenarios use a `people` table and the struct Person of the driver:
-  id: Int = 0, name: String, age: JsonField[Int], admin: Bool, score: Float. The cells of a result show the fields
-  of the structs read: a field that is a JsonField shows its value, Null, or `Text absent` when the query left the
-  column out.
+  id: Int = 0, name: String, age: Optional[Int] = none, admin: Bool, score: Float. The struct Partial is the same with
+  age: JsonField[Int], which tells a column the query left out. The cells of a result show the fields of the structs
+  read: an age shows its value or Null, and the age of a Partial shows `Text absent` when the query left it out.
 
   Scenario Outline: A query reads its rows into structs, with NULL and booleans, on <adapter>
     Given a "<adapter>" database
@@ -23,14 +23,16 @@ Feature: Orm
       | postgres |
       | mysql    |
 
-  Scenario Outline: A column the query leaves out is absent, and an extra column is ignored on <adapter>
+  Scenario Outline: A column the query leaves out is absent in a JsonField, and an extra column is ignored on <adapter>
     Given a "<adapter>" database
     And I execute "create temporary table people (id integer not null, name varchar(50) not null, age integer, admin boolean not null, score double precision not null)"
     And I execute "insert into people (id, name, age, admin, score) values (1, 'ana', 31, true, 1.5)"
-    When I read people with "select id, name, admin, score, 7 as extra from people"
+    When I read partial people with "select id, name, admin, score, 7 as extra from people"
     Then the result is:
       | id    | name     | age         | admin     | score     |
       | Int 1 | Text ana | Text absent | Bool true | Float 1.5 |
+    When I read people with "select id, name, admin, score from people"
+    Then it fails with exactly "orm error decode: people: age: missing column"
 
     Examples:
       | adapter  |
@@ -42,11 +44,11 @@ Feature: Orm
     Given a "<adapter>" database
     And I execute "create temporary table people (id integer not null, name varchar(50) not null, age integer, admin boolean not null, score double precision not null)"
     And I execute "insert into people (id, name, age, admin, score) values (1, 'ana', 31, true, 1.5)"
-    When I read people with "select id, name, admin from people"
+    When I read people with "select id, name, age, admin from people"
     Then it fails with exactly "orm error decode: people: score: missing column"
-    When I read people with "select id, null as name, admin, score from people"
-    Then it fails with exactly "orm error decode: people: name: NULL in a field that is not a JsonField"
-    When I read people with "select id, name, admin, 'x' as score from people"
+    When I read people with "select id, null as name, age, admin, score from people"
+    Then it fails with exactly "orm error decode: people: name: NULL in a field that is not Optional or JsonField"
+    When I read people with "select id, name, age, admin, 'x' as score from people"
     Then it fails with "orm error decode: people: score: "
     When I read people with "select id, name from nowhere"
     Then it fails with "<prefix>"
@@ -105,6 +107,8 @@ Feature: Orm
     Then it fails with exactly "orm error schema: a; drop table x: the table name is not a plain identifier"
     When I check the "textkey" schema
     Then it fails with exactly "orm error schema: people: the generated key id must be an Int"
+    When I check the "nullkey" schema
+    Then it fails with exactly "orm error schema: people: the primary key id cannot be an Optional or a JsonField"
     When I check the "list" schema
     Then it fails with exactly "orm error schema: people: the field tags has the type List[String], which a column cannot hold"
 

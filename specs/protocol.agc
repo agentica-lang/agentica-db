@@ -13,9 +13,9 @@ export OK = "ok"
 ## gives back the rows changed by its last statement, and the transaction gives that count), `close`,
 ## `execute_in_task`, `query_in_new_task` (text: sql), `keep_running` (text: sql, number: the longest gap in
 ## milliseconds), `leave_open` (text: connection name, number: milliseconds the server may take to drop it),
-## `orm_query` (text: sql, cells: params), `orm_query_as` (text: sql) and `orm_check` (text: schema name),
-## `orm_insert` (table: a header and the row of a Person, text: `manual` for a key that is not generated) and
-## `orm_update` (table), `orm_patch` (number: the key, text: the changes as JSON), `orm_delete` (number: the key or
+## `orm_query` (text: sql, cells: params, partial: read a Partial, whose age can be absent), `orm_query_as` (text:
+## sql) and `orm_check` (text: schema name), `orm_insert` (table: a header and the row of a Person, text: `manual` for
+## a key that is not generated, partial: write a Partial) and `orm_update` (table, partial), `orm_patch` (number: the key, text: the changes as JSON), `orm_delete` (number: the key or
 ## cells: the key as a typed cell, text: schema name), `orm_marker` (text: `insert` or `update`),
 ## `orm_builder` (text: how the query ends, table: its steps) and `orm_find` (text: the key as a typed cell),
 ## `round_trips` (table: column type and cell), `float_oracle` (text: a float literal), and the
@@ -30,4 +30,5 @@ export struct Request
   table: List[List[String]] = []
   nested: Bool = false
   gives: Bool = false
+  partial: Bool = false
 end

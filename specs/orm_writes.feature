@@ -1,14 +1,15 @@
 Feature: Orm writes
   Orm inserts, updates, deletes and patches the rows of a table through its schema. The scenarios use the `people`
   table and the struct Person of the driver, as in orm.feature, with a key the database numbers: the `create` column of
-  the examples is the table of each adapter. An insert leaves out a generated key and a JsonField that is Absent (the
-  database default applies) and gives the row back as the database stored it. Update, delete and patch give the
-  number of rows they changed. A cell `Absent` is a JsonField with no value.
+  the examples is the table of each adapter. An insert leaves out a generated key and the JsonField age of a Partial
+  that is Absent (the database default applies) and gives the row back as the database stored it; an age that is
+  `none` is a NULL. Update, delete and patch give the number of rows they changed. A cell `Absent` is a JsonField with
+  no value, so only a partial person has one.
 
   Scenario Outline: An insert gives the row back with its generated key and its defaults on <adapter>
     Given a "<adapter>" database
     And I execute "create temporary table people (id <key>, name varchar(50) not null, age integer default 7, admin boolean not null, score double precision not null)"
-    When I insert the person:
+    When I insert the partial person:
       | name     | age    | admin     | score     |
       | Text ana | Absent | Bool true | Float 1.5 |
     Then the result is:
@@ -58,7 +59,7 @@ Feature: Orm writes
       | id    | name     | age    | admin      | score     |
       | Int 9 | Text nob | Int 5 | Bool false | Float 3.0 |
     Then the changed row count is 0
-    When I update the person:
+    When I update the partial person:
       | id    | name     | age    | admin      | score     |
       | Int 2 | Text rob | Absent | Bool false | Float 5.0 |
     Then the changed row count is 1
@@ -107,7 +108,7 @@ Feature: Orm writes
     When I patch the person 1 with "{\"id\": 5}"
     Then it fails with exactly "orm error bad_request: people: the primary key id cannot be changed"
     When I patch the person 1 with "{\"name\": null}"
-    Then it fails with exactly "orm error bad_request: people: name: NULL in a field that is not a JsonField"
+    Then it fails with exactly "orm error bad_request: people: name: NULL in a field that is not Optional or JsonField"
     When I patch the person 1 with "{\"age\": \"old\"}"
     Then it fails with exactly "orm error bad_request: people: age: expected Int"
     When I patch the person 1 with "{\"score\": 9007199254740993}"

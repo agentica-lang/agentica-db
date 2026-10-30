@@ -149,14 +149,14 @@ end
 def scheme(url: String) -> String
   found = url.index_of(":")
   case found
-    ok(at) ->
+    some(at) ->
       name = url.slice(0, at)
       if at > 0 and at <= MAX_SCHEME and name.bytes.to_a.all? do |byte| scheme_byte?(byte) end
         return name
       end
 
       return "(none)"
-    error(_) -> return "(none)"
+    none -> return "(none)"
   end
 end
 

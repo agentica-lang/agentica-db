@@ -45,7 +45,7 @@ Feature: PostgreSQL
 
   Scenario: A NaN column does not read into a Float field of the Orm
     Given a "postgres" database
-    When I read people with "select 1 as id, 'ana' as name, true as admin, 'NaN'::float8 as score"
+    When I read people with "select 1 as id, 'ana' as name, null as age, true as admin, 'NaN'::float8 as score"
     Then it fails with exactly "orm error decode: people: score: not a finite Float"
 
   Scenario: A bytea reads back whole in the hex and the escape output formats

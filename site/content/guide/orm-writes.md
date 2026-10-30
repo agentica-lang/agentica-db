@@ -20,7 +20,7 @@ import Orm from "pkg/db/orm"
 struct User
   id: Int = 0
   name: String
-  age: JsonField[Int]
+  age: Optional[Int] = none
 end
 
 def run() -> Result[Void]
@@ -28,11 +28,11 @@ def run() -> Result[Void]
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   users = Orm.schema("users", User.members, JSON.codec(User))
   ana = try Db.transaction(conn) do |tx|
-    Orm.insert(tx, users, User(name: "Ana", age: JsonField.Absent))
+    Orm.insert(tx, users, User(name: "Ana"))
   end
 
   puts(ana.id)
-  puts(try Orm.update(conn, users, ana.with(name: "Anna", age: JsonField.Value(32))))
+  puts(try Orm.update(conn, users, ana.with(name: "Anna", age: some(32))))
   changes = try JSON.parse("{\"age\": null}")
   puts(try Orm.patch(conn, users, Db.Value.Int(ana.id), changes))
   puts(try Orm.delete(conn, users, Db.Value.Int(ana.id)))
@@ -60,7 +60,7 @@ done
 
 ## insert
 
-`insert` leaves out a generated key (whatever the value holds) and a `JsonField` that is `Absent`, so the default of the database applies. It gives the row back read again by its key.
+`insert` leaves out a generated key (whatever the value holds) and writes every other field: an `Optional` that is `none` is a NULL. A `JsonField` field that is `Absent` is left out too, so the default of the database applies. It gives the row back read again by its key.
 
 The key must be the one the database generates: the `INTEGER PRIMARY KEY` of SQLite, the `AUTO_INCREMENT` column of MySQL, a `serial` or identity column of PostgreSQL. PostgreSQL gets the key with `returning`; SQLite and MySQL with `last_insert_rowid()` and `last_insert_id()` on the same connection.
 
@@ -68,13 +68,13 @@ The insert and the read after it are two statements, so put them in a transactio
 
 ## update
 
-`update` sets every column but the key to the field, in the row with the key of the value. `Absent` keeps the column, and `Null` clears it. A value with only the key and `Absent` fields has nothing to set, which is an error.
+`update` sets every column but the key to the field, in the row with the key of the value. `none` and `JsonField.Null` clear the column, and `JsonField.Absent` keeps it. A value with only the key and `Absent` fields has nothing to set, which is an error.
 
 ## delete and patch
 
 `delete` and `patch` take the key as a `Db.Value` of the kind of the key field (`Db.Value.Int(7)` for an `Int` key). Another kind is an error.
 
-`patch` takes the changes as a `Json` object, such as the body of a request. A key that is a column sets it (`null` clears a `JsonField` column), and a column the object leaves out keeps its value. These are errors, before any sql runs: a key that is not a column, the primary key, a value of the wrong kind, a `null` for a field that is not a `JsonField`, and an object with no column to change.
+`patch` takes the changes as a `Json` object, such as the body of a request. A key that is a column sets it (`null` clears an `Optional` or `JsonField` column), and a column the object leaves out keeps its value. These are errors, before any sql runs: a key that is not a column, the primary key, a value of the wrong kind, a `null` for a field that is not an `Optional` or a `JsonField`, and an object with no column to change.
 
 ## Many rows: update_all and delete_all
 
@@ -94,7 +94,7 @@ import Orm from "pkg/db/orm"
 struct User
   id: Int = 0
   name: String
-  age: JsonField[Int]
+  age: Optional[Int] = none
 end
 
 def run() -> Result[Void]

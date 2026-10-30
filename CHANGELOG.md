@@ -4,6 +4,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** needs Agentica 0.18.0 or later.
+- **Breaking:** `Orm.find` and `Orm.one` give a builtin `Optional[T]` (`some(row)` or `none`); `Orm.Option` is gone.
+- An Orm field can be an `Optional[T]` for a column that can be NULL: NULL reads as `none` and `none` writes a NULL.
+  `JsonField[T]` stays for a column that may also be absent (not selected, or left alone by a write).
+- The Orm error for a NULL in a field that cannot hold one says `NULL in a field that is not Optional or JsonField`.
+- An Orm schema whose primary key is an `Optional` or a `JsonField` is a schema error: a NULL key would match no row.
+
 ## [0.2.0] - 2026-10-30
 
 ### Changed

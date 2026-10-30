@@ -14,7 +14,7 @@ Feature: Orm errors
       | Text ana | Null | Bool true | Float 1.5 |
     Then it fails with "<conflict>"
     And the failure is a "Conflict" error
-    When I read people with "select id, name, admin from people"
+    When I read people with "select id, name, age, admin from people"
     Then it fails with "orm error decode: people: score: missing column"
     And the failure is a "NotDecodable" error
     When I run the people query ending in "all":
@@ -24,6 +24,9 @@ Feature: Orm errors
     And the failure is a "BadRequest" error
     When I check the "injection" schema
     Then it fails with "orm error schema: a; drop table x: the table name is not a plain identifier"
+    And the failure is a "Schema" error
+    When I check the "nested" schema
+    Then it fails with exactly "orm error schema: people: the field age has the type Optional[Optional[Int]], which a column cannot hold"
     And the failure is a "Schema" error
     When I read people with "select id from nowhere"
     Then it fails with "<missing>"
