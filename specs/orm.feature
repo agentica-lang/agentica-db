@@ -107,6 +107,8 @@ Feature: Orm
     Then it fails with exactly "orm error schema: a; drop table x: the table name is not a plain identifier"
     When I check the "textkey" schema
     Then it fails with exactly "orm error schema: people: the generated key id must be an Int"
+    When I check the "nullkey" schema
+    Then it fails with exactly "orm error schema: people: the primary key id cannot be an Optional or a JsonField"
     When I check the "list" schema
     Then it fails with exactly "orm error schema: people: the field tags has the type List[String], which a column cannot hold"
 

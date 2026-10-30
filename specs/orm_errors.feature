@@ -25,6 +25,9 @@ Feature: Orm errors
     When I check the "injection" schema
     Then it fails with "orm error schema: a; drop table x: the table name is not a plain identifier"
     And the failure is a "Schema" error
+    When I check the "nested" schema
+    Then it fails with exactly "orm error schema: people: the field age has the type Optional[Optional[Int]], which a column cannot hold"
+    And the failure is a "Schema" error
     When I read people with "select id from nowhere"
     Then it fails with "<missing>"
     And the failure is a "Database" error

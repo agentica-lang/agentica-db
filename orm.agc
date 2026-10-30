@@ -76,8 +76,9 @@ export def message(failure: Errors.Error) -> String
 end
 
 ## Checks the schema and then the table: the names are plain identifiers, every field is a type a column can hold,
-## the key is a field, and the table has every column. Run it once at start up. It reads no row. The first three are
-## `orm error <code>: <table>: <message>`; a table or a column that is missing is the error of `Db`, unchanged.
+## the key is a field that cannot be NULL, and the table has every column. Run it once at start up. It reads no row.
+## The first three are `orm error <code>: <table>: <message>`; a table or a column that is missing is the error of
+## `Db`, unchanged.
 export def check[T](conn: Db.Connection, schema: Schema[T]) -> Result[Void]
   try valid(schema)
   columns = try columns_sql(conn, schema)
@@ -561,6 +562,11 @@ def valid[T](schema: Schema[T]) -> Result[Void]
   keys = schema.members.select do |member| member.name == schema.primary_key end
   if keys.empty?
     return unsound(schema, "the primary key #{schema.primary_key} is not a column")
+  end
+
+  # A NULL key would bind as NULL in `update`, `delete` and `find` and match no row, with no error.
+  if Codec.nullable?(keys[0].type)
+    return unsound(schema, "the primary key #{schema.primary_key} cannot be an Optional or a JsonField")
   end
 
   if schema.generated and keys[0].type != "Int"

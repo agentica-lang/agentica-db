@@ -62,6 +62,18 @@ struct Marker
   note: JsonField[String]
 end
 
+# A struct whose key can be none.
+struct MaybeKeyed
+  id: Optional[Int] = none
+  name: String
+end
+
+# A struct with a nested Optional, which no column holds.
+struct Nested
+  id: Int = 0
+  age: Optional[Optional[Int]] = none
+end
+
 # A struct with a field that no column holds.
 struct Tagged
   id: Int = 0
@@ -450,8 +462,8 @@ def name_of(row: Db.Row) -> Result[String]
 end
 
 # The schemas: `people`, `ghost` (a column the table lacks), `keyless` (a primary key that is not a column),
-# `injection` (a table name that is sql), `textkey` (a generated key that is not an Int) and `list` (a field no
-# column holds).
+# `injection` (a table name that is sql), `textkey` (a generated key that is not an Int), `nullkey` (a key that is not
+# generated and can be none), `nested` (an `Optional[Optional[Int]]` field) and `list` (a field no column holds).
 def orm_check(state: State, which: String) -> State
   return with_conn(state) do |conn|
     case which
@@ -460,9 +472,15 @@ def orm_check(state: State, which: String) -> State
       "keyless" -> return checked(state, Orm.check(conn, people().with(primary_key: "pk")))
       "injection" -> return checked(state, Orm.check(conn, injected()))
       "textkey" -> return checked(state, Orm.check(conn, Orm.schema("people", Named.members, JSON.codec(Named))))
+      "nullkey" -> return checked(state, Orm.check(conn, nullable_key()))
+      "nested" -> return checked(state, Orm.check(conn, Orm.schema("people", Nested.members, JSON.codec(Nested))))
       _ -> return checked(state, Orm.check(conn, Orm.schema("people", Tagged.members, JSON.codec(Tagged))))
     end
   end
+end
+
+def nullable_key() -> Orm.Schema[MaybeKeyed]
+  return Orm.schema("people", MaybeKeyed.members, JSON.codec(MaybeKeyed)).with(generated: false)
 end
 
 def injected() -> Orm.Schema[Person]

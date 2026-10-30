@@ -85,12 +85,13 @@ export def column_type?(type: String) -> Bool
   return ["Int", "Float", "Bool", "String"].any? do |name| name == inner_type(type) end
 end
 
-def json_field?(type: String) -> Bool
-  return wrapped?(type, JSON_FIELD)
+## Whether a field of this type takes a NULL: an `Optional` or a `JsonField`.
+export def nullable?(type: String) -> Bool
+  return wrapped?(type, OPTIONAL) or json_field?(type)
 end
 
-def nullable?(type: String) -> Bool
-  return wrapped?(type, OPTIONAL) or json_field?(type)
+def json_field?(type: String) -> Bool
+  return wrapped?(type, JSON_FIELD)
 end
 
 def wrapped?(type: String, wrapper: String) -> Bool
