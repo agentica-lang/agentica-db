@@ -25,7 +25,6 @@ import {Row, Value} from "value"
 ## The statement that starts a transaction.
 export BEGIN_SQL = "START TRANSACTION"
 POINTER_SIZE = 8
-BYTE_MAX = 255
 CHARSET = "utf8mb4"
 # The client flag CLIENT_FOUND_ROWS: an UPDATE counts the rows it matched, as in the other adapters, not only the
 # rows it changed.
@@ -392,11 +391,6 @@ def check_params(params: List[Value]) -> Result[Void]
           return error("mysql error: a text parameter contains a NUL character")
         end
 
-      Value.Blob(bytes) ->
-        if bytes.any? do |byte| byte < 0 or byte > BYTE_MAX end
-          return error("mysql error: a blob parameter has an item outside 0..255")
-        end
-
       Value.Float(x) ->
         # x - x is 0.0 for every finite x, and NaN for a NaN and for an infinity.
         if x - x != 0.0
@@ -406,6 +400,7 @@ def check_params(params: List[Value]) -> Result[Void]
       Value.Null -> next
       Value.Int(_) -> next
       Value.Bool(_) -> next
+      Value.Blob(_) -> next
     end
   end
 
@@ -555,7 +550,7 @@ def bind_text(binds: C.Pointer, index: Int, text: String) -> C.Pointer
 end
 
 # A buffer holds at least one byte, so an empty blob still has a pointer.
-def bind_blob(binds: C.Pointer, index: Int, bytes: List[Int]) -> C.Pointer
+def bind_blob(binds: C.Pointer, index: Int, bytes: Bytes) -> C.Pointer
   buffer = Native.memory_pointer(max_one(bytes.size))
   if not bytes.empty?
     Native.put_bytes(buffer, 0, bytes)

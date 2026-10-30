@@ -19,7 +19,6 @@ SQLITE_FLOAT = 2
 SQLITE_TEXT = 3
 SQLITE_BLOB = 4
 BUSY_TIMEOUT_MS = 5_000
-BYTE_MAX = 255
 # The length argument that means "up to the NUL" for the sql.
 NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
@@ -136,7 +135,6 @@ def prepare(conn: Handle, sql: String, params: List[Value]) -> Result[Stmt]
     return error("sqlite error: the sql contains a NUL character")
   end
 
-  try check_params(params)
   # The sql goes through an owned buffer, not a C.String: SQLite points `tail` into its copy, and a C.String copy
   # lives only during the call.
   made: Result[Stmt] = Native.from_string(sql) do |buf|
@@ -193,25 +191,6 @@ def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
   return error("sqlite error: the sql has more than one statement")
 end
 
-def check_params(params: List[Value]) -> Result[Void]
-  for param in params
-    case param
-      Value.Blob(bytes) ->
-        if bytes.any? do |byte| byte < 0 or byte > BYTE_MAX end
-          return error("sqlite error: a blob parameter has an item outside 0..255")
-        end
-
-      Value.Null -> next
-      Value.Int(_) -> next
-      Value.Float(_) -> next
-      Value.Bool(_) -> next
-      Value.Text(_) -> next
-    end
-  end
-
-  return ok()
-end
-
 def bind_all(conn: Handle, stmt: Stmt, params: List[Value]) -> Result[Void]
   wanted = sqlite3_bind_parameter_count(stmt)
   if wanted != params.size
@@ -259,7 +238,7 @@ def bind_text(stmt: Stmt, index: Int, text: String) -> Int
   return code
 end
 
-def bind_blob(stmt: Stmt, index: Int, bytes: List[Int]) -> Int
+def bind_blob(stmt: Stmt, index: Int, bytes: Bytes) -> Int
   # Binding a NULL pointer would store NULL, so an empty blob has its own call.
   if bytes.empty?
     return sqlite3_bind_zeroblob(stmt, index, 0)

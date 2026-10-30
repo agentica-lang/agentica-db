@@ -31,7 +31,6 @@ INT4_OID = 23
 FLOAT4_OID = 700
 FLOAT8_OID = 701
 POINTER_SIZE = 8
-BYTE_MAX = 255
 RESULT_AS_TEXT = 0
 CLIENT_ENCODING_SET = 0
 IS_NULL = 1
@@ -215,15 +214,11 @@ def check_params(params: List[Value]) -> Result[Void]
           return error("postgres error: a text parameter contains a NUL character")
         end
 
-      Value.Blob(bytes) ->
-        if bytes.any? do |byte| byte < 0 or byte > BYTE_MAX end
-          return error("postgres error: a blob parameter has an item outside 0..255")
-        end
-
       Value.Null -> next
       Value.Int(_) -> next
       Value.Float(_) -> next
       Value.Bool(_) -> next
+      Value.Blob(_) -> next
     end
   end
 
@@ -276,7 +271,7 @@ def fill_values(values: C.Pointer, params: List[Value]) -> List[C.Pointer]
 end
 
 def put_text(values: C.Pointer, index: Int, text: String) -> C.Pointer
-  buffer = Native.memory_pointer(text.to_bytes.size + 1)
+  buffer = Native.memory_pointer(text.bytesize + 1)
   Native.put_string(buffer, 0, text)
   Native.put_pointer(values, index * POINTER_SIZE, buffer)
   return buffer
@@ -305,9 +300,9 @@ def float_text(x: Float) -> String
 end
 
 # The hex input form of bytea: a backslash, an x and two digits per byte.
-def bytea_text(bytes: List[Int]) -> String
+def bytea_text(bytes: Bytes) -> String
   digits = HEX_DIGITS.split("")
-  pairs = bytes.map do |byte| digits[byte / HEX_BASE] + digits[byte % HEX_BASE] end
+  pairs = bytes.to_a.map do |byte| digits[byte / HEX_BASE] + digits[byte % HEX_BASE] end
   return "\\x" + pairs.join("")
 end
 
@@ -457,7 +452,7 @@ def read_value(res: C.Pointer, line: Int, col: Int, oid: Int) -> Result[Value]
 end
 
 # pq_unescape_bytea reads the hex form and the older escape form.
-def read_bytea(cell: C.Pointer) -> Result[List[Int]]
+def read_bytea(cell: C.Pointer) -> Result[Bytes]
   unescaped = pq_unescape_bytea(cell)
   if Native.null?(unescaped.result)
     return error("postgres error: out of memory")

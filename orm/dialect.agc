@@ -8,7 +8,7 @@ export NO_KEY = "the database gave no generated key"
 ## Whether `name` is safe to use as a table or column name: a letter or `_`, then letters, digits or `_`. The Orm
 ## puts only such names in the sql it writes, so a name from a request cannot inject sql.
 export def valid_name?(name: String) -> Bool
-  bytes = name.to_bytes
+  bytes = name.bytes.to_a
   if bytes.empty? or digit?(bytes[0])
     return false
   end
