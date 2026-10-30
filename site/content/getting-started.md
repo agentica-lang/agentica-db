@@ -6,14 +6,14 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.17.0 or later. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.18.0 or later. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.2.0" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.3.0" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.2.0`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.3.0`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
 
 Import the modules with `pkg/db/...`. `Db` is enough for most programs, and `Orm` is the typed layer.
 

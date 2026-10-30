@@ -11,10 +11,10 @@ Add it to the `agentica.toml` of your project:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.2.0" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.3.0" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.2.0`. [Getting started](/getting-started/) has the details.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.3.0`. [Getting started](/getting-started/) has the details.
 
 A first program, on a private in-memory SQLite database:
 
@@ -41,4 +41,4 @@ end
 
 Not yet: migrations, a connection pool and preloading of related rows.
 
-agentica-db needs Agentica 0.17.0 or later, and is under the Apache License 2.0.
+agentica-db needs Agentica 0.18.0 or later, and is under the Apache License 2.0.
