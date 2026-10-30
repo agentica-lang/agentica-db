@@ -48,7 +48,7 @@ export def show(value: Value) -> String
     Value.Int(n) -> return "Int #{n}"
     Value.Float(x) -> return "Float #{x}"
     Value.Text(text) -> return cut("Text #{text.inspect}")
-    Value.Blob(bytes) -> return cut("Blob #{bytes.map do |byte| byte.to_s end.join(",")}")
+    Value.Blob(bytes) -> return cut("Blob #{bytes.to_a.map do |byte| byte.to_s end.join(",")}")
     Value.Bool(flag) -> return "Bool #{flag}"
   end
 end
@@ -111,7 +111,7 @@ def parse_blob(text: String) -> Result[Value]
     end
   end
 
-  return ok(Value.Blob(bytes))
+  return ok(Value.Blob(try Bytes.from_list(bytes)))
 end
 
 # `Repeat COUNT Text|Blob ...`: the text or the bytes of the inner cell, COUNT times.
@@ -121,7 +121,7 @@ def parse_repeat(text: String) -> Result[Value]
   inner = try parse(text.slice(at + 1, text.length - at - 1))
   case inner
     Value.Text(piece) -> return ok(Value.Text(List.repeat(piece, count).join("")))
-    Value.Blob(bytes) -> return ok(Value.Blob(List.repeat(bytes, count).flat_map do |chunk| chunk end))
+    Value.Blob(bytes) -> return ok(Value.Blob(Bytes.concat(List.repeat(bytes, count))))
     _ -> return error("only a Text or a Blob cell can repeat")
   end
 end

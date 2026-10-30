@@ -170,7 +170,7 @@ end
 
 # A non-empty run of ASCII digits as an Int.
 def digits(text: String) -> Result[Int]
-  bytes = text.to_bytes
+  bytes = text.bytes.to_a
   if bytes.empty? or bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end
     return error("not a number")
   end
@@ -234,7 +234,7 @@ def decode(text: String) -> Result[String]
     return ok(text)
   end
 
-  bytes = text.to_bytes
+  bytes = text.bytes
   out: List[Int] = []
   at = 0
   while at < bytes.size
@@ -253,7 +253,8 @@ def decode(text: String) -> Result[String]
     end
   end
 
-  decoded = String.from_bytes(out)
+  # Every item is a byte (0..255), so the list always makes Bytes.
+  decoded = String.from_bytes(try Bytes.from_list(out))
   if not decoded.ok?
     return error("mysql error: the url has a percent escape that is not UTF-8")
   end
@@ -262,7 +263,7 @@ def decode(text: String) -> Result[String]
 end
 
 # The value of the hex digit at `at`, or -1 when there is none.
-def hex_value(bytes: List[Int], at: Int) -> Int
+def hex_value(bytes: Bytes, at: Int) -> Int
   if at >= bytes.size
     return -1
   end

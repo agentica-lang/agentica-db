@@ -38,7 +38,7 @@ export def inspect(sql: String) -> Result[Statement]
     return error("mysql error: the sql contains a NUL character")
   end
 
-  bytes = sql.to_bytes
+  bytes = sql.bytes
   at = 0
   ended = false
   content = false
@@ -83,22 +83,22 @@ def letter?(byte: Int) -> Bool
   return (byte >= UPPER_A and byte <= UPPER_Z) or (byte >= LOWER_A and byte <= LOWER_Z)
 end
 
-def word_at(bytes: List[Int], at: Int) -> String
+def word_at(bytes: Bytes, at: Int) -> String
   stop = at
   while stop < bytes.size and letter?(bytes[stop])
     stop += 1
   end
 
   # A run of ASCII letters is always valid UTF-8, so the empty fallback never shows.
-  return String.from_bytes(bytes.drop(at).take(stop - at)).unwrap_or("").downcase
+  return String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
 end
 
-def byte_is?(bytes: List[Int], at: Int, expected: Int) -> Bool
+def byte_is?(bytes: Bytes, at: Int, expected: Int) -> Bool
   return at < bytes.size and bytes[at] == expected
 end
 
 # The index after the comment that starts at `at`, or `at` when none starts there.
-def comment_end(bytes: List[Int], at: Int) -> Int
+def comment_end(bytes: Bytes, at: Int) -> Int
   byte = bytes[at]
   if byte == HASH
     return line_end(bytes, at)
@@ -112,12 +112,12 @@ def comment_end(bytes: List[Int], at: Int) -> Int
 end
 
 # `--` starts a comment only when whitespace or a control character follows it, or the sql ends.
-def dash_comment?(bytes: List[Int], at: Int) -> Bool
+def dash_comment?(bytes: Bytes, at: Int) -> Bool
   return at + 2 >= bytes.size or bytes[at + 2] <= SPACE
 end
 
 # `/*!` and `/*M!` hold code that the server runs.
-def executable?(bytes: List[Int], at: Int) -> Bool
+def executable?(bytes: Bytes, at: Int) -> Bool
   if byte_is?(bytes, at + 2, EXCLAMATION)
     return true
   end
@@ -125,7 +125,7 @@ def executable?(bytes: List[Int], at: Int) -> Bool
   return byte_is?(bytes, at + 2, UPPER_M) and byte_is?(bytes, at + 3, EXCLAMATION)
 end
 
-def line_end(bytes: List[Int], at: Int) -> Int
+def line_end(bytes: Bytes, at: Int) -> Int
   stop = at
   while stop < bytes.size and bytes[stop] != NEWLINE
     stop += 1
@@ -135,7 +135,7 @@ def line_end(bytes: List[Int], at: Int) -> Int
 end
 
 # A comment that is not closed runs to the end of the sql.
-def block_end(bytes: List[Int], at: Int) -> Int
+def block_end(bytes: Bytes, at: Int) -> Int
   stop = at + 2
   while stop < bytes.size
     if bytes[stop] == STAR and byte_is?(bytes, stop + 1, SLASH)
@@ -150,7 +150,7 @@ end
 
 # The index after the literal or identifier that starts at `at`, or after the one byte when none starts there. A
 # `/*!` comment is skipped whole, since a `;` inside it is part of the code it holds.
-def literal_end(bytes: List[Int], at: Int) -> Int
+def literal_end(bytes: Bytes, at: Int) -> Int
   byte = bytes[at]
   if byte == SINGLE_QUOTE or byte == DOUBLE_QUOTE
     return quoted_end(bytes, at, true)
@@ -165,7 +165,7 @@ end
 
 # A quote doubled inside the literal is a quote of the text, not its end. One that is not closed runs to the end of
 # the sql: the server then reports the syntax error.
-def quoted_end(bytes: List[Int], at: Int, backslash: Bool) -> Int
+def quoted_end(bytes: Bytes, at: Int, backslash: Bool) -> Int
   quote = bytes[at]
   stop = at + 1
   while stop < bytes.size

@@ -12,7 +12,7 @@ description: The Db.Value type for parameters and columns, and how each database
 | `Db.Value.Int(Int)` | an integer |
 | `Db.Value.Float(Float)` | a floating point number |
 | `Db.Value.Text(String)` | text |
-| `Db.Value.Blob(List[Int])` | bytes, each item in 0..255 |
+| `Db.Value.Blob(Bytes)` | bytes |
 | `Db.Value.Bool(Bool)` | true or false |
 
 `Db` re-exports `Value` and `Row` of `value.agc`, so `import Db from "pkg/db/db"` is enough.
@@ -24,7 +24,7 @@ def main() -> Void
   conn = Db.open("sqlite::memory:").unwrap!
   Db.execute(conn, "create table t (a integer, b real, c text, d blob, e integer)", []).unwrap!
   Db.execute(conn, "insert into t values (?, ?, ?, ?, ?)",
-             [Db.Value.Int(7), Db.Value.Float(-0.25), Db.Value.Text("hé"), Db.Value.Blob([0, 1, 255]), Db.Value.Null]).unwrap!
+             [Db.Value.Int(7), Db.Value.Float(-0.25), Db.Value.Text("hé"), Db.Value.Blob(Bytes.from_list([0, 1, 255]).unwrap!), Db.Value.Null]).unwrap!
   row = Db.query(conn, "select a, b, c, d, e from t", []).unwrap![0]
   puts(row["a"])
   puts(row["b"])
@@ -39,7 +39,7 @@ end
 Value.Int(7)
 Value.Float(-0.25)
 Value.Text("hé")
-Value.Blob([0, 1, 255])
+Value.Blob(<Bytes 3 0001ff>)
 Value.Null
 ```
 

@@ -151,7 +151,7 @@ def scheme(url: String) -> String
   case found
     ok(at) ->
       name = url.slice(0, at)
-      if at > 0 and at <= MAX_SCHEME and name.to_bytes.all? do |byte| scheme_byte?(byte) end
+      if at > 0 and at <= MAX_SCHEME and name.bytes.to_a.all? do |byte| scheme_byte?(byte) end
         return name
       end
 

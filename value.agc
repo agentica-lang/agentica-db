@@ -6,7 +6,7 @@ export enum Value
   Int(Int)
   Float(Float)
   Text(String)
-  Blob(List[Int])
+  Blob(Bytes)
   Bool(Bool)
 end
 

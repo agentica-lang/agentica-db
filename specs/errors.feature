@@ -53,10 +53,6 @@ Feature: Errors
       | value |
       | Int 1 |
     Then it fails with exactly "<adapter> error: the sql has 0 parameters, got 1"
-    When I execute "select ?" with:
-      | value    |
-      | Blob 256 |
-    Then it fails with exactly "<adapter> error: a blob parameter has an item outside 0..255"
 
     Examples:
       | adapter  |

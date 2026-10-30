@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** needs Agentica 0.17.0 or later.
+- **Breaking:** `Value.Blob` holds `Bytes` instead of `List[Int]`; a blob is read and bound without a list copy.
 - CI runs the SQLite suite on macOS and Windows.
 
 ## [0.1.0] - 2026-10-29

@@ -103,7 +103,7 @@ def field_json(member: StructMember, value: Db.Value) -> Result[Json]
     Db.Value.Float(x) -> return finite(member, x)
     Db.Value.Text(text) -> return ok(JSON.from(text))
     Db.Value.Bool(flag) -> return ok(JSON.from(flag))
-    Db.Value.Blob(bytes) -> return ok(JSON.from(bytes))
+    Db.Value.Blob(bytes) -> return ok(JSON.from(bytes.to_a))
     Db.Value.Null if json_field?(member.type) -> return ok(JSON.null())
     Db.Value.Null -> return error("#{member.name}: NULL in a field that is not a JsonField")
   end
