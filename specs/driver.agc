@@ -25,8 +25,17 @@ TICK_MS = 20
 IO_TIMEOUT_MS = 5_000
 NO_DATABASE = "no database is open"
 
-# The struct of the Orm scenarios: the table `people`.
+# The struct of the Orm scenarios: the table `people`, whose age is a value or NULL.
 struct Person
+  id: Int = 0
+  name: String
+  age: Optional[Int] = none
+  admin: Bool
+  score: Float
+end
+
+# The same table with an age that can also be absent: a column the query leaves out, or one a write leaves alone.
+struct Partial
   id: Int = 0
   name: String
   age: JsonField[Int]
@@ -144,14 +153,15 @@ def act(state: State, req: Request) -> Handled
     "execute" -> return reply_ok(with_params(state, req, &execute))
     "query" -> return reply_ok(with_params(state, req, &query))
     "transaction" -> return reply_ok(transaction(state, req))
+    "orm_query" if req.partial -> return reply_ok(with_params(state, req, &partial_query))
     "orm_query" -> return reply_ok(with_params(state, req, &orm_query))
     "orm_query_as" -> return reply_ok(orm_query_as(state, Cells.expand(req.text)))
     "orm_check" -> return reply_ok(orm_check(state, req.text))
-    "orm_insert" -> return reply_ok(orm_insert(state, req.table, req.text))
+    "orm_insert" -> return reply_ok(orm_insert(state, req))
     "orm_builder" -> return reply_ok(orm_builder(state, req.text, req.table))
     "orm_find" -> return reply_ok(orm_find(state, req.text))
     "orm_marker" -> return reply_ok(orm_marker(state, req.text))
-    "orm_update" -> return reply_ok(orm_update(state, req.table))
+    "orm_update" -> return reply_ok(orm_update(state, req))
     "orm_patch" -> return reply_ok(orm_patch(state, req.number, req.text))
     "orm_delete" -> return reply_ok(orm_delete(state, req))
     "close" -> return reply_ok(close(state))
@@ -353,10 +363,10 @@ def persons(state: State, found: Result[List[Person]]) -> State
   end
 end
 
-def optional(found: Result[Orm.Option[Person]]) -> Result[List[Person]]
+def optional(found: Result[Optional[Person]]) -> Result[List[Person]]
   case try found
-    Orm.Option.Some(person) -> return ok([person])
-    Orm.Option.None -> return ok([])
+    some(person) -> return ok([person])
+    none -> return ok([])
   end
 end
 
@@ -373,24 +383,44 @@ def people() -> Orm.Schema[Person]
   return Orm.schema("people", Person.members, JSON.codec(Person))
 end
 
-# The persons read, shown as rows: a JsonField age shows its value, Null, or `Text absent` for a column left out.
+def partials() -> Orm.Schema[Partial]
+  return Orm.schema("people", Partial.members, JSON.codec(Partial))
+end
+
+# The persons read, shown as rows: an age shows its value or Null.
 def orm_query(state: State, sql: String, params: List[Db.Value]) -> State
+  return read_rows(state, people(), sql, params, &person_row)
+end
+
+# The partial persons read: an age shows its value, Null, or `Text absent` for a column left out.
+def partial_query(state: State, sql: String, params: List[Db.Value]) -> State
+  return read_rows(state, partials(), sql, params, &partial_row)
+end
+
+def read_rows[T](state: State, schema: Orm.Schema[T], sql: String, params: List[Db.Value],
+                 row: Fn[T, Db.Row]) -> State
   return with_conn(state) do |conn|
-    case Orm.query(conn, people(), sql, params)
+    case Orm.query(conn, schema, sql, params)
       error(message) -> return failed(state, message)
-      ok(found) -> return recorded(state, Outcome.Rows(found.map do |person| person_row(person) end))
+      ok(found) -> return recorded(state, Outcome.Rows(found.map do |value| row.call(value) end))
     end
   end
 end
 
 def person_row(person: Person) -> Db.Row
+  age = person.age.map do |years| Db.Value.Int(years) end
   return {
     "id": Db.Value.Int(person.id),
     "name": Db.Value.Text(person.name),
-    "age": age_value(person.age),
+    "age": age.unwrap_or(Db.Value.Null),
     "admin": Db.Value.Bool(person.admin),
     "score": Db.Value.Float(person.score),
   }
+end
+
+def partial_row(partial: Partial) -> Db.Row
+  person = Person(id: partial.id, name: partial.name, admin: partial.admin, score: partial.score)
+  return person_row(person).put("age", age_value(partial.age))
 end
 
 def age_value(age: JsonField[Int]) -> Db.Value
@@ -439,9 +469,9 @@ def injected() -> Orm.Schema[Person]
   return people().with(table: "a; drop table x")
 end
 
-# The Person of a table of one row: the header names the fields, each cell is a typed cell. The id is 0 unless given,
-# and a cell `Absent` is a JsonField with no value.
-def person_of(table: List[List[String]]) -> Result[Person]
+# The Partial of a table of one row: the header names the fields, each cell is a typed cell. The id is 0 unless
+# given, and a cell `Absent` is a JsonField with no value.
+def partial_of(table: List[List[String]]) -> Result[Partial]
   cells: Map[String, String] = {}
   for i in 0...table[0].size
     cells = cells.put(table[0][i], table[1][i])
@@ -452,7 +482,18 @@ def person_of(table: List[List[String]]) -> Result[Person]
   age = try age_cell(cells["age"])
   admin = try bool_cell(cells["admin"])
   score = try float_cell(cells["score"])
-  return ok(Person(id: id, name: name, age: age, admin: admin, score: score))
+  return ok(Partial(id: id, name: name, age: age, admin: admin, score: score))
+end
+
+# The Person of a table of one row, as `partial_of` reads it; an age is an Int or Null.
+def person_of(table: List[List[String]]) -> Result[Person]
+  partial = try partial_of(table)
+  person = Person(id: partial.id, name: partial.name, admin: partial.admin, score: partial.score)
+  case partial.age
+    JsonField.Value(years) -> return ok(person.with(age: some(years)))
+    JsonField.Null -> return ok(person)
+    JsonField.Absent -> return error("an Absent age needs a partial person")
+  end
 end
 
 def int_cell(cell: String) -> Result[Int]
@@ -496,25 +537,41 @@ def age_cell(cell: String) -> Result[JsonField[Int]]
 end
 
 # The schema `manual` is `people` with a key the value gives.
-def orm_insert(state: State, table: List[List[String]], which: String) -> State
+def orm_insert(state: State, req: Request) -> State
+  generated = req.text != "manual"
+  if req.partial
+    return inserted(state, partials().with(generated: generated), partial_of(req.table), &partial_row)
+  end
+
+  return inserted(state, people().with(generated: generated), person_of(req.table), &person_row)
+end
+
+def inserted[T](state: State, schema: Orm.Schema[T], value: Result[T], row: Fn[T, Db.Row]) -> State
   return with_conn(state) do |conn|
-    case person_of(table)
+    case value
       error(message) -> return failed(state, message)
-      ok(person) ->
-        schema = people().with(generated: which != "manual")
-        case Orm.insert(conn, schema, person)
+      ok(item) ->
+        case Orm.insert(conn, schema, item)
           error(message) -> return failed(state, message)
-          ok(stored) -> return recorded(state, Outcome.Rows([person_row(stored)]))
+          ok(stored) -> return recorded(state, Outcome.Rows([row.call(stored)]))
         end
     end
   end
 end
 
-def orm_update(state: State, table: List[List[String]]) -> State
+def orm_update(state: State, req: Request) -> State
+  if req.partial
+    return updated(state, partials(), partial_of(req.table))
+  end
+
+  return updated(state, people(), person_of(req.table))
+end
+
+def updated[T](state: State, schema: Orm.Schema[T], value: Result[T]) -> State
   return with_conn(state) do |conn|
-    case person_of(table)
+    case value
       error(message) -> return failed(state, message)
-      ok(person) -> return counted(state, Orm.update(conn, people(), person))
+      ok(item) -> return counted(state, Orm.update(conn, schema, item))
     end
   end
 end

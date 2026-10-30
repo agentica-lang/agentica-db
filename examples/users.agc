@@ -15,18 +15,18 @@ CREATE_USERS = "create table users (id integer primary key, name text not null u
 # A list never has more rows than this: a real API would page it with an offset.
 LIST_LIMIT = 100
 
-# A column that can be NULL is a `JsonField`: a NULL reads as `JsonField.Null`, and an age that was not sent is
-# `Absent`, which an insert leaves out (the column takes its default, NULL here).
+# A column that can be NULL is an `Optional`: a NULL reads as `none`, and so does an age that a body leaves out
+# (null in JSON), which an insert stores as NULL.
 struct User
   id: Int = 0
   name: String
-  age: JsonField[Int]
+  age: Optional[Int] = none
 end
 
 # The body of a POST: the same fields without the key.
 struct NewUser
   name: String
-  age: JsonField[Int]
+  age: Optional[Int] = none
 end
 
 struct Batch
@@ -105,8 +105,8 @@ end
 # The query with the filters of the request: only ?min_age so far.
 def filtered(query: Orm.Query[User], target: String) -> Result[Orm.Query[User]]
   case param(target, "min_age")
-    error(_) -> return ok(query)
-    ok(text) ->
+    none -> return ok(query)
+    some(text) ->
       case text.to_i
         error(_) -> return error("min_age is not a number")
         ok(years) -> return ok(Orm.where(query, "age >= ?", [Db.Value.Int(years)]))
@@ -114,14 +114,14 @@ def filtered(query: Orm.Query[User], target: String) -> Result[Orm.Query[User]]
   end
 end
 
-# GET /users/7: `find` gives `Some` or `None`, so a missing row is a 404 and a broken database is a 500.
+# GET /users/7: `find` gives `some` or `none`, so a missing row is a 404 and a broken database is a 500.
 def show(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpResponse
   case Orm.find(conn, schema, Db.Value.Int(id))
     error(message) -> return refused(message)
     ok(found) ->
       case found
-        Orm.Option.None -> return failure(404, "no such user")
-        Orm.Option.Some(user) -> return json(200, JSON.encode(user))
+        none -> return failure(404, "no such user")
+        some(user) -> return json(200, JSON.encode(user))
       end
   end
 end
@@ -202,21 +202,21 @@ def refused_import(message: String) -> HttpResponse
   end
 end
 
-# The value of ?key=value in a request target.
-def param(target: String, key: String) -> Result[String]
+# The value of ?key=value in a request target, or none.
+def param(target: String, key: String) -> Optional[String]
   parts = target.split("?")
   if parts.size < 2
-    return error("no query")
+    return none
   end
 
   for pair in parts[1].split("&")
     found = pair.split("=")
     if found.size == 2 and found[0] == key
-      return ok(found[1])
+      return some(found[1])
     end
   end
 
-  return error("no #{key}")
+  return none
 end
 
 # The requests of the example, in order.

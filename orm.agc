@@ -11,8 +11,10 @@
 ##
 ## The mapping: the table is a plain struct, a column has the name of its field (the Orm quotes it), and the key is
 ## `id` unless `.with(primary_key: "other")`. A generated key is a field with a default, `id: Int = 0`. A column that
-## can be NULL is a `JsonField[T]` field: NULL is `Null`, a column the query does not select is `Absent`. The field
-## types are Int, Float, Bool and String; a Bool column of SQLite and MySQL (0 or 1) reads as a Bool.
+## can be NULL is an `Optional[T]` field: NULL is `none`, and `age: Optional[Int] = none` lets a value leave it out. A
+## `JsonField[T]` field also tells a column that is not there: NULL is `Null`, a column the query does not select is
+## `Absent`, and a write leaves an `Absent` column alone. The field types are Int, Float, Bool and String; a Bool
+## column of SQLite and MySQL (0 or 1) reads as a Bool.
 
 import Build from "orm/build"
 import Codec from "orm/codec"
@@ -30,12 +32,6 @@ export struct Schema[T]
   codec: JSON.Codec[T]
   primary_key: String = "id"
   generated: Bool = true
-end
-
-## Some value, or none.
-export enum Option[T]
-  Some(T)
-  None
 end
 
 ## A query over a schema, built with `from` and the functions below and run by `all`, `one`, `count`, `update_all` or
@@ -115,9 +111,9 @@ export def query_as[R](conn: Db.Connection, sql: String, params: List[Db.Value],
   return ok(found)
 end
 
-## The row whose key is `id`: `Option.Some(row)`, or `Option.None` when there is no such row (a 404, not a 500). The
-## `id` must be the kind of the key field (`Db.Value.Int` for an Int key), else it is an error.
-export def find[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Result[Option[T]]
+## The row whose key is `id`: `some(row)`, or `none` when there is no such row (a 404, not a 500). The `id` must be
+## the kind of the key field (`Db.Value.Int` for an Int key), else it is an error.
+export def find[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Result[Optional[T]]
   try valid(schema)
   try key_kind(schema, id)
   return one(where_eq(from(schema), schema.primary_key, id), conn)
@@ -135,8 +131,9 @@ export def where[T](q: Query[T], sql: String, params: List[Db.Value]) -> Query[T
   return with_cond(q, Build.Cond.Raw(sql, params))
 end
 
-## Keeps the rows whose `column` equals `value`; `Db.Value.Null` keeps the rows where it is NULL (only for a
-## `JsonField` column). The column must be in the schema, the value the kind of the column and a finite Float.
+## Keeps the rows whose `column` equals `value`; `Db.Value.Null` keeps the rows where it is NULL (only for an
+## `Optional` or a `JsonField` column). The column must be in the schema, the value the kind of the column and a
+## finite Float.
 export def where_eq[T](q: Query[T], column: String, value: Db.Value) -> Query[T]
   case member_of(q.schema, column)
     error(message) -> return failed(q, message)
@@ -209,14 +206,14 @@ export def all[T](q: Query[T], conn: Db.Connection) -> Result[List[T]]
   return query(conn, q.schema, sql, where_part.params.concat(tail.params))
 end
 
-## The first row of the query: `Option.Some(row)`, or `Option.None` when no row is kept.
-export def one[T](q: Query[T], conn: Db.Connection) -> Result[Option[T]]
+## The first row of the query: `some(row)`, or `none` when no row is kept.
+export def one[T](q: Query[T], conn: Db.Connection) -> Result[Optional[T]]
   rows = try all(q.with(plan: q.plan.with(limit: smaller(q.plan.limit, 1))), conn)
   if rows.empty?
-    return ok(Option.None)
+    return ok(none)
   end
 
-  return ok(Option.Some(rows[0]))
+  return ok(some(rows[0]))
 end
 
 ## The number of rows the conditions keep; the order, the limit and the offset do not count.
@@ -255,9 +252,10 @@ export def delete_all[T](q: Query[T], conn: Db.Connection) -> Result[Int]
 end
 
 ## Inserts the row of `value` and gives it back as the database stored it. A generated key is left out of the insert
-## (whatever the value holds), and so is a `JsonField` that is `Absent`: the default of the database applies. The
-## row comes back with the real key, read again by it, so the two statements should share a transaction when other
-## writers matter. A non-finite Float in the value halts at the encode of the codec (`RUNTIME-JSON-ENCODE`).
+## (whatever the value holds), and so is a `JsonField` that is `Absent`: the default of the database applies (an
+## `Optional` that is `none` is a NULL). The row comes back with the real key, read again by it, so the two
+## statements should share a transaction when other writers matter. A non-finite Float in the value halts at the
+## encode of the codec (`RUNTIME-JSON-ENCODE`).
 export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result[T]
   try valid(schema)
   object = schema.codec.from(value)
@@ -292,8 +290,8 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
 end
 
 ## Sets every column of the row whose key is the key of `value` and gives the rows changed, 0 when there is no such
-## row. A `JsonField` that is `Absent` keeps its column; `Null` clears it. A value with no field but the key and
-## `Absent` ones has nothing to set: `no column to update`.
+## row. An `Optional` that is `none` and a `JsonField` that is `Null` clear their column; an `Absent` one keeps it.
+## A value with no field but the key and `Absent` ones has nothing to set: `no column to update`.
 export def update[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result[Int]
   try valid(schema)
   object = schema.codec.from(value)
@@ -328,10 +326,10 @@ export def delete[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Re
 end
 
 ## Changes the columns for the keys that `changes` has, in the row whose key is `id`, and gives the rows changed (0
-## when there is no such row). A key that is a column of the schema is set to its value, `null` clears a `JsonField`
-## column, and a column the object leaves out keeps its value. The values are checked as the fields are: the kind of
-## the field, and an Int into a Float only when exact. A key that is not a column, or the primary key, is an error, so
-## the body of a request can be passed as it is.
+## when there is no such row). A key that is a column of the schema is set to its value, `null` clears an `Optional`
+## or a `JsonField` column, and a column the object leaves out keeps its value. The values are checked as the fields
+## are: the kind of the field, and an Int into a Float only when exact. A key that is not a column, or the primary key,
+## is an error, so the body of a request can be passed as it is.
 export def patch[T](conn: Db.Connection, schema: Schema[T], id: Db.Value, changes: Json) -> Result[Int]
   try valid(schema)
   try key_kind(schema, id)
@@ -399,8 +397,8 @@ end
 # The row of the key, read again with all the columns of the schema.
 def reload[T](conn: Db.Connection, schema: Schema[T], key: Db.Value) -> Result[T]
   case try find(conn, schema, key)
-    Option.Some(row) -> return ok(row)
-    Option.None -> return broken(schema, "the inserted row was not found by its key #{schema.primary_key}")
+    some(row) -> return ok(row)
+    none -> return broken(schema, "the inserted row was not found by its key #{schema.primary_key}")
   end
 end
 

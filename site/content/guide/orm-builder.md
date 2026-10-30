@@ -17,7 +17,7 @@ description: Build a query with from, where_eq, where_in, order_by, limit and of
 | End | Gives |
 |---|---|
 | `Orm.all(query, conn)` | `Result[List[T]]` |
-| `Orm.one(query, conn)` | `Result[Orm.Option[T]]`, the first row or `Option.None` |
+| `Orm.one(query, conn)` | `Result[Optional[T]]`, the first row or `none` |
 | `Orm.count(query, conn)` | `Result[Int]`, the rows the conditions keep (order and page do not count) |
 | `Orm.update_all(query, conn, changes)` and `Orm.delete_all(query, conn)` | see [writes](/guide/orm-writes/) |
 
@@ -28,7 +28,7 @@ import Orm from "pkg/db/orm"
 struct User
   id: Int = 0
   name: String
-  age: JsonField[Int]
+  age: Optional[Int] = none
   admin: Bool
 end
 
@@ -82,4 +82,4 @@ A line cannot start with `|>` unless the chain is in parentheses, as above.
 
 Rows come in the order of the database unless `order_by` says otherwise, for `all` and `one` alike. Where NULLs sort differs between the databases (SQLite and MySQL: first when ascending; PostgreSQL: last), so do not count on it, or order by a column that is never NULL. `limit` and `offset` take a count of zero or more.
 
-`one` keeps a limit smaller than 1, so a limit of 0 gives `None`. `Orm.find` is `where_eq` on the key plus `one`.
+`one` keeps a limit smaller than 1, so a limit of 0 gives `none`. `Orm.find` is `where_eq` on the key plus `one`.

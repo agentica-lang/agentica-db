@@ -88,8 +88,8 @@ end
 def split_once(text: String, separator: String) -> List[String]
   found = text.index_of(separator)
   case found
-    ok(at) -> return [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
-    error(_) -> return [text, ""]
+    some(at) -> return [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
+    none -> return [text, ""]
   end
 end
 
@@ -134,8 +134,8 @@ end
 def read_ipv6(text: String) -> Result[Address]
   closing = text.index_of("]")
   case closing
-    error(_) -> return error("mysql error: the url has an IPv6 host without a closing bracket")
-    ok(at) ->
+    none -> return error("mysql error: the url has an IPv6 host without a closing bracket")
+    some(at) ->
       after = text.slice(at + 1, text.length - at - 1)
       host = text.slice(1, at - 1)
       if host.empty?

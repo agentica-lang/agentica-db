@@ -14,7 +14,7 @@ Feature: Orm errors
       | Text ana | Null | Bool true | Float 1.5 |
     Then it fails with "<conflict>"
     And the failure is a "Conflict" error
-    When I read people with "select id, name, admin from people"
+    When I read people with "select id, name, age, admin from people"
     Then it fails with "orm error decode: people: score: missing column"
     And the failure is a "NotDecodable" error
     When I run the people query ending in "all":

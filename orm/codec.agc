@@ -1,18 +1,21 @@
 ## Turns a result row into the Json of a struct, so that `JSON.codec` can decode it. The values of a row are the
 ## types of the database (Int, Float, Text, Bool, Null), and a struct field asks for more: a Bool column of SQLite and
-## MySQL comes back as 0 or 1, and a NULL goes into a `JsonField`. Only the fields of the struct are read: a column
-## the struct does not have is ignored, and a field with no column is left out of the Json, so a `JsonField` is
-## `Absent` and any other field is an error of the decode.
+## MySQL comes back as 0 or 1, and a NULL goes into an `Optional` (`none`) or a `JsonField` (`Null`). Only the fields
+## of the struct are read: a column the struct does not have is ignored, and a field with no column is left out of the
+## Json, so a `JsonField` is `Absent` and any other field, an `Optional` too, is an error of the decode.
 
 import Db from "../db"
 
+OPTIONAL = "Optional["
 JSON_FIELD = "JsonField["
+NOT_NULLABLE = "NULL in a field that is not Optional or JsonField"
 # The largest Int a Float holds exactly (2^53); a bigger one could round.
 MAX_EXACT = 9007199254740992
 
 ## The Json object of `row` for the fields `members`. The value of a column goes in as it is whenever no conversion
 ## applies (a Text for an Int field), so the decode reports the wrong type with the path of the field. A field that is
-## not a `JsonField` needs its column, and the column needs a value: `<field>: missing column` and `<field>: NULL ...`.
+## not a `JsonField` needs its column, and only an `Optional` or a `JsonField` takes a NULL: `<field>: missing column`
+## and `<field>: NULL ...`.
 export def to_json(members: List[StructMember], row: Db.Row) -> Result[Json]
   fields: Map[String, Json] = {}
   for member in members
@@ -27,15 +30,15 @@ export def to_json(members: List[StructMember], row: Db.Row) -> Result[Json]
 end
 
 ## The value to bind for a field, from the Json of the field (a struct made Json by its codec, or the changes of a
-## patch). A null is `Null` for a `JsonField` only. The Json must be the kind of the field (`age: expected Int`), and
-## an Int goes into a Float field only when the Float holds it exactly, as on the way in.
+## patch). A null is `Null` for an `Optional` or a `JsonField` only. The Json must be the kind of the field
+## (`age: expected Int`), and an Int goes into a Float field only when the Float holds it exactly, as on the way in.
 export def to_value(member: StructMember, json: Json) -> Result[Db.Value]
   if JSON.kind(json) == "null"
-    if json_field?(member.type)
+    if nullable?(member.type)
       return ok(Db.Value.Null)
     end
 
-    return error("#{member.name}: NULL in a field that is not a JsonField")
+    return error("#{member.name}: #{NOT_NULLABLE}")
   end
 
   case inner_type(member.type)
@@ -59,10 +62,10 @@ export def value_kind(value: Db.Value) -> String
 end
 
 ## Whether a value can be compared with, or stored in, a field of this type: its variant is the one of the field, or
-## it is `Null` and the field is a `JsonField`.
+## it is `Null` and the field is an `Optional` or a `JsonField`.
 export def accepts?(type: String, value: Db.Value) -> Bool
   case value
-    Db.Value.Null -> return json_field?(type)
+    Db.Value.Null -> return nullable?(type)
     _ -> return field_kind(type) == value_kind(value)
   end
 end
@@ -76,19 +79,31 @@ export def field_kind(type: String) -> String
   return inner_type(type)
 end
 
-## Whether a field of this type can come from one column: Int, Float, Bool or String, alone or in a `JsonField`.
+## Whether a field of this type can come from one column: Int, Float, Bool or String, alone or in an `Optional` or a
+## `JsonField`.
 export def column_type?(type: String) -> Bool
   return ["Int", "Float", "Bool", "String"].any? do |name| name == inner_type(type) end
 end
 
 def json_field?(type: String) -> Bool
-  return type.start_with?(JSON_FIELD) and type.end_with?("]")
+  return wrapped?(type, JSON_FIELD)
 end
 
-# `JsonField[Int]` is `Int`: a NULL is the only difference.
+def nullable?(type: String) -> Bool
+  return wrapped?(type, OPTIONAL) or json_field?(type)
+end
+
+def wrapped?(type: String, wrapper: String) -> Bool
+  return type.start_with?(wrapper) and type.end_with?("]")
+end
+
+# `Optional[Int]` and `JsonField[Int]` are `Int`: a NULL (and, for a `JsonField`, a missing column) is the only
+# difference.
 def inner_type(type: String) -> String
-  if json_field?(type)
-    return type.slice(JSON_FIELD.length, type.length - JSON_FIELD.length - 1)
+  for wrapper in [OPTIONAL, JSON_FIELD]
+    if wrapped?(type, wrapper)
+      return type.slice(wrapper.length, type.length - wrapper.length - 1)
+    end
   end
 
   return type
@@ -104,8 +119,8 @@ def field_json(member: StructMember, value: Db.Value) -> Result[Json]
     Db.Value.Text(text) -> return ok(JSON.from(text))
     Db.Value.Bool(flag) -> return ok(JSON.from(flag))
     Db.Value.Blob(bytes) -> return ok(JSON.from(bytes.to_a))
-    Db.Value.Null if json_field?(member.type) -> return ok(JSON.null())
-    Db.Value.Null -> return error("#{member.name}: NULL in a field that is not a JsonField")
+    Db.Value.Null if nullable?(member.type) -> return ok(JSON.null())
+    Db.Value.Null -> return error("#{member.name}: #{NOT_NULLABLE}")
   end
 end
 

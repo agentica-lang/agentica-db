@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 env:
-  AGENTICA_VERSION: 0.17.0
-  AGENTICA_SHA256: bca1bb67ef56432b25d11f8d37b4fcbc1f3a71fdb01b60bb713357d3c9f35646
+  AGENTICA_VERSION: 0.18.0
+  AGENTICA_SHA256: b836888967e3f6431f2c47ee78f348ae9f8bed39f170e277aabe296a142048b7
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
@@ -104,13 +104,13 @@ jobs:
         include:
           - name: macos-arm64
             runner: macos-latest
-            sha256: a83e1b6b237df02479d77a891f8d17471c2ad7cd3f1b8cca38000e9db5138e2e
+            sha256: a5c6ed4ba77114f04edc3bd0f0e1b60ecfeaab7113319b29031b24524222aa42
           - name: macos-x86_64
             runner: macos-15-intel
-            sha256: 01bc072baecc2bc0c5bdcb803a0a4ec29920f79b0cea85ac689c4e65b7b48f73
+            sha256: c487e45b270e8b4b51009f7452fa3b792603b25f42024c9e2fc421ac17a4e03f
           - name: windows-x86_64
             runner: windows-latest
-            sha256: 550f580aeb666cefea27870199ba80428340b9d0127ea7245392dffaf0afe726
+            sha256: 434cb541588b02dfaa9f646da7db85588129c95f3a6bf11b4681f1aeb60788a4
     steps:
       - uses: actions/checkout@v4
 
@@ -141,7 +141,7 @@ jobs:
         shell: bash
         run: |
           agentica --version
-          sh tools/check.sh
+          agentica check *.agc orm examples specs test
 
       # The SQLite scenarios, the users example (a scenario of examples.feature) and the unit tests of test/, which
       # need no connection.

@@ -41,9 +41,15 @@ def main() -> Void
     text_step("another task opens its own connection and queries {string}", "query_in_new_task"),
     text_step("I read people with {string}", "orm_query"),
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
+    BDD.step("I read partial people with {string}") do |ctx, args|
+      send(ctx, Request(op: "orm_query", text: args[0], partial: true))
+    end,
     text_step("I read the names with {string}", "orm_query_as"),
     text_step("I check the {string} schema", "orm_check"),
     BDD.step("I insert the person:") do |ctx, args| send(ctx, Request(op: "orm_insert", table: BDD.table(ctx))) end,
+    BDD.step("I insert the partial person:") do |ctx, args|
+      send(ctx, Request(op: "orm_insert", table: BDD.table(ctx), partial: true))
+    end,
     BDD.step("I insert the person with its own key:") do |ctx, args|
       send(ctx, Request(op: "orm_insert", text: "manual", table: BDD.table(ctx)))
     end,
@@ -57,6 +63,9 @@ def main() -> Void
     end,
     text_step("I find the person with the key {string}", "orm_find"),
     BDD.step("I update the person:") do |ctx, args| send(ctx, Request(op: "orm_update", table: BDD.table(ctx))) end,
+    BDD.step("I update the partial person:") do |ctx, args|
+      send(ctx, Request(op: "orm_update", table: BDD.table(ctx), partial: true))
+    end,
     BDD.step("I patch the person {int} with {string}") do |ctx, args|
       send(ctx, Request(op: "orm_patch", number: args[0].to_i!, text: args[1]))
     end,

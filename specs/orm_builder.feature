@@ -174,11 +174,11 @@ Feature: Orm builder
     When I run the people query ending in "all":
       | step     | argument | value  |
       | where_eq | age      | Text x |
-    Then it fails with exactly "orm error bad_request: people: the column age has type JsonField[Int], not Text"
+    Then it fails with exactly "orm error bad_request: people: the column age has type Optional[Int], not Text"
     When I run the people query ending in "all":
       | step     | argument | value         |
       | where_in | age      | Int 1; Text x |
-    Then it fails with exactly "orm error bad_request: people: the column age has type JsonField[Int], not Text"
+    Then it fails with exactly "orm error bad_request: people: the column age has type Optional[Int], not Text"
     When I run the people query ending in "all":
       | step  | argument | value |
       | limit | -1       |       |

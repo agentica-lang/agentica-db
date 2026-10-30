@@ -26,8 +26,8 @@ end
 ## Reads a typed cell.
 export def parse(cell: String) -> Result[Value]
   case cell.index_of(" ")
-    error(_) -> return parse_tagged(cell, "")
-    ok(at) -> return parse_tagged(cell.slice(0, at), cell.slice(at + 1, cell.length - at - 1))
+    none -> return parse_tagged(cell, "")
+    some(at) -> return parse_tagged(cell.slice(0, at), cell.slice(at + 1, cell.length - at - 1))
   end
 end
 
@@ -116,7 +116,7 @@ end
 
 # `Repeat COUNT Text|Blob ...`: the text or the bytes of the inner cell, COUNT times.
 def parse_repeat(text: String) -> Result[Value]
-  at = try text.index_of(" ")
+  at = try text.index_of(" ").to_result("a Repeat cell needs a count and a cell")
   count = try text.slice(0, at).to_i
   inner = try parse(text.slice(at + 1, text.length - at - 1))
   case inner

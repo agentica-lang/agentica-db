@@ -13,7 +13,7 @@ runs it and checks its output.
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-- `make check` (`agentica check` on every `.agc` file, so `orm/`, `examples/`, `specs/` and `test/` too), then
+- `make check` (`agentica check *.agc orm examples specs test`: every `.agc` file of the package), then
   `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
   the unit tests of `test/`. SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains
   `TEXT`.
@@ -54,12 +54,12 @@ runs it and checks its output.
 - An adapter exports its own `BEGIN_SQL`; `transaction` in `db.agc` uses it.
 - Tests are BDD-first: behavior is a Gherkin scenario in `specs/*.feature`, run by `agentica test`, not a test file.
   The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
-  `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct `Person` of
-  `specs/driver.agc`), each scenario an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one
-  adapter promises is in `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on
-  all three: `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and
-  not a temporary table where a statement reads one table twice. A new behavior is a scenario first. A value written
-  must read back unchanged.
+  `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct `Person` of `specs/driver.agc`,
+  with an `Optional` age, or `Partial`, the same with a `JsonField` age), each scenario an outline over an `adapter`
+  column (`sqlite`, `postgres`, `mysql`); what only one adapter promises is in `sqlite.feature`, `postgres.feature` or
+  `mysql.feature`. The sql of a common scenario runs on all three: `create temporary table`, `varchar(50)` where a
+  column is unique, no `cast(? as integer)`, a CTE and not a temporary table where a statement reads one table twice. A
+  new behavior is a scenario first. A value written must read back unchanged.
 - The steps are in `specs/steps.agc`, few and generic (`a "sqlite" database`, `I execute "sql" with:` and a table of
   typed params, `the query "sql" returns:` and a table, `it fails with "prefix"`). They drive `Db` through
   `specs/driver.agc`, a program under test that holds the connection (a step program cannot keep a connection between
