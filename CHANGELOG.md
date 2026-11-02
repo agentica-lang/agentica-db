@@ -4,11 +4,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-
-- **Breaking:** needs Agentica 0.22.0 or later. CI runs on it (pinned by sha256 on every OS), and `examples/users.agc`
-  reads the `Bytes` body of `HttpRequest` and writes the `Bytes` body of `HttpResponse`.
-
 ### Added
 
 - SQLite urls take the parameters `journal_mode`, `foreign_keys`, `busy_timeout` and `fts5=required`
@@ -24,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a read-only database refuses is skipped when the url did not name a journal mode.
 - **Breaking:** a `?` in a SQLite path now starts the parameters, so `a?b.db`, `q.db?` and the Windows `\\?\C:\...`
   prefix are no longer file names (`sqlite:file:a%3fb.db` is). A parameter that is not known is an error.
+- **Breaking:** needs Agentica 0.22.0 or later. CI runs on it (pinned by sha256 on every OS), and `examples/users.agc`
+  reads the `Bytes` body of `HttpRequest` and writes the `Bytes` body of `HttpResponse`.
 
 ## [0.3.0] - 2026-10-30
 
