@@ -3,9 +3,9 @@
 ## `insert`, `find`, the query builder, `patch`, `delete` and a transaction that gives back a value.
 ##
 ## It runs on its own against an in-memory SQLite database and prints each request with its response, so no server
-## is needed. To serve it, open the connection in `main` and hand `HTTP.listen` a block that calls
-## `handle(conn, schema, request)`. A real app adds more: a 405 with an `Allow` header, a cap on the size of an import,
-## and URL decoding of the query.
+## is needed. To serve it, open the connection in `main` and call `HTTP.serve(host, port, HTTP.app(&route), options)`,
+## where `route` calls `handle(conn, schema, request)`. A real app adds more: a 405 with an `Allow` header, a cap on
+## the size of an import, and URL decoding of the query.
 ## `specs/examples.feature` runs this file and checks what it prints.
 
 import Db from "../db"
