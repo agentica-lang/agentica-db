@@ -6,7 +6,7 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.18.0 or later. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.22.0 or later. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]

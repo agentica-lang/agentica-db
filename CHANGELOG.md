@@ -4,6 +4,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** needs Agentica 0.22.0 or later. CI runs on it (pinned by sha256 on every OS), and `examples/users.agc`
+  reads the `Bytes` body of `HttpRequest` and writes the `Bytes` body of `HttpResponse`.
+
 ### Added
 
 - SQLite urls take the parameters `journal_mode`, `foreign_keys`, `busy_timeout` and `fts5=required`
