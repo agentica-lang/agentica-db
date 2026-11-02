@@ -8,7 +8,7 @@ description: Open a connection from a url, the scheme of each database, and clos
 
 | Url | Database |
 |---|---|
-| `sqlite:PATH` | the SQLite file at `PATH` |
+| `sqlite:PATH` or `sqlite:PATH?journal_mode=delete` | the SQLite file at `PATH`, with its [settings](/guide/sqlite/#settings) |
 | `sqlite::memory:` | a private in-memory SQLite database |
 | `postgres://user:pass@host:5432/app` or `postgresql://...` | PostgreSQL (a libpq url) |
 | `mysql://user:pass@host:3306/app` or `mariadb://...` | MySQL or MariaDB |

@@ -40,7 +40,6 @@ Feature: Orm errors
 
   Scenario: A foreign-key violation is a conflict on sqlite
     Given a "sqlite" database
-    And I execute "pragma foreign_keys = on"
     And I execute "create table parents (id integer primary key)"
     And I execute "create table children (id integer primary key, parent integer not null references parents (id))"
     When I execute "insert into children (parent) values (7)"

@@ -73,3 +73,63 @@ Feature: SQLite
     Then it succeeds
     When I execute "drop table t"
     Then the changed row count is 0
+
+  Scenario: A file database opens in WAL mode with foreign keys on and a 5 second busy timeout on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/web.db"
+    Then the query "select 1 as ok" returns:
+      | ok    |
+      | Int 1 |
+    And the query "pragma journal_mode" returns:
+      | journal_mode |
+      | Text wal     |
+    And the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 1        |
+    And the query "pragma busy_timeout" returns:
+      | timeout  |
+      | Int 5000 |
+
+  Scenario: The url parameters give SQLite's own behavior back on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/plain.db?journal_mode=delete&foreign_keys=off&busy_timeout=250"
+    Then the query "pragma journal_mode" returns:
+      | journal_mode |
+      | Text delete  |
+    And the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 0        |
+    And the query "pragma busy_timeout" returns:
+      | timeout |
+      | Int 250 |
+
+  Scenario: A foreign key is checked by default on sqlite
+    Given a "sqlite" database
+    And I execute "create table parents (id integer primary key)"
+    And I execute "create table children (parent integer references parents (id))"
+    When I execute "insert into children values (7)"
+    Then it fails with "sqlite error 19: FOREIGN KEY constraint failed"
+
+  Scenario Outline: A url parameter that is not understood is an error on sqlite: <parameter>
+    Given a "sqlite" database
+    When I open "sqlite::memory:?<parameter>"
+    Then it fails with "<failure>"
+
+    Examples:
+      | parameter                | failure                                                      |
+      | journal_mode=fast        | sqlite error: the url parameter journal_mode has a value     |
+      | foreign_keys=1           | sqlite error: the url parameter foreign_keys has a value     |
+      | fts5=yes                 | sqlite error: the url parameter fts5 has a value             |
+      | busy_timeout=soon        | sqlite error: the url busy_timeout is not a number           |
+      | busy_timeout=            | sqlite error: the url busy_timeout is not a number           |
+      | busy_timeout=99999999999 | sqlite error: the url busy_timeout is not a number           |
+      | color=red                | sqlite error: unknown url parameter color, expected          |
+
+  Scenario: A database opened with fts5=required can search text on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?fts5=required"
+    And I execute "create virtual table notes using fts5(body, tokenize = porter)"
+    And I execute "insert into notes values ('Running quickly'), ('sleeping all day')"
+    Then the query "select body from notes where notes match 'runs'" returns:
+      | body                 |
+      | Text Running quickly |

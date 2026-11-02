@@ -4,6 +4,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- SQLite urls take the parameters `journal_mode`, `foreign_keys`, `busy_timeout` and `fts5=required`
+  (`sqlite:app.db?journal_mode=delete&foreign_keys=off`); `fts5=required` makes `open` fail when the system SQLite has
+  no FTS5.
+
+### Changed
+
+- **Breaking:** a SQLite connection now opens with `journal_mode=wal` and `foreign_keys=on` (SQLite's own defaults
+  were a rollback journal and foreign keys off). A file database stays in WAL mode once opened. Add
+  `?journal_mode=delete&foreign_keys=off` to the url for the old behavior. The busy timeout stays 5000 ms.
+
 ## [0.3.0] - 2026-10-30
 
 ### Changed
