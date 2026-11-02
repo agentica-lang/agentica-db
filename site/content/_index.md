@@ -39,6 +39,6 @@ end
 - The [guide](/guide/) has a page for each part: connecting, queries, values, transactions, the three databases, the ORM and testing.
 - The source and the changelog are [on GitHub](https://github.com/agentica-lang/agentica-db).
 
-Not yet: migrations, a connection pool and preloading of related rows.
+Not yet: a connection pool and preloading of related rows.
 
 agentica-db needs Agentica 0.18.0 or later, and is under the Apache License 2.0.

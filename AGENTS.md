@@ -6,7 +6,8 @@ statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all throu
 in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the
 sql of the query builder) and `orm/dialect.agc` (identifier names and quotes); it takes a `Db.Connection` and never
 touches an adapter. `examples/users.agc` is a runnable web-handler style example of the Orm; `specs/examples.feature`
-runs it and checks its output.
+runs it and checks its output. `migrate.agc` is the migrations runner (`Migrate.up`), also over `Db`, with
+`specs/migrations.feature`.
 
 ## Commands
 

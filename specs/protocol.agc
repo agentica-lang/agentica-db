@@ -10,7 +10,8 @@ export OK = "ok"
 ## A request. Every field is always sent; each `op` reads the ones it needs. The ops are `open` (text: adapter),
 ## `open_url` (text: url), `execute` and `query` (text: sql, cells: params), `transaction` (table: statements,
 ## text: the failure message of the body, empty for ok, nested: start a transaction inside it, gives: the body
-## gives back the rows changed by its last statement, and the transaction gives that count), `close`,
+## gives back the rows changed by its last statement, and the transaction gives that count), `close`, `migrate`
+## (text: the history table or empty, table: header and the version, name and sql of each migration),
 ## `read_only` and `writable` (text: a file), `execute_in_task`, `query_in_new_task` (text: sql), `keep_running`
 ## (text: sql, number: the longest gap in milliseconds), `leave_open` (text: connection name, number: milliseconds the
 ## server may take to drop it),
