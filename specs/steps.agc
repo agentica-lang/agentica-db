@@ -32,6 +32,8 @@ def main() -> Void
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), nested: true))
     end,
     plain_step("I close the database", "close"),
+    text_step("I make the file {string} read-only", "read_only"),
+    text_step("I make the file {string} writable", "writable"),
     BDD.step("a program whose native libraries are missing") do |ctx, args|
       BDD.given_program(ctx, "fixtures/nolib/open.agc")
     end,

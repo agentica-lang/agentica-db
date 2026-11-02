@@ -124,7 +124,7 @@ end
 def main() -> Void
   # The runner never closes the input of the driver, so the folder of a scenario that ended stays until the next
   # scenario starts: scenarios run one at a time, and each starts from nothing.
-  Path.remove(scratch_dir(), IO_TIMEOUT_MS)
+  clean_scratch()
   state = State(conns: [], adapter: "", last: Outcome.Nothing, checked: true)
   line = IO.gets
   while line.ok?
@@ -135,7 +135,7 @@ def main() -> Void
     line = IO.gets
   end
 
-  Path.remove(scratch_dir(), IO_TIMEOUT_MS)
+  clean_scratch()
 end
 
 def handle(state: State, line: String) -> Handled
@@ -177,6 +177,8 @@ def act(state: State, req: Request) -> Handled
     "orm_patch" -> return reply_ok(orm_patch(state, req.number, req.text))
     "orm_delete" -> return reply_ok(orm_delete(state, req))
     "close" -> return reply_ok(close(state))
+    "read_only" -> return reply_ok(set_access(state, expand(state, req.text), false))
+    "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -265,6 +267,49 @@ end
 
 def scratch_dir() -> String
   return "#{SCRATCH_ROOT}/scratch"
+end
+
+# Removes the folder of the scenario. A scenario that failed between `read_only` and `writable` leaves a read-only
+# file, which Windows refuses to remove, so it is made writable first (only when it exists: a process costs time).
+def clean_scratch() -> Void
+  locked = "#{scratch_dir()}/readonly.db"
+  if File.stat(locked, IO_TIMEOUT_MS).ok?
+    set_access(State(conns: [], adapter: "", last: Outcome.Nothing, checked: true), locked, true)
+  end
+
+  Path.remove(scratch_dir(), IO_TIMEOUT_MS)
+end
+
+# Makes a file read-only, or writable again: `chmod` on Unix, `attrib` on Windows (where a read-only file cannot be
+# removed, so a scenario makes it writable before it ends). The process is the only way, there is no chmod in Agentica.
+def set_access(state: State, path: String, writable: Bool) -> State
+  command = "chmod"
+  args = ["444", path]
+  if writable
+    args = ["644", path]
+  end
+
+  if System.os() == "windows"
+    command = "attrib.exe"
+    flag = "+R"
+    if writable
+      flag = "-R"
+    end
+
+    args = [flag, path.replace("/", "\\")]
+  end
+
+  started = Process.spawn(command, args, IO_TIMEOUT_MS)
+  case started
+    error(message) -> return failed(state, message)
+    ok(process) ->
+      code = Process.wait(process, IO_TIMEOUT_MS).unwrap_or(-1)
+      if code != 0
+        return failed(state, "#{command} failed with #{code}")
+      end
+
+      return recorded(state, Outcome.Done)
+  end
 end
 
 # Runs `run` with the connection, or records the failure of having none.

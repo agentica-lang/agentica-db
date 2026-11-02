@@ -4,6 +4,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- SQLite urls take the parameters `journal_mode`, `foreign_keys`, `busy_timeout` and `fts5=required`
+  (`sqlite:app.db?journal_mode=delete&foreign_keys=off`); `fts5=required` makes `open` fail when the system SQLite has
+  no FTS5. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is (`file:app.db?mode=ro`,
+  `file::memory:?cache=shared`); the URI flag is on for every build.
+
+### Changed
+
+- **Breaking:** a SQLite connection now opens with `journal_mode=wal` and `foreign_keys=on` (SQLite's own defaults
+  were a rollback journal and foreign keys off). A file database stays in WAL mode once opened. Add
+  `?journal_mode=delete&foreign_keys=off` to the url for the old behavior. The busy timeout stays 5000 ms. A WAL that
+  a read-only database refuses is skipped when the url did not name a journal mode.
+- **Breaking:** a `?` in a SQLite path now starts the parameters, so `a?b.db`, `q.db?` and the Windows `\\?\C:\...`
+  prefix are no longer file names (`sqlite:file:a%3fb.db` is). A parameter that is not known is an error.
+
 ## [0.3.0] - 2026-10-30
 
 ### Changed

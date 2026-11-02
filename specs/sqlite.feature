@@ -73,3 +73,94 @@ Feature: SQLite
     Then it succeeds
     When I execute "drop table t"
     Then the changed row count is 0
+
+  Scenario: A file database opens in WAL mode with foreign keys on and a 5 second busy timeout on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/web.db"
+    Then the query "select 1 as ok" returns:
+      | ok    |
+      | Int 1 |
+    And the query "pragma journal_mode" returns:
+      | journal_mode |
+      | Text wal     |
+    And the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 1        |
+    And the query "pragma busy_timeout" returns:
+      | timeout  |
+      | Int 5000 |
+
+  Scenario: The url parameters give SQLite's own behavior back on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/plain.db?journal_mode=delete&foreign_keys=off&busy_timeout=250"
+    Then the query "pragma journal_mode" returns:
+      | journal_mode |
+      | Text delete  |
+    And the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 0        |
+    And the query "pragma busy_timeout" returns:
+      | timeout |
+      | Int 250 |
+
+  Scenario: A foreign key is checked by default on sqlite
+    Given a "sqlite" database
+    And I execute "create table parents (id integer primary key)"
+    And I execute "create table children (parent integer references parents (id))"
+    When I execute "insert into children values (7)"
+    Then it fails with "sqlite error 19: FOREIGN KEY constraint failed"
+
+  Scenario: A url parameter that is not understood is an error on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?color=red"
+    Then it fails with "sqlite error: unknown url parameter color, expected"
+
+  Scenario: A read-only file opens by default, and an explicit journal_mode=wal on it is an error on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/readonly.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I execute "insert into t values (1)"
+    And I close the database
+    And I make the file "[SCRATCH]/readonly.db" read-only
+    And I open "sqlite:[SCRATCH]/readonly.db"
+    Then the query "select x from t" returns:
+      | x     |
+      | Int 1 |
+    When I open "sqlite:[SCRATCH]/readonly.db?journal_mode=wal"
+    Then it fails with "sqlite error 8: "
+    When I make the file "[SCRATCH]/readonly.db" writable
+    Then it succeeds
+
+  Scenario: A file: name is a SQLite URI that goes to SQLite as it is, and the defaults still apply on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/uri.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I close the database
+    And I open "sqlite:file:[SCRATCH]/uri.db?mode=ro"
+    Then the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 1        |
+    When I execute "insert into t values (1)"
+    Then it fails with "sqlite error 8: "
+
+  Scenario: A file: name that rules WAL out keeps the mode it has, and the defaults still apply on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/immutable.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I close the database
+    And I open "sqlite:file:[SCRATCH]/immutable.db?immutable=1"
+    Then the query "pragma journal_mode" returns:
+      | journal_mode |
+      | Text delete  |
+    And the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 1        |
+
+  Scenario: A database opened with fts5=required can search text on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?fts5=required"
+    And I execute "create virtual table notes using fts5(body, tokenize = porter)"
+    And I execute "insert into notes values ('Running quickly'), ('sleeping all day')"
+    Then the query "select body from notes where notes match 'runs'" returns:
+      | body                 |
+      | Text Running quickly |

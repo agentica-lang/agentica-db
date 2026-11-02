@@ -2,10 +2,18 @@
 ##
 ## `open` gives a `Handle`, which the task that opened it owns: close it with `close`, or the end of the task
 ## closes it (a transaction still open is rolled back). Using a closed handle is a runtime error
-## (`RUNTIME-NATIVE-CLOSED`). SQLite's own defaults stay: foreign keys are off until `PRAGMA foreign_keys = ON`.
+## (`RUNTIME-NATIVE-CLOSED`).
+##
+## `open` sets up the connection for a web app. The parameters after a `?` change it (`sqlite_url.agc` reads them):
+## `journal_mode` (default `wal`), `foreign_keys` (default `on`), `busy_timeout` (milliseconds, default 5000) and
+## `fts5=required` (the open fails when this SQLite has no FTS5). `sqlite:app.db?journal_mode=delete&foreign_keys=off`
+## is SQLite's own behavior. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is, with its own
+## `?` parameters (`file:app.db?mode=ro`); the defaults still apply to it. A default `wal` that a read-only database
+## refuses is skipped (for a `file:` name, one that SQLite will not set is skipped too); an explicit one is an error.
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
+import SqliteUrl from "sqlite_url"
 import {Row, Value} from "value"
 
 ## The statement that starts a transaction: IMMEDIATE takes the write lock at once, so a busy database fails at
@@ -18,7 +26,10 @@ SQLITE_INTEGER = 1
 SQLITE_FLOAT = 2
 SQLITE_TEXT = 3
 SQLITE_BLOB = 4
-BUSY_TIMEOUT_MS = 5_000
+# SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI: the URI flag makes `file:` names work the same on
+# every build, whatever its default.
+OPEN_FLAGS = 70
+SQLITE_READONLY = 8
 # The length argument that means "up to the NUL" for the sql.
 NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
@@ -28,7 +39,7 @@ extern "sqlite3"
   ## An open database.
   export resource Handle, free: sqlite3_close_v2
   resource Stmt, free: sqlite3_finalize
-  compute def sqlite3_open(filename: C.String, out db: Handle) -> C.Int32
+  compute def sqlite3_open_v2(filename: C.String, out db: Handle, flags: C.Int32, vfs: C.Pointer) -> C.Int32
   def sqlite3_busy_timeout(db: Handle, ms: C.Int32) -> C.Int32
   def sqlite3_errmsg(db: Handle) -> C.String
   def sqlite3_errstr(code: C.Int32) -> C.String
@@ -57,22 +68,30 @@ extern "sqlite3"
   def sqlite3_column_bytes(stmt: Stmt, col: C.Int32) -> C.Int32
 end
 
-## Opens a database file, or `:memory:`; the file is created when it does not exist.
+## Opens a database file, or `:memory:`; the file is created when it does not exist. A `?` ends the path and starts
+## the settings (see the top of this file); a path that holds a `?` (as does the Windows `\\?\` prefix) cannot be
+## opened by name, except as a `file:` URI.
 export def open(path: String) -> Result[Handle]
   if has_nul?(path)
     return error("sqlite error: the path contains a NUL character")
   end
 
+  target = try SqliteUrl.parse(path)
   try load_library()
-  opened = sqlite3_open(path)
+  opened = sqlite3_open_v2(target.path, OPEN_FLAGS, Native.pointer(0))
   if opened.result != SQLITE_OK
     # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
     Native.close(opened.db)
     return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
 
-  sqlite3_busy_timeout(opened.db, BUSY_TIMEOUT_MS)
-  return ok(opened.db)
+  configured = configure(opened.db, target.settings)
+  case configured
+    ok(_) -> return ok(opened.db)
+    error(message) ->
+      Native.close(opened.db)
+      return error(message)
+  end
 end
 
 ## Closes the handle; closing it again does nothing. Closing the last connection of a WAL database checkpoints
@@ -105,6 +124,72 @@ export def execute(conn: Handle, sql: String, params: List[Value]) -> Result[Int
   Native.close(stmt)
   try ran
   return ok(changes_since(conn, before))
+end
+
+# The busy timeout goes first: changing the journal mode needs a lock that another connection may hold.
+def configure(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
+  sqlite3_busy_timeout(conn, settings.busy_timeout)
+  if settings.fts5 and not fts5?(conn)
+    return error("sqlite error: this SQLite was built without FTS5 (fts5=required)")
+  end
+
+  # Set in both cases: a build can turn foreign keys on by default.
+  try execute(conn, "PRAGMA foreign_keys = #{on_off(settings.foreign_keys)}", [])
+  try set_journal_mode(conn, settings)
+  return ok()
+end
+
+def on_off(flag: Bool) -> String
+  if flag
+    return "ON"
+  end
+
+  return "OFF"
+end
+
+# The pragma answers with the mode in force. A memory database stays in `memory` whatever is asked, which is fine;
+# any other answer means the mode did not change. When the url did not name a journal mode, the default WAL is
+# best effort in two cases, so a url that worked before still opens: a database that cannot be written (code 8: a
+# read-only file or `mode=ro`), and a `file:` URI, whose own parameters (`immutable=1`, `nolock=1`, `vfs=unix-none`)
+# can rule WAL out. A plain path that cannot take WAL (a file system without shared memory) is an error, since a web
+# app would rather stop at startup than run in another mode. An explicit journal_mode is always an error.
+def set_journal_mode(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
+  mode = settings.journal_mode
+  asked = query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
+  case asked
+    error(message) ->
+      if not settings.journal_given and message.start_with?("sqlite error #{SQLITE_READONLY}:")
+        return ok()
+      end
+
+      return error(message)
+
+    ok(rows) ->
+      answer = "unknown"
+      if not rows.empty?
+        case rows[0].get("journal_mode", Value.Null)
+          Value.Text(text) -> answer = text
+          _ -> answer = "unknown"
+        end
+      end
+
+      if answer != mode and answer != "memory" and not (settings.uri and not settings.journal_given)
+        return error("sqlite error: journal_mode #{mode} could not be set, the database is in #{answer} mode")
+      end
+
+      return ok()
+  end
+end
+
+# Tries to create an FTS5 table in the temp schema, which no file keeps.
+def fts5?(conn: Handle) -> Bool
+  made = execute(conn, "CREATE VIRTUAL TABLE temp.agentica_fts5_probe USING fts5(x)", [])
+  if not made.ok?
+    return false
+  end
+
+  execute(conn, "DROP TABLE temp.agentica_fts5_probe", [])
+  return true
 end
 
 # A library that is missing is an error here, not a stop of the program at the first call.

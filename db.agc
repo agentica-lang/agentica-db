@@ -31,7 +31,8 @@ export enum Connection
   Mysql(Mysql.Handle)
 end
 
-## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database), or
+## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database; the SQLite
+## parameters follow a `?`, as in `sqlite:app.db?journal_mode=delete`), or
 ## `postgres://` and `postgresql://` urls, which libpq parses, or `mysql://` and `mariadb://` urls.
 export def open(url: String) -> Result[Connection]
   # Errors name the scheme only: a url can hold a password.
@@ -60,7 +61,9 @@ export def open(url: String) -> Result[Connection]
                "postgres:// or mysql://")
 end
 
-## Opens a SQLite database file, or `:memory:`.
+## Opens a SQLite database file, or `:memory:`. Parameters after a `?` set `journal_mode` (default `wal`),
+## `foreign_keys` (default `on`), `busy_timeout` in milliseconds (default 5000) and `fts5=required`
+## (see `sqlite.agc`).
 export def open_sqlite(path: String) -> Result[Connection]
   handle = try Sqlite.open(path)
   return ok(Connection.Sqlite(handle))
