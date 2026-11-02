@@ -143,6 +143,19 @@ Feature: SQLite
     When I execute "insert into t values (1)"
     Then it fails with "sqlite error 8: "
 
+  Scenario: A file: name that rules WAL out keeps the mode it has, and the defaults still apply on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/immutable.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I close the database
+    And I open "sqlite:file:[SCRATCH]/immutable.db?immutable=1"
+    Then the query "pragma journal_mode" returns:
+      | journal_mode |
+      | Text delete  |
+    And the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 1        |
+
   Scenario: A database opened with fts5=required can search text on sqlite
     Given a "sqlite" database
     When I open "sqlite::memory:?fts5=required"

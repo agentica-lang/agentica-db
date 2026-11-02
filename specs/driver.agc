@@ -124,7 +124,7 @@ end
 def main() -> Void
   # The runner never closes the input of the driver, so the folder of a scenario that ended stays until the next
   # scenario starts: scenarios run one at a time, and each starts from nothing.
-  Path.remove(scratch_dir(), IO_TIMEOUT_MS)
+  clean_scratch()
   state = State(conns: [], adapter: "", last: Outcome.Nothing, checked: true)
   line = IO.gets
   while line.ok?
@@ -135,7 +135,7 @@ def main() -> Void
     line = IO.gets
   end
 
-  Path.remove(scratch_dir(), IO_TIMEOUT_MS)
+  clean_scratch()
 end
 
 def handle(state: State, line: String) -> Handled
@@ -267,6 +267,17 @@ end
 
 def scratch_dir() -> String
   return "#{SCRATCH_ROOT}/scratch"
+end
+
+# Removes the folder of the scenario. A scenario that failed between `read_only` and `writable` leaves a read-only
+# file, which Windows refuses to remove, so it is made writable first (only when it exists: a process costs time).
+def clean_scratch() -> Void
+  locked = "#{scratch_dir()}/readonly.db"
+  if File.stat(locked, IO_TIMEOUT_MS).ok?
+    set_access(State(conns: [], adapter: "", last: Outcome.Nothing, checked: true), locked, true)
+  end
+
+  Path.remove(scratch_dir(), IO_TIMEOUT_MS)
 end
 
 # Makes a file read-only, or writable again: `chmod` on Unix, `attrib` on Windows (where a read-only file cannot be

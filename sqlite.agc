@@ -9,7 +9,7 @@
 ## `fts5=required` (the open fails when this SQLite has no FTS5). `sqlite:app.db?journal_mode=delete&foreign_keys=off`
 ## is SQLite's own behavior. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is, with its own
 ## `?` parameters (`file:app.db?mode=ro`); the defaults still apply to it. A default `wal` that a read-only database
-## refuses is skipped; an explicit one is an error.
+## refuses is skipped (for a `file:` name, one that SQLite will not set is skipped too); an explicit one is an error.
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
@@ -148,9 +148,11 @@ def on_off(flag: Bool) -> String
 end
 
 # The pragma answers with the mode in force. A memory database stays in `memory` whatever is asked, which is fine;
-# any other answer means the mode did not change (a file system without shared memory has no WAL). A database that
-# cannot be written (a read-only file or `mode=ro`) keeps its mode when the url did not ask for one, so the default
-# does not stop a url that worked before from opening; an explicit journal_mode still fails.
+# any other answer means the mode did not change. When the url did not name a journal mode, the default WAL is
+# best effort in two cases, so a url that worked before still opens: a database that cannot be written (code 8: a
+# read-only file or `mode=ro`), and a `file:` URI, whose own parameters (`immutable=1`, `nolock=1`, `vfs=unix-none`)
+# can rule WAL out. A plain path that cannot take WAL (a file system without shared memory) is an error, since a web
+# app would rather stop at startup than run in another mode. An explicit journal_mode is always an error.
 def set_journal_mode(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
   mode = settings.journal_mode
   asked = query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
@@ -171,7 +173,7 @@ def set_journal_mode(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
         end
       end
 
-      if answer != mode and answer != "memory"
+      if answer != mode and answer != "memory" and not (settings.uri and not settings.journal_given)
         return error("sqlite error: journal_mode #{mode} could not be set, the database is in #{answer} mode")
       end
 

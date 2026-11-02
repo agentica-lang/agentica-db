@@ -37,6 +37,8 @@ def main() -> Void
       uri = target_of("file:app.db?mode=ro&cache=shared")
       try Test.eq(uri.path, "file:app.db?mode=ro&cache=shared")
       try Test.eq(uri.settings.journal_given, false)
+      try Test.eq(uri.settings.uri, true)
+      try Test.eq(target_of("a.db").settings.uri, false)
       return Test.eq(target_of("file::memory:?cache=shared").path, "file::memory:?cache=shared")
     end,
     Test.test("a parameter that is empty, has no =, or is not known is an error") do

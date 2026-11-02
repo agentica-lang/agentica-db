@@ -56,7 +56,7 @@ true
 ```
 
 - `journal_mode=wal` lets readers run while one connection writes, which a web server needs. The mode is stored in the database file, so the file stays in WAL mode for any later connection. While a connection is open, the file has `-wal` and `-shm` files beside it, and recent writes may live only in `-wal`: copying the `.db` file alone then can lose data. Close the connection first, or back up with SQLite's backup API (`VACUUM INTO 'copy.db'` also works).
-- A database that cannot use WAL (a network file system) is an error, not a silent fallback. An in-memory database always stays in `memory` mode and is accepted. A database that cannot be written (a read-only file, or `mode=ro` in a `file:` name) keeps the mode it has when the url did not name one; `journal_mode=wal` on it is `sqlite error 8: attempt to write a readonly database`.
+- A database that cannot use WAL (a network file system) is an error, not a silent fallback. An in-memory database always stays in `memory` mode and is accepted. A database that cannot be written (a read-only file, or `mode=ro` in a `file:` name) keeps the mode it has when the url did not name one; `journal_mode=wal` on it is `sqlite error 8: attempt to write a readonly database`. A plain path that cannot take WAL is an error, so that a web app stops at startup and does not run in another mode; a `file:` name is more forgiving, since its own parameters can rule WAL out.
 - `foreign_keys=on` makes SQLite check foreign keys. SQLite itself leaves them off.
 - `busy_timeout` is how long a statement waits for a lock held by another connection before it fails with `sqlite error 5: database is locked`.
 - `fts5=required` makes `open` fail with `sqlite error: this SQLite was built without FTS5 (fts5=required)` when the system library has no FTS5, instead of failing later at the first `create virtual table`.
@@ -65,7 +65,7 @@ true
 
 ### SQLite URIs
 
-A name that starts with `file:` is a [SQLite URI](https://www.sqlite.org/uri.html) and goes to SQLite as it is: its `?` parameters belong to SQLite, and the table above does not apply to it. `sqlite:file:app.db?mode=ro` opens read-only, and `sqlite:file::memory:?cache=shared` is an in-memory database that several connections share. The defaults still apply (`foreign_keys` on, WAL tried: a read-only database keeps its mode), and to change one, run `PRAGMA journal_mode = DELETE` or `PRAGMA foreign_keys = OFF` after `open`.
+A name that starts with `file:` is a [SQLite URI](https://www.sqlite.org/uri.html) and goes to SQLite as it is: its `?` parameters belong to SQLite, and the table above does not apply to it. `sqlite:file:app.db?mode=ro` opens read-only, and `sqlite:file::memory:?cache=shared` is an in-memory database that several connections share. The defaults still apply (`foreign_keys` on, and WAL tried: if SQLite will not switch, for example with `immutable=1`, `nolock=1` or `mode=ro`, the database keeps its mode), and to change one, run `PRAGMA journal_mode = DELETE` or `PRAGMA foreign_keys = OFF` after `open`.
 
 ### A `?` in a path
 

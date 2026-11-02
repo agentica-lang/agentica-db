@@ -16,10 +16,13 @@ URI_PREFIX = "file:"
 
 ## What a url sets besides the path. The defaults suit a web app: WAL lets readers run beside the one writer, foreign
 ## keys are checked, and a busy database is waited for, not failed at once. `journal_given` says that the url named
-## the journal mode, which makes a WAL that cannot be set an error, not a skip.
+## the journal mode, which makes a WAL that cannot be set an error, not a skip. `uri` says that the name is a `file:`
+## URI, whose own parameters (`immutable=1`, `nolock=1`, `vfs=unix-none`) can rule WAL out: then a default `wal` is
+## skipped whatever the reason, while for a plain path only a read-only database is skipped.
 export struct Settings
   journal_mode: String = "wal"
   journal_given: Bool = false
+  uri: Bool = false
   foreign_keys: Bool = true
   busy_timeout: Int = 5000
   fts5: Bool = false
@@ -33,7 +36,11 @@ end
 
 ## Reads the text after `sqlite:`.
 export def parse(text: String) -> Result[Target]
-  if text.start_with?(URI_PREFIX) or not text.include?("?")
+  if text.start_with?(URI_PREFIX)
+    return ok(Target(path: text, settings: Settings(uri: true)))
+  end
+
+  if not text.include?("?")
     return ok(Target(path: text, settings: Settings()))
   end
 
