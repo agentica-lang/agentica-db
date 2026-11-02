@@ -1,0 +1,66 @@
+import SqliteUrl from "../sqlite_url"
+
+def target_of(text: String) -> SqliteUrl.Target
+  return SqliteUrl.parse(text).unwrap!
+end
+
+def refused(text: String, message: String) -> Result[Void]
+  return Test.eq(SqliteUrl.parse(text).message, "sqlite error: #{message}")
+end
+
+def main() -> Void
+  Test.run([
+    Test.test("a name without parameters, or with a lone ?, gets the web app defaults") do
+      bare = target_of("app.db")
+      try Test.eq(bare.path, "app.db")
+      try Test.eq(bare.settings.journal_mode, "wal")
+      try Test.eq(bare.settings.journal_given, false)
+      try Test.eq(bare.settings.foreign_keys, true)
+      try Test.eq(bare.settings.busy_timeout, 5000)
+      try Test.eq(bare.settings.fts5, false)
+      try Test.eq(target_of(":memory:").path, ":memory:")
+      lone = target_of("app.db?")
+      try Test.eq(lone.path, "app.db")
+      return Test.eq(lone.settings.journal_mode, "wal")
+    end,
+    Test.test("every parameter is read, a repeated name keeps its last value, and the path stops at the first ?") do
+      found = target_of("a.db?journal_mode=wal&journal_mode=delete&foreign_keys=off&busy_timeout=250&fts5=required")
+      try Test.eq(found.path, "a.db")
+      try Test.eq(found.settings.journal_mode, "delete")
+      try Test.eq(found.settings.journal_given, true)
+      try Test.eq(found.settings.foreign_keys, false)
+      try Test.eq(found.settings.busy_timeout, 250)
+      try Test.eq(found.settings.fts5, true)
+      return Test.eq(target_of("a.db?foreign_keys=off&foreign_keys=on").settings.foreign_keys, true)
+    end,
+    Test.test("a text that starts with file: is a SQLite URI and goes whole, with the defaults") do
+      uri = target_of("file:app.db?mode=ro&cache=shared")
+      try Test.eq(uri.path, "file:app.db?mode=ro&cache=shared")
+      try Test.eq(uri.settings.journal_given, false)
+      return Test.eq(target_of("file::memory:?cache=shared").path, "file::memory:?cache=shared")
+    end,
+    Test.test("a parameter that is empty, has no =, or is not known is an error") do
+      try refused("a.db?&foreign_keys=off", "the url has an empty parameter")
+      try refused("a.db?foreign_keys=off&", "the url has an empty parameter")
+      try refused("a.db?journal_mode", "the url parameter journal_mode has no value, write name=value")
+      return refused("a.db?color=red", "unknown url parameter color, expected journal_mode, foreign_keys, " +
+                                       "busy_timeout or fts5")
+    end,
+    Test.test("names and values are lowercase and case-sensitive, and nothing is percent-decoded") do
+      try refused("a.db?journal_mode=WAL", "the url parameter journal_mode has a value that is not allowed: WAL")
+      try refused("a.db?Foreign_Keys=on", "unknown url parameter Foreign_Keys, expected journal_mode, " +
+                                          "foreign_keys, busy_timeout or fts5")
+      try refused("a.db?foreign_keys=ON", "the url parameter foreign_keys has a value that is not allowed: ON")
+      try refused("a.db?journal_mode=%77al", "the url parameter journal_mode has a value that is not allowed: %77al")
+      try refused("a.db?fts5=yes", "the url parameter fts5 has a value that is not allowed: yes")
+      return refused("a.db?busy_timeout=%31%30", "the url busy_timeout is not a number of milliseconds")
+    end,
+    Test.test("a busy_timeout is up to nine digits") do
+      try Test.eq(target_of("a.db?busy_timeout=0").settings.busy_timeout, 0)
+      try Test.eq(target_of("a.db?busy_timeout=999999999").settings.busy_timeout, 999999999)
+      try refused("a.db?busy_timeout=1000000000", "the url busy_timeout is not a number of milliseconds")
+      try refused("a.db?busy_timeout=", "the url busy_timeout is not a number of milliseconds")
+      return refused("a.db?busy_timeout=-5", "the url busy_timeout is not a number of milliseconds")
+    end,
+  ])
+end

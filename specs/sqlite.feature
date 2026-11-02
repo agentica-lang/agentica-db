@@ -110,20 +110,38 @@ Feature: SQLite
     When I execute "insert into children values (7)"
     Then it fails with "sqlite error 19: FOREIGN KEY constraint failed"
 
-  Scenario Outline: A url parameter that is not understood is an error on sqlite: <parameter>
+  Scenario: A url parameter that is not understood is an error on sqlite
     Given a "sqlite" database
-    When I open "sqlite::memory:?<parameter>"
-    Then it fails with "<failure>"
+    When I open "sqlite::memory:?color=red"
+    Then it fails with "sqlite error: unknown url parameter color, expected"
 
-    Examples:
-      | parameter                | failure                                                      |
-      | journal_mode=fast        | sqlite error: the url parameter journal_mode has a value     |
-      | foreign_keys=1           | sqlite error: the url parameter foreign_keys has a value     |
-      | fts5=yes                 | sqlite error: the url parameter fts5 has a value             |
-      | busy_timeout=soon        | sqlite error: the url busy_timeout is not a number           |
-      | busy_timeout=            | sqlite error: the url busy_timeout is not a number           |
-      | busy_timeout=99999999999 | sqlite error: the url busy_timeout is not a number           |
-      | color=red                | sqlite error: unknown url parameter color, expected          |
+  Scenario: A read-only file opens by default, and an explicit journal_mode=wal on it is an error on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/readonly.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I execute "insert into t values (1)"
+    And I close the database
+    And I make the file "[SCRATCH]/readonly.db" read-only
+    And I open "sqlite:[SCRATCH]/readonly.db"
+    Then the query "select x from t" returns:
+      | x     |
+      | Int 1 |
+    When I open "sqlite:[SCRATCH]/readonly.db?journal_mode=wal"
+    Then it fails with "sqlite error 8: "
+    When I make the file "[SCRATCH]/readonly.db" writable
+    Then it succeeds
+
+  Scenario: A file: name is a SQLite URI that goes to SQLite as it is, and the defaults still apply on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/uri.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I close the database
+    And I open "sqlite:file:[SCRATCH]/uri.db?mode=ro"
+    Then the query "pragma foreign_keys" returns:
+      | foreign_keys |
+      | Int 1        |
+    When I execute "insert into t values (1)"
+    Then it fails with "sqlite error 8: "
 
   Scenario: A database opened with fts5=required can search text on sqlite
     Given a "sqlite" database

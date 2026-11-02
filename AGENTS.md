@@ -1,6 +1,6 @@
 # agentica-db
 
-One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc`, `postgres.agc`
+One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc` with its url reader `sqlite_url.agc`, `postgres.agc`
 with its placeholder scanner `postgres_sql.agc`, `mysql.agc` with its statement scanner `mysql_sql.agc` and its url
 reader `mysql_url.agc`), all through the C FFI. No C code of ours. `orm.agc` is a typed layer over `Db` (plain structs
 in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the
@@ -76,8 +76,8 @@ runs it and checks its output.
   `Then`, since nothing comes after it to refuse.
 - Scenario names are unique: put a column of the Examples in the title of an outline with several rows.
 - `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would
-  say badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url reader
-  (`test/mysql_url_test.agc`) and the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a
+  say badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url readers
+  (`test/mysql_url_test.agc`, `test/sqlite_url_test.agc`) and the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a
   connection is a scenario. A behavior is proven once: a common scenario is an outline with one row per adapter that
   the behavior applies to, not one per variant of the input, and a case a unit test proves is not repeated in a
   feature, except the one integration row per adapter that shows the helper is wired in (a bad url, a NUL in the sql).

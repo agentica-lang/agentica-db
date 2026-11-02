@@ -11,8 +11,9 @@ export OK = "ok"
 ## `open_url` (text: url), `execute` and `query` (text: sql, cells: params), `transaction` (table: statements,
 ## text: the failure message of the body, empty for ok, nested: start a transaction inside it, gives: the body
 ## gives back the rows changed by its last statement, and the transaction gives that count), `close`,
-## `execute_in_task`, `query_in_new_task` (text: sql), `keep_running` (text: sql, number: the longest gap in
-## milliseconds), `leave_open` (text: connection name, number: milliseconds the server may take to drop it),
+## `read_only` and `writable` (text: a file), `execute_in_task`, `query_in_new_task` (text: sql), `keep_running`
+## (text: sql, number: the longest gap in milliseconds), `leave_open` (text: connection name, number: milliseconds the
+## server may take to drop it),
 ## `orm_query` (text: sql, cells: params, partial: read a Partial, whose age can be absent), `orm_query_as` (text:
 ## sql) and `orm_check` (text: schema name), `orm_insert` (table: a header and the row of a Person, text: `manual` for
 ## a key that is not generated, partial: write a Partial) and `orm_update` (table, partial), `orm_patch` (number: the key, text: the changes as JSON), `orm_delete` (number: the key or

@@ -4,13 +4,16 @@
 ## closes it (a transaction still open is rolled back). Using a closed handle is a runtime error
 ## (`RUNTIME-NATIVE-CLOSED`).
 ##
-## `open` sets up the connection for a web app, and the parameters after a `?` change it: `journal_mode` (`wal`,
-## `delete`, `truncate`, `persist`, `memory` or `off`; default `wal`), `foreign_keys` (`on` or `off`; default `on`),
-## `busy_timeout` (milliseconds, default 5000) and `fts5=required` (the open fails when this SQLite has no FTS5).
-## `sqlite:app.db?journal_mode=delete&foreign_keys=off` is SQLite's own behavior.
+## `open` sets up the connection for a web app. The parameters after a `?` change it (`sqlite_url.agc` reads them):
+## `journal_mode` (default `wal`), `foreign_keys` (default `on`), `busy_timeout` (milliseconds, default 5000) and
+## `fts5=required` (the open fails when this SQLite has no FTS5). `sqlite:app.db?journal_mode=delete&foreign_keys=off`
+## is SQLite's own behavior. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is, with its own
+## `?` parameters (`file:app.db?mode=ro`); the defaults still apply to it. A default `wal` that a read-only database
+## refuses is skipped; an explicit one is an error.
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
+import SqliteUrl from "sqlite_url"
 import {Row, Value} from "value"
 
 ## The statement that starts a transaction: IMMEDIATE takes the write lock at once, so a busy database fails at
@@ -23,8 +26,10 @@ SQLITE_INTEGER = 1
 SQLITE_FLOAT = 2
 SQLITE_TEXT = 3
 SQLITE_BLOB = 4
-MAX_BUSY_TIMEOUT_DIGITS = 9
-JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
+# SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI: the URI flag makes `file:` names work the same on
+# every build, whatever its default.
+OPEN_FLAGS = 70
+SQLITE_READONLY = 8
 # The length argument that means "up to the NUL" for the sql.
 NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
@@ -34,7 +39,7 @@ extern "sqlite3"
   ## An open database.
   export resource Handle, free: sqlite3_close_v2
   resource Stmt, free: sqlite3_finalize
-  compute def sqlite3_open(filename: C.String, out db: Handle) -> C.Int32
+  compute def sqlite3_open_v2(filename: C.String, out db: Handle, flags: C.Int32, vfs: C.Pointer) -> C.Int32
   def sqlite3_busy_timeout(db: Handle, ms: C.Int32) -> C.Int32
   def sqlite3_errmsg(db: Handle) -> C.String
   def sqlite3_errstr(code: C.Int32) -> C.String
@@ -63,30 +68,17 @@ extern "sqlite3"
   def sqlite3_column_bytes(stmt: Stmt, col: C.Int32) -> C.Int32
 end
 
-## What a url sets besides the path. The defaults suit a web app: WAL lets readers run beside the one writer,
-## foreign keys are checked, and a busy database is waited for, not failed at once.
-struct Settings
-  journal_mode: String = "wal"
-  foreign_keys: Bool = true
-  busy_timeout: Int = 5000
-  fts5: Bool = false
-end
-
-struct Target
-  path: String
-  settings: Settings
-end
-
 ## Opens a database file, or `:memory:`; the file is created when it does not exist. A `?` ends the path and starts
-## the settings (see the top of this file); a path that holds a `?` cannot be opened by name.
+## the settings (see the top of this file); a path that holds a `?` (as does the Windows `\\?\` prefix) cannot be
+## opened by name, except as a `file:` URI.
 export def open(path: String) -> Result[Handle]
   if has_nul?(path)
     return error("sqlite error: the path contains a NUL character")
   end
 
-  target = try read_target(path)
+  target = try SqliteUrl.parse(path)
   try load_library()
-  opened = sqlite3_open(target.path)
+  opened = sqlite3_open_v2(target.path, OPEN_FLAGS, Native.pointer(0))
   if opened.result != SQLITE_OK
     # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
     Native.close(opened.db)
@@ -134,70 +126,8 @@ export def execute(conn: Handle, sql: String, params: List[Value]) -> Result[Int
   return ok(changes_since(conn, before))
 end
 
-# The text before the first `separator` and the text after it (empty when there is none).
-def split_once(text: String, separator: String) -> List[String]
-  found = text.index_of(separator)
-  case found
-    some(at) -> return [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
-    none -> return [text, ""]
-  end
-end
-
-def one_of?(choices: List[String], value: String) -> Bool
-  return choices.any? do |choice| choice == value end
-end
-
-def read_target(text: String) -> Result[Target]
-  halves = split_once(text, "?")
-  if not text.include?("?")
-    return ok(Target(path: text, settings: Settings()))
-  end
-
-  settings = try read_settings(halves[1])
-  return ok(Target(path: halves[0], settings: settings))
-end
-
-def read_settings(query: String) -> Result[Settings]
-  settings = Settings()
-  if query.empty?
-    return ok(settings)
-  end
-
-  for pair in query.split("&")
-    halves = split_once(pair, "=")
-    name = halves[0]
-    value = halves[1]
-    if name == "journal_mode" and one_of?(JOURNAL_MODES, value)
-      settings = settings.with(journal_mode: value)
-    elsif name == "foreign_keys" and one_of?(["on", "off"], value)
-      settings = settings.with(foreign_keys: value == "on")
-    elsif name == "busy_timeout"
-      settings = settings.with(busy_timeout: try read_milliseconds(value))
-    elsif name == "fts5" and value == "required"
-      settings = settings.with(fts5: true)
-    elsif one_of?(["journal_mode", "foreign_keys", "fts5"], name)
-      return error("sqlite error: the url parameter #{name} has a value that is not allowed: #{value}")
-    else
-      return error("sqlite error: unknown url parameter #{name}, expected journal_mode, foreign_keys, busy_timeout " +
-                   "or fts5")
-    end
-  end
-
-  return ok(settings)
-end
-
-# A non-empty run of ASCII digits, short enough for the C int of sqlite3_busy_timeout.
-def read_milliseconds(text: String) -> Result[Int]
-  bytes = text.bytes.to_a
-  if bytes.empty? or bytes.size > MAX_BUSY_TIMEOUT_DIGITS or bytes.any? do |byte| byte < 48 or byte > 57 end
-    return error("sqlite error: the url busy_timeout is not a number of milliseconds")
-  end
-
-  return text.to_i
-end
-
 # The busy timeout goes first: changing the journal mode needs a lock that another connection may hold.
-def configure(conn: Handle, settings: Settings) -> Result[Void]
+def configure(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
   sqlite3_busy_timeout(conn, settings.busy_timeout)
   if settings.fts5 and not fts5?(conn)
     return error("sqlite error: this SQLite was built without FTS5 (fts5=required)")
@@ -205,7 +135,7 @@ def configure(conn: Handle, settings: Settings) -> Result[Void]
 
   # Set in both cases: a build can turn foreign keys on by default.
   try execute(conn, "PRAGMA foreign_keys = #{on_off(settings.foreign_keys)}", [])
-  try set_journal_mode(conn, settings.journal_mode)
+  try set_journal_mode(conn, settings)
   return ok()
 end
 
@@ -218,22 +148,35 @@ def on_off(flag: Bool) -> String
 end
 
 # The pragma answers with the mode in force. A memory database stays in `memory` whatever is asked, which is fine;
-# any other answer means the mode did not change (a file system without shared memory has no WAL).
-def set_journal_mode(conn: Handle, mode: String) -> Result[Void]
-  rows = try query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
-  answer = ""
-  if not rows.empty?
-    case rows[0].get("journal_mode", Value.Null)
-      Value.Text(text) -> answer = text
-      _ -> answer = ""
-    end
-  end
+# any other answer means the mode did not change (a file system without shared memory has no WAL). A database that
+# cannot be written (a read-only file or `mode=ro`) keeps its mode when the url did not ask for one, so the default
+# does not stop a url that worked before from opening; an explicit journal_mode still fails.
+def set_journal_mode(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
+  mode = settings.journal_mode
+  asked = query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
+  case asked
+    error(message) ->
+      if not settings.journal_given and message.start_with?("sqlite error #{SQLITE_READONLY}:")
+        return ok()
+      end
 
-  if answer != mode and answer != "memory"
-    return error("sqlite error: journal_mode #{mode} could not be set, the database is in #{answer} mode")
-  end
+      return error(message)
 
-  return ok()
+    ok(rows) ->
+      answer = "unknown"
+      if not rows.empty?
+        case rows[0].get("journal_mode", Value.Null)
+          Value.Text(text) -> answer = text
+          _ -> answer = "unknown"
+        end
+      end
+
+      if answer != mode and answer != "memory"
+        return error("sqlite error: journal_mode #{mode} could not be set, the database is in #{answer} mode")
+      end
+
+      return ok()
+  end
 end
 
 # Tries to create an FTS5 table in the temp schema, which no file keeps.

@@ -55,12 +55,21 @@ end
 true
 ```
 
-- `journal_mode=wal` lets readers run while one connection writes, which a web server needs. The mode is stored in the database file, so the file stays in WAL mode for any later connection. The file has `-wal` and `-shm` files beside it while a connection is open. A database that cannot use WAL (a network file system) is an error, not a silent fallback; an in-memory database always stays in `memory` mode and is accepted.
+- `journal_mode=wal` lets readers run while one connection writes, which a web server needs. The mode is stored in the database file, so the file stays in WAL mode for any later connection. While a connection is open, the file has `-wal` and `-shm` files beside it, and recent writes may live only in `-wal`: copying the `.db` file alone then can lose data. Close the connection first, or back up with SQLite's backup API (`VACUUM INTO 'copy.db'` also works).
+- A database that cannot use WAL (a network file system) is an error, not a silent fallback. An in-memory database always stays in `memory` mode and is accepted. A database that cannot be written (a read-only file, or `mode=ro` in a `file:` name) keeps the mode it has when the url did not name one; `journal_mode=wal` on it is `sqlite error 8: attempt to write a readonly database`.
 - `foreign_keys=on` makes SQLite check foreign keys. SQLite itself leaves them off.
 - `busy_timeout` is how long a statement waits for a lock held by another connection before it fails with `sqlite error 5: database is locked`.
 - `fts5=required` makes `open` fail with `sqlite error: this SQLite was built without FTS5 (fts5=required)` when the system library has no FTS5, instead of failing later at the first `create virtual table`.
-- A parameter that is not in the table, or a value that is not allowed, is `sqlite error: ...`. A `?` always starts the parameters, so a file whose name holds a `?` cannot be opened by name.
+- Names and values are lowercase and case-sensitive (`journal_mode=WAL` is an error, although SQLite itself takes it), and a value is not percent-decoded. A repeated name keeps its last value. A parameter that is not in the table, an empty one (`?&x=1`), one without `=` or a value that is not allowed is `sqlite error: ...`.
 - `sqlite:app.db?journal_mode=delete&foreign_keys=off` is SQLite's own behavior before these defaults.
+
+### SQLite URIs
+
+A name that starts with `file:` is a [SQLite URI](https://www.sqlite.org/uri.html) and goes to SQLite as it is: its `?` parameters belong to SQLite, and the table above does not apply to it. `sqlite:file:app.db?mode=ro` opens read-only, and `sqlite:file::memory:?cache=shared` is an in-memory database that several connections share. The defaults still apply (`foreign_keys` on, WAL tried: a read-only database keeps its mode), and to change one, run `PRAGMA journal_mode = DELETE` or `PRAGMA foreign_keys = OFF` after `open`.
+
+### A `?` in a path
+
+A `?` always starts the parameters, so a file whose name holds a `?` cannot be opened by name. That includes the Windows extended-length prefix `\\?\C:\...`. Write such a path as a `file:` URI with the `?` as `%3f` (`sqlite:file:C:/dir/a%3fb.db`).
 
 ## What to know
 

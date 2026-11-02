@@ -177,6 +177,8 @@ def act(state: State, req: Request) -> Handled
     "orm_patch" -> return reply_ok(orm_patch(state, req.number, req.text))
     "orm_delete" -> return reply_ok(orm_delete(state, req))
     "close" -> return reply_ok(close(state))
+    "read_only" -> return reply_ok(set_access(state, expand(state, req.text), false))
+    "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -265,6 +267,38 @@ end
 
 def scratch_dir() -> String
   return "#{SCRATCH_ROOT}/scratch"
+end
+
+# Makes a file read-only, or writable again: `chmod` on Unix, `attrib` on Windows (where a read-only file cannot be
+# removed, so a scenario makes it writable before it ends). The process is the only way, there is no chmod in Agentica.
+def set_access(state: State, path: String, writable: Bool) -> State
+  command = "chmod"
+  args = ["444", path]
+  if writable
+    args = ["644", path]
+  end
+
+  if System.os() == "windows"
+    command = "cmd.exe"
+    flag = "+R"
+    if writable
+      flag = "-R"
+    end
+
+    args = ["/c", "attrib", flag, path.replace("/", "\\")]
+  end
+
+  started = Process.spawn(command, args, IO_TIMEOUT_MS)
+  case started
+    error(message) -> return failed(state, message)
+    ok(process) ->
+      code = Process.wait(process, IO_TIMEOUT_MS).unwrap_or(-1)
+      if code != 0
+        return failed(state, "#{command} failed with #{code}")
+      end
+
+      return recorded(state, Outcome.Done)
+  end
 end
 
 # Runs `run` with the connection, or records the failure of having none.
