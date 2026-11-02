@@ -4,20 +4,25 @@
 ## sql. Running `up` again applies nothing.
 ##
 ## `up` refuses to run, with `migrate error: <message>`, when the history does not fit the list: a version that is not
-## ascending in the list, a migration that is applied but missing from the list, an applied migration whose sql has
-## changed, or a pending migration older than one already applied. A migration that fails rolls back and stops the
-## run; the ones before it stay applied. A function migration has the checksum of its name only, since a function
-## has no text.
+## ascending in the list, a migration that is applied but missing from the list, an applied migration whose sql or
+## name has changed, or a pending migration older than one already applied. A migration that fails rolls back and
+## stops the run; the ones before it stay applied. A function migration has the checksum of its name only, since a
+## function has no text.
 ##
-## The same code runs on SQLite, PostgreSQL and MySQL. MySQL commits at once after a statement that changes the schema
-## (`create table`, `alter table`...), so a migration that fails after one is not rolled back there: keep one such
-## statement in a migration. Run `up` from one process at a time (at startup, before the server listens): two runs at
-## once make one of them fail on the primary key of the table, and on MySQL the schema change may already be done.
+## The same code runs on SQLite, PostgreSQL and MySQL. There is no `down`: undo a change with a new migration. A
+## function migration runs inside the transaction of `up`, so it must not start one, and on SQLite a
+## `PRAGMA foreign_keys = off` does nothing inside it. MySQL commits at once after a statement that changes the schema
+## (`create table`, `alter table`...), so a failure between such a statement and its row in the history leaves it
+## applied and unrecorded: put each schema change alone in its own migration, and make a repeat harmless (`create
+## table if not exists`, `drop table if exists`), so that running `up` again passes. Run `up` from one process at a
+## time (at startup, before the server listens): two runs at once make one of them fail on the primary key of the
+## history table (on PostgreSQL, the first run of two can also fail in `create table if not exists` with a unique
+## error on pg_type), and on MySQL a schema change may already be done.
 
 import Db from "db"
 
-# Letters, digits and `_`, so the name is safe to write into sql.
 VERSION_COLUMNS = "version, name, checksum"
+MAX_NAME_BYTES = 255
 
 ## What a migration does: run these statements (one per entry, each with no parameters), or call this function.
 export enum Action
@@ -57,8 +62,7 @@ export def up(conn: Db.Connection, migrations: List[Migration],
               table: String = "schema_migrations") -> Result[List[Int]]
   try check_table(table)
   try check_list(migrations)
-  try Db.execute(conn, "create table if not exists #{table} (version bigint not null primary key, " +
-                       "name varchar(255) not null, checksum varchar(64) not null)", [])
+  try prepare_history(conn, table)
   applied = try recorded(conn, table)
   try check_history(migrations, applied)
   highest = applied.reduce(0) do |top, row| max(top, row.version) end
@@ -90,6 +94,7 @@ def max(a: Int, b: Int) -> Int
   return b
 end
 
+# Letters, digits and `_`, so the name is safe to write into sql.
 def check_table(table: String) -> Result[Void]
   bytes = table.bytes.to_a
   bad = bytes.any? do |byte| not identifier_byte?(byte) end
@@ -109,6 +114,10 @@ end
 def check_list(migrations: List[Migration]) -> Result[Void]
   previous = 0
   for migration in migrations
+    if migration.name.empty? or migration.name.bytesize > MAX_NAME_BYTES
+      return error("migrate error: migration #{migration.version} needs a name of 1 to #{MAX_NAME_BYTES} bytes")
+    end
+
     if migration.version <= previous
       return error("migrate error: migration #{label(migration)} must have a version above #{previous}: " +
                    "versions are positive and ascend in the list")
@@ -120,14 +129,32 @@ def check_list(migrations: List[Migration]) -> Result[Void]
   return ok()
 end
 
+# The engine errors of the two steps before the first migration carry the prefix too.
+def prepare_history(conn: Db.Connection, table: String) -> Result[Void]
+  created = Db.execute(conn, "create table if not exists #{table} (version bigint not null primary key, " +
+                             "name varchar(255) not null, checksum varchar(64) not null)", [])
+  case created
+    error(message) -> return error("migrate error: #{message}")
+    ok(_) -> return ok()
+  end
+end
+
 def recorded(conn: Db.Connection, table: String) -> Result[List[Row]]
-  rows = try Db.query(conn, "select #{VERSION_COLUMNS} from #{table} order by version", [])
+  asked = Db.query(conn, "select #{VERSION_COLUMNS} from #{table} order by version", [])
+  rows = try prefixed(asked)
   found: List[Row] = []
   for row in rows
     found = found.push(try read_row(row))
   end
 
   return ok(found)
+end
+
+def prefixed[T](done: Result[T]) -> Result[T]
+  case done
+    error(message) -> return error("migrate error: #{message}")
+    ok(value) -> return ok(value)
+  end
 end
 
 def read_row(row: Db.Row) -> Result[Row]
@@ -158,6 +185,11 @@ def check_history(migrations: List[Migration], applied: List[Row]) -> Result[Voi
     case found
       error(_) -> return error("migrate error: migration #{row.version} (#{row.name}) is applied but not in the list")
       ok(migration) ->
+        if migration.name != row.name
+          return error("migrate error: migration #{row.version} (#{migration.name}) was renamed after it was " +
+                       "applied, it was (#{row.name})")
+        end
+
         if checksum(migration) != row.checksum
           return error("migrate error: migration #{label(migration)} was changed after it was applied")
         end

@@ -108,6 +108,19 @@ Feature: Migrations
       | 1       | users | create table users (id int, name text)   |
     Then it fails with exactly "migrate error: migration 1 (users) was changed after it was applied"
 
+  Scenario: A migration renamed after it was applied is refused on sqlite
+    Given a "sqlite" database
+    And I migrate with:
+      | version | name  | sql                         |
+      | 1       | users | create table users (id int) |
+    And the result is:
+      | version |
+      | Int 1   |
+    When I migrate with:
+      | version | name   | sql                         |
+      | 1       | people | create table users (id int) |
+    Then it fails with "migrate error: migration 1 (people) was renamed after it was applied, it was (users)"
+
   Scenario: A migration that is applied but no longer in the list is refused on sqlite
     Given a "sqlite" database
     And I migrate with:
@@ -155,3 +168,10 @@ Feature: Migrations
       | history    | 0     | 1    | migrate error: migration 0 (a) must have a version above 0  |
       | bad-name   | 1     | 2    | migrate error: the table name must be letters, digits and _ |
       | 1history   | 1     | 2    | migrate error: the table name must be letters, digits and _ |
+
+  Scenario: A migration without a name is refused on sqlite
+    Given a "sqlite" database
+    When I migrate with:
+      | version | name | sql                     |
+      | 1       |      | create table a (id int) |
+    Then it fails with "migrate error: migration 1 needs a name of 1 to 255 bytes"
