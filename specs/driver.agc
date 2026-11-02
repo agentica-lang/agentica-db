@@ -279,13 +279,13 @@ def set_access(state: State, path: String, writable: Bool) -> State
   end
 
   if System.os() == "windows"
-    command = "cmd.exe"
+    command = "attrib.exe"
     flag = "+R"
     if writable
       flag = "-R"
     end
 
-    args = ["/c", "attrib", flag, path.replace("/", "\\")]
+    args = [flag, path.replace("/", "\\")]
   end
 
   started = Process.spawn(command, args, IO_TIMEOUT_MS)
