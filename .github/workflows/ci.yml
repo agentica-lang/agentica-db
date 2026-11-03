@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 env:
-  AGENTICA_VERSION: 0.22.0
-  AGENTICA_SHA256: f71fbf3e52ed154c652592c67b51b2afde7fd6104d21bdf85eb6e4c8cffb9d66
+  AGENTICA_VERSION: 0.23.0
+  AGENTICA_SHA256: b81de3919408ffd95e4466a48f729fb1eb33521cc1a8ea3909b038c9daedb0ed
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
@@ -104,13 +104,13 @@ jobs:
         include:
           - name: macos-arm64
             runner: macos-latest
-            sha256: e882fff5248c022462784a21a053b6f87e9d425aed85f3caf59b096c8777373f
+            sha256: 8cbda57f2bfd430091251fb2f0af9d051a9dc080be1a3ff67ad0d42f559b8c1e
           - name: macos-x86_64
             runner: macos-15-intel
-            sha256: 4292270f60ef9bf69334913a897f3d784d9577b65054f32107598754d0d53c57
+            sha256: 48b1214f1be6881beb8c0d04563d09f2f3912b227f6d9a3b0ff8dac373601e88
           - name: windows-x86_64
             runner: windows-latest
-            sha256: f586805b293f49e82edb146c10a2eb63033920f26ac4ddc20a0be7e3c687972f
+            sha256: ee08fe9c5d807d211a9c916d83bef4159c8c46e6c40f6c439d82e0d272271128
     steps:
       - uses: actions/checkout@v4
 
