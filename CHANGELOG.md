@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a read-only database refuses is skipped when the url did not name a journal mode.
 - **Breaking:** a `?` in a SQLite path now starts the parameters, so `a?b.db`, `q.db?` and the Windows `\\?\C:\...`
   prefix are no longer file names (`sqlite:file:a%3fb.db` is). A parameter that is not known is an error.
+- CI runs on Agentica 0.22.0 (pinned by sha256 on every OS), and `examples/users.agc` needs it: it reads the `Bytes`
+  body of `HttpRequest` and writes the `Bytes` body of `HttpResponse`, which came with the 0.19.0 series. The library
+  itself uses no HTTP type.
 
 ## [0.3.0] - 2026-10-30
 

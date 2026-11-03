@@ -3,9 +3,9 @@
 ## `insert`, `find`, the query builder, `patch`, `delete` and a transaction that gives back a value.
 ##
 ## It runs on its own against an in-memory SQLite database and prints each request with its response, so no server
-## is needed. To serve it, open the connection in `main` and hand `HTTP.listen` a block that calls
-## `handle(conn, schema, request)`. A real app adds more: a 405 with an `Allow` header, a cap on the size of an import,
-## and URL decoding of the query.
+## is needed. To serve it, open the connection in `main` and call `HTTP.serve(host, port, HTTP.app(&route), options)`,
+## where `route` calls `handle(conn, schema, request)`. A real app adds more: a 405 with an `Allow` header, a cap on
+## the size of an import, and URL decoding of the query.
 ## `specs/examples.feature` runs this file and checks what it prints.
 
 import Db from "../db"
@@ -42,19 +42,25 @@ def main() -> Void
   end
 end
 
+# The body of a request is `Bytes`; the handlers read it as UTF-8 text, and an invalid one is an empty text, which
+# the JSON decoding then refuses as a bad body.
+def text_of(request: HttpRequest) -> String
+  return String.from_bytes(request.body).unwrap_or("")
+end
+
 # The routes: the method and the parts of the path (`/users/7` is ["", "users", "7"]).
 def handle(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest) -> HttpResponse
   parts = request.path.split("/")
   if parts.size == 2 and parts[1] == "users"
     case request.method
-      "POST" -> return create(conn, schema, request.body)
+      "POST" -> return create(conn, schema, text_of(request))
       "GET" -> return list(conn, schema, request.target)
       _ -> return failure(405, "method not allowed")
     end
   end
 
   if parts.size == 3 and parts[1] == "users" and parts[2] == "import" and request.method == "POST"
-    return import_users(conn, schema, request.body)
+    return import_users(conn, schema, text_of(request))
   end
 
   if parts.size == 3 and parts[1] == "users"
@@ -70,7 +76,7 @@ end
 def user_route(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest, id: Int) -> HttpResponse
   case request.method
     "GET" -> return show(conn, schema, id)
-    "PATCH" -> return change(conn, schema, id, request.body)
+    "PATCH" -> return change(conn, schema, id, text_of(request))
     "DELETE" -> return remove(conn, schema, id)
     _ -> return failure(405, "method not allowed")
   end
@@ -144,7 +150,7 @@ def remove(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpRespon
   case Orm.delete(conn, schema, Db.Value.Int(id))
     error(message) -> return refused(message)
     ok(0) -> return failure(404, "no such user")
-    ok(_) -> return HttpResponse(status: 204, headers: [], body: "")
+    ok(_) -> return HttpResponse(status: 204, headers: [], body: "".bytes)
   end
 end
 
@@ -175,7 +181,8 @@ def users() -> Orm.Schema[User]
 end
 
 def json(status: Int, body: String) -> HttpResponse
-  return HttpResponse(status: status, headers: [Header(name: "Content-Type", value: "application/json")], body: body)
+  headers = [Header(name: "Content-Type", value: "application/json")]
+  return HttpResponse(status: status, headers: headers, body: body.bytes)
 end
 
 def failure(status: Int, message: String) -> HttpResponse
@@ -242,7 +249,7 @@ def script() -> List[HttpRequest]
 end
 
 def build_request(method: String, target: String, body: String) -> HttpRequest
-  return HttpRequest(method: method, target: target, path: target.split("?")[0], headers: [], body: body)
+  return HttpRequest(method: method, target: target, path: target.split("?")[0], headers: [], body: body.bytes)
 end
 
 def run() -> Result[Void]
@@ -252,7 +259,8 @@ def run() -> Result[Void]
   try Orm.check(conn, schema)
   for item in script()
     response = handle(conn, schema, item)
-    puts("#{item.method} #{item.target} -> #{response.status} #{response.body}".strip())
+    text = String.from_bytes(response.body).unwrap_or("")
+    puts("#{item.method} #{item.target} -> #{response.status} #{text}".strip())
   end
 
   Db.close(conn)
