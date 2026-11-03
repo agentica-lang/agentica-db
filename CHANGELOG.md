@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `Migrate` (`import Migrate from "pkg/db/migrate"`): ordered migrations, each a version and sql statements or a
+  function over the connection, applied by `Migrate.up` in one transaction each and recorded in a `schema_migrations`
+  table with a checksum. A second run applies nothing; a changed, missing or out-of-order migration is an error. It
+  runs on SQLite, PostgreSQL and MySQL.
 - SQLite urls take the parameters `journal_mode`, `foreign_keys`, `busy_timeout` and `fts5=required`
   (`sqlite:app.db?journal_mode=delete&foreign_keys=off`); `fts5=required` makes `open` fail when the system SQLite has
   no FTS5. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is (`file:app.db?mode=ro`,

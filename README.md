@@ -51,7 +51,7 @@ end
 - [SQLite][sqlite], [PostgreSQL][postgresql] and [MySQL and MariaDB][mysql].
 - The ORM: [schema][orm-schema], [reads][orm-reads], [query builder][orm-builder], [writes][orm-writes] and
   [errors][orm-errors].
-- [Testing][testing].
+- [Migrations][migrations] and [testing][testing].
 - [`examples/users.agc`](examples/users.agc): a users API on the ORM that runs against in-memory SQLite.
 - [CHANGELOG](CHANGELOG.md).
 
@@ -80,4 +80,5 @@ License: Apache-2.0.
 [orm-builder]: https://agentica-lang.github.io/agentica-db/guide/orm-builder/
 [orm-writes]: https://agentica-lang.github.io/agentica-db/guide/orm-writes/
 [orm-errors]: https://agentica-lang.github.io/agentica-db/guide/orm-errors/
+[migrations]: https://agentica-lang.github.io/agentica-db/guide/migrations/
 [testing]: https://agentica-lang.github.io/agentica-db/guide/testing/

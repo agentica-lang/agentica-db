@@ -31,6 +31,10 @@ def main() -> Void
     BDD.step("I run these statements in a transaction that starts a transaction inside it:") do |ctx, args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), nested: true))
     end,
+    BDD.step("I migrate with:") do |ctx, args| send(ctx, Request(op: "migrate", table: BDD.table(ctx))) end,
+    BDD.step("I migrate the table {string} with:") do |ctx, args|
+      send(ctx, Request(op: "migrate", text: args[0], table: BDD.table(ctx)))
+    end,
     plain_step("I close the database", "close"),
     text_step("I make the file {string} read-only", "read_only"),
     text_step("I make the file {string} writable", "writable"),

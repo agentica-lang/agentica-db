@@ -5,6 +5,7 @@
 
 import Cells from "cells"
 import Db from "../db"
+import Migrate from "../migrate"
 import Orm from "../orm"
 import Protocol from "protocol"
 import {Request} from "protocol"
@@ -177,6 +178,7 @@ def act(state: State, req: Request) -> Handled
     "orm_patch" -> return reply_ok(orm_patch(state, req.number, req.text))
     "orm_delete" -> return reply_ok(orm_delete(state, req))
     "close" -> return reply_ok(close(state))
+    "migrate" -> return reply_ok(migrate(state, req))
     "read_only" -> return reply_ok(set_access(state, expand(state, req.text), false))
     "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
@@ -267,6 +269,45 @@ end
 
 def scratch_dir() -> String
   return "#{SCRATCH_ROOT}/scratch"
+end
+
+# Runs `Migrate.up` with the rows of the table (`version`, `name`, `sql`; the header row is skipped). The sql cell
+# holds statements separated by `;` (no `;` inside a literal), or `code:` and one statement that a function migration
+# runs. The outcome is the versions applied, one row each, so a re-run shows no row. `text` is the history table, or
+# empty for the default.
+def migrate(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    list = req.table.drop(1).map do |row| migration_of(row) end
+    done = migrate_run(conn, list, req.text)
+    case done
+      error(message) -> return failed(state, message)
+      ok(versions) -> return recorded(state, Outcome.Rows(versions.map do |v| {"version": Db.Value.Int(v)} end))
+    end
+  end
+end
+
+def migrate_run(conn: Db.Connection, list: List[Migrate.Migration], table: String) -> Result[List[Int]]
+  if table.empty?
+    return Migrate.up(conn, list)
+  end
+
+  return Migrate.up(conn, list, table)
+end
+
+def migration_of(row: List[String]) -> Migrate.Migration
+  version = row[0].to_i.unwrap_or(0)
+  sql = Cells.expand(row[2])
+  if sql.start_with?("code:")
+    statement = sql.slice(5, sql.length - 5)
+    return Migrate.code(version, row[1]) do |tx|
+      case Db.execute(tx, statement, [])
+        error(message) -> return error(message)
+        ok(_) -> return ok()
+      end
+    end
+  end
+
+  return Migrate.sql(version, row[1], sql.split(";").map do |part| part.strip end)
 end
 
 # Removes the folder of the scenario. A scenario that failed between `read_only` and `writable` leaves a read-only
