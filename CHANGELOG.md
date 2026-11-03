@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI runs on Agentica 0.22.0 (pinned by sha256 on every OS), and `examples/users.agc` needs it: it reads the `Bytes`
   body of `HttpRequest` and writes the `Bytes` body of `HttpResponse`, which came with the 0.19.0 series. The library
   itself uses no HTTP type.
+- CI now tests with Agentica 0.23.0 on every OS. The package still needs Agentica 0.18.0 or later.
 
 ## [0.3.0] - 2026-10-30
 
