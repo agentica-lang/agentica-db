@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sleeping in its task and trying again, up to `busy_timeout` (default 5000 ms), and not inside SQLite: concurrent
   write transactions succeed with `AGENTICA_SCHEDULERS=1` or `2`, where they failed with `database is locked`.
   SQLite's own busy timeout is now 0, so `PRAGMA busy_timeout` shows 0.
+  A write in a transaction that began with a plain `BEGIN` and has read is not waited for and fails at once with
+  `database is locked` (SQLite 3.34 or later), so it cannot stall the other connection's `COMMIT`.
 - **Breaking:** `Sqlite.open` gives a `Sqlite.Connection` (a record with the handle and the busy timeout), and the
   payload of `Db.Connection.Sqlite` is that type; `Sqlite.Handle` is no longer exported. `Db.open` is unchanged.
 

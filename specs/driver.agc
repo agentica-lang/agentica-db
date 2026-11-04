@@ -24,6 +24,11 @@ CARRY_ON = "carry on"
 TICKS = 40
 TICK_MS = 20
 IO_TIMEOUT_MS = 5_000
+# The longest a step waits for a task to hold a lock, and the longest a refused write may take (a wait for a lock
+# that cannot come would end at the busy_timeout of 5000 ms).
+BLOCKED_WAIT_MS = 5_000
+REFUSED_WRITE_MS = 2_000
+PROBE_SQL = "select count(*) as n from sqlite_master"
 NO_DATABASE = "no database is open"
 
 # The struct of the Orm scenarios: the table `people`, whose age is a value or NULL.
@@ -128,6 +133,12 @@ struct Fresh
   sql: String
 end
 
+# A task that holds the write lock of the database at the url for `ms` milliseconds.
+struct Hold
+  url: String
+  ms: Int
+end
+
 def main() -> Void
   # The runner never closes the input of the driver, so the folder of a scenario that ended stays until the next
   # scenario starts: scenarios run one at a time, and each starts from nothing.
@@ -189,7 +200,9 @@ def act(state: State, req: Request) -> Handled
     "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
     "write_together" -> return reply_ok(write_together(state, req))
     "execute_waiting" -> return execute_waiting(state, req)
-    "query_until_commit" -> return reply_ok(query_until_commit(state, req))
+    "query_until_commit" -> return query_until_commit(state, req)
+    "write_while_blocked" -> return write_while_blocked(state, req)
+    "query_while_locked" -> return query_while_locked(state, req)
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -862,24 +875,152 @@ def execute_waiting(state: State, req: Request) -> Handled
   end
 end
 
-# The query runs in a task on a connection of its own while this connection, which holds a lock, commits after
-# `req.number` milliseconds: the query waits for the lock, then its rows or its failure are the outcome.
-def query_until_commit(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
-    job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
-    task = Task.spawn(&fresh_query, job)
-    Task.sleep(req.number)
-    committed = Db.execute(conn, "COMMIT", [])
-    found = Task.await(task)
-    if not committed.ok?
-      return failed(state, committed.message)
+# The three steps below start a task with a connection of its own, and act once the task holds a lock. The task is
+# seen by a probe, a connection that never waits (busy_timeout=0): its read fails while another connection holds a lock
+# that refuses new readers, which is a PENDING lock (a commit that waits for the readers) or an EXCLUSIVE one.
+def probe_url(url: String) -> String
+  return "#{url}&busy_timeout=0"
+end
+
+# True once the probe is refused; false when it is not within BLOCKED_WAIT_MS.
+def blocked?(probe: Db.Connection) -> Bool
+  deadline = Time.monotonic_ms() + BLOCKED_WAIT_MS
+  while Time.monotonic_ms() < deadline
+    if not Db.query(probe, PROBE_SQL, []).ok?
+      return true
     end
 
-    case found
-      error(message) -> return failed(state, message)
-      ok(rows) -> return recorded(state, Outcome.Rows(rows))
-    end
+    Task.sleep(1)
   end
+
+  return false
+end
+
+def never_blocked() -> String
+  return "the task never held a lock in #{BLOCKED_WAIT_MS} ms"
+end
+
+# The query runs in a task on a connection of its own while this connection, which holds a read lock, commits once the
+# task waits for it: the query waits for the lock, then its rows or its failure are the outcome. A statement that
+# writes in autocommit mode is rolled back by SQLite while it waits, so the task is seen only now and then; the probe
+# polls until it is.
+def query_until_commit(state: State, req: Request) -> Handled
+  if state.conns.empty?
+    return reply_ok(failed(state, NO_DATABASE))
+  end
+
+  url = expand(state, req.text)
+  case Db.open(probe_url(url))
+    error(message) -> return Handled(state: state, reply: message)
+    ok(probe) ->
+      task = Task.spawn(&fresh_query, Fresh(url: url, sql: Cells.expand(req.cells[0])))
+      seen = blocked?(probe)
+      Db.close(probe)
+      committed = Db.execute(state.conns[0], "COMMIT", [])
+      found = Task.await(task)
+      if not seen
+        return Handled(state: state, reply: never_blocked())
+      end
+
+      if not committed.ok?
+        return reply_ok(failed(state, committed.message))
+      end
+
+      case found
+        error(message) -> return reply_ok(failed(state, message))
+        ok(rows) -> return reply_ok(recorded(state, Outcome.Rows(rows)))
+      end
+  end
+end
+
+# A task writes in a transaction and waits at its COMMIT for this connection, which holds a read lock. This connection
+# then runs its own write, which cannot get the lock of the task, and must be refused at once. It rolls back to let the
+# task commit. The outcome is the result of the write.
+def write_while_blocked(state: State, req: Request) -> Handled
+  if state.conns.empty?
+    return reply_ok(failed(state, NO_DATABASE))
+  end
+
+  url = expand(state, req.text)
+  case Db.open(probe_url(url))
+    error(message) -> return Handled(state: state, reply: message)
+    ok(probe) ->
+      task = Task.spawn(&commit_write, Fresh(url: url, sql: Cells.expand(req.cells[0])))
+      seen = blocked?(probe)
+      Db.close(probe)
+      started = Time.monotonic_ms()
+      tried = Db.execute(state.conns[0], Cells.expand(req.cells[1]), [])
+      waited = Time.monotonic_ms() - started
+      Db.execute(state.conns[0], "ROLLBACK", [])
+      committed = Task.await(task)
+      if not seen
+        return Handled(state: state, reply: never_blocked())
+      end
+
+      if not committed.ok?
+        return Handled(state: state, reply: "the task could not commit: #{committed.message}")
+      end
+
+      if waited > REFUSED_WRITE_MS
+        return Handled(state: state, reply: "the write waited #{waited} ms for a lock that could not come")
+      end
+
+      case tried
+        error(message) -> return reply_ok(failed(state, message))
+        ok(count) -> return reply_ok(recorded(state, Outcome.Counted(count)))
+      end
+  end
+end
+
+def commit_write(job: Fresh) -> Result[Int]
+  conn = try Db.open(job.url)
+  try Db.execute(conn, "BEGIN IMMEDIATE", [])
+  try Db.execute(conn, job.sql, [])
+  done = Db.execute(conn, "COMMIT", [])
+  Db.close(conn)
+  return done
+end
+
+# A task holds the write lock (EXCLUSIVE, which refuses readers too) for `req.number` milliseconds while this
+# connection queries: the query must wait for it, then give its rows.
+def query_while_locked(state: State, req: Request) -> Handled
+  if state.conns.empty?
+    return reply_ok(failed(state, NO_DATABASE))
+  end
+
+  url = expand(state, req.text)
+  case Db.open(probe_url(url))
+    error(message) -> return Handled(state: state, reply: message)
+    ok(probe) ->
+      task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
+      seen = blocked?(probe)
+      Db.close(probe)
+      started = Time.monotonic_ms()
+      found = Db.query(state.conns[0], Cells.expand(req.cells[0]), [])
+      waited = Time.monotonic_ms() - started
+      Task.await(task)
+      if not seen
+        return Handled(state: state, reply: never_blocked())
+      end
+
+      if waited < req.number / 2
+        return Handled(state: state, reply: "the query took #{waited} ms, it did not wait for the lock")
+      end
+
+      case found
+        error(message) -> return reply_ok(failed(state, message))
+        ok(rows) -> return reply_ok(recorded(state, Outcome.Rows(rows)))
+      end
+  end
+end
+
+def hold_lock(job: Hold) -> Result[Int]
+  conn = try Db.open(job.url)
+  try Db.execute(conn, "BEGIN EXCLUSIVE", [])
+  Task.sleep(job.ms)
+  done = Db.execute(conn, "COMMIT", [])
+  Db.close(conn)
+  return done
 end
 
 def fresh_execute(job: Fresh) -> Result[Int]

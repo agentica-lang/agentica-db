@@ -15,8 +15,12 @@ export OK = "ok"
 ## `write_together` (number: the tasks, text: a database url, table: statements; each task opens the url and runs the
 ## statements in a transaction), `execute_waiting` (text: a database url, cells: the sql, number: the least time in
 ## milliseconds that the failure of the statement of a task with its own connection takes),
-## `query_until_commit` (text: a database url, cells: the sql, number: milliseconds; a task with its own connection
-## queries the sql while this connection commits after that time),
+## `query_until_commit` (text: a database url, cells: the sql; a task with its own connection queries the sql, and
+## this connection commits once the task waits for a lock of this one), `write_while_blocked` (text: a database url,
+## cells: the sql of a write and the sql that this connection runs; a task with its own connection writes it in a
+## transaction and waits at its COMMIT for this connection, which runs the second sql, rolls back and gives the
+## failure of that sql, if any), `query_while_locked` (text: a database url, cells: the sql, number: milliseconds; a
+## task with its own connection holds the write lock that long while this connection queries the sql),
 ## `read_only` and `writable` (text: a file), `execute_in_task`, `query_in_new_task` (text: sql), `keep_running`
 ## (text: sql, number: the longest gap in milliseconds), `leave_open` (text: connection name, number: milliseconds the
 ## server may take to drop it),

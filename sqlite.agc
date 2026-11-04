@@ -15,7 +15,9 @@
 ## cache) is tried again after a short sleep until `busy_timeout` is over, then fails with that error; 0 fails at once.
 ## The wait is made here and not by SQLite (SQLite's busy timeout stays 0): a `compute def` call that sleeps in
 ## SQLite's busy handler holds one of the threads of the compute pool, which has one per scheduler, so the writers that
-## wait would keep the writer that holds the lock from finishing.
+## wait would keep the writer that holds the lock from finishing. A write in a transaction that has read (a plain
+## `BEGIN`, a read, then the write) is not waited for: SQLite does not wait there either, since the connection that
+## holds the lock may be waiting for this one to let go of its read lock. It fails at once.
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
@@ -38,6 +40,10 @@ OPEN_FLAGS = 70
 SQLITE_READONLY = 8
 SQLITE_BUSY = 5
 SQLITE_LOCKED = 6
+# The state of a connection with a read transaction open, for `sqlite3_txn_state`, which SQLite has since 3.34.0
+# (3034000 for `sqlite3_libversion_number`). A system library that is older never says it, and the write is waited for.
+SQLITE_TXN_READ = 1
+TXN_STATE_VERSION = 3_034_000
 # The extended codes that mean "wait and try again": a WAL that another connection is recovering, and a table of a
 # shared cache held by another connection. SQLITE_BUSY_SNAPSHOT (517) is not one of them: the snapshot of a read
 # transaction is stale for good, and only a rollback helps.
@@ -50,7 +56,8 @@ NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
 TRANSIENT_DESTRUCTOR = -1
 
-## An open database and the time its statements wait for a lock.
+## An open database and the time its statements wait for a lock. `handle` is public because a struct has no private
+## fields, but its type is not exported (a user cannot name it): treat it as opaque and pass the `Connection` around.
 export struct Connection
   handle: Handle
   busy_timeout: Int
@@ -79,6 +86,8 @@ extern "sqlite3"
                             out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
   compute def sqlite3_step(stmt: Stmt) -> C.Int32
   def sqlite3_stmt_readonly(stmt: Stmt) -> C.Int32
+  def sqlite3_libversion_number() -> C.Int32
+  def sqlite3_txn_state(db: Handle, schema: C.Pointer) -> C.Int32
   def sqlite3_bind_parameter_count(stmt: Stmt) -> C.Int32
   def sqlite3_bind_null(stmt: Stmt, index: C.Int32) -> C.Int32
   def sqlite3_bind_int64(stmt: Stmt, index: C.Int32, value: C.Int64) -> C.Int32
@@ -153,6 +162,13 @@ export def execute(conn: Connection, sql: String, params: List[Value]) -> Result
   Native.close(stmt)
   try ran
   return ok(changes_since(conn, before))
+end
+
+## Whether an extended error code is a lock that another connection will let go, which the adapter waits for:
+## SQLITE_BUSY, its WAL recovery, and a table of a shared cache. A snapshot that is stale for good (517) and a table
+## lock inside one connection (6) are not. Exported for its unit test.
+export def waitable?(extended: Int) -> Bool
+  return extended == SQLITE_BUSY or extended == SQLITE_BUSY_RECOVERY or extended == SQLITE_LOCKED_SHAREDCACHE
 end
 
 def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
@@ -249,21 +265,7 @@ def prepare(conn: Connection, sql: String, params: List[Value]) -> Result[Stmt]
 
   # The sql goes through an owned buffer, not a C.String: SQLite points `tail` into its copy, and a C.String copy
   # lives only during the call.
-  made: Result[Stmt] = Native.from_string(sql) do |buf|
-    try single_statement(conn, buf)
-    started = Time.monotonic_ms()
-    prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-    while sleep_if_locked(conn, prepared.result, started)
-      prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-    end
-
-    if prepared.result != SQLITE_OK
-      return error(failure(conn, prepared.result))
-    end
-
-    ok(prepared.stmt)
-  end
-
+  made: Result[Stmt] = Native.from_string(sql) do |buf| prepare_buffer(conn, buf) end
   stmt = try made
   bound = bind_all(conn, stmt, params)
   case bound
@@ -272,6 +274,23 @@ def prepare(conn: Connection, sql: String, params: List[Value]) -> Result[Stmt]
       Native.close(stmt)
       return error(message)
   end
+end
+
+# Prepares the one statement in the buffer, waiting for a lock like a step does.
+def prepare_buffer(conn: Connection, buf: C.Pointer) -> Result[Stmt]
+  try single_statement(conn, buf)
+  started = Time.monotonic_ms()
+  prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+  while lock_wait?(conn, prepared.result, started)
+    pause(started, conn.busy_timeout)
+    prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+  end
+
+  if prepared.result != SQLITE_OK
+    return error(failure(conn, prepared.result))
+  end
+
+  return ok(prepared.stmt)
 end
 
 # SQLite gives a NULL statement for sql that holds only whitespace and comments, which an out resource cannot
@@ -283,7 +302,8 @@ end
 def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
   started = Time.monotonic_ms()
   probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
-  while sleep_if_locked(conn, probe.result, started)
+  while lock_wait?(conn, probe.result, started)
+    pause(started, conn.busy_timeout)
     probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
   end
 
@@ -302,7 +322,8 @@ def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
 
   more_started = Time.monotonic_ms()
   more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
-  while sleep_if_locked(conn, more.result, more_started)
+  while lock_wait?(conn, more.result, more_started)
+    pause(more_started, conn.busy_timeout)
     more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
   end
 
@@ -415,14 +436,14 @@ def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Re
 end
 
 # One step, tried again while the database is locked. SQLite documents a retry for a COMMIT, which stays open after
-# SQLITE_BUSY, and for a statement outside a transaction. Inside a deferred transaction that has read, a write that
-# is refused may never succeed: the wait then ends at `busy_timeout` with the same error. `Db.transaction` begins
-# with BEGIN IMMEDIATE, so its statements never get there.
+# SQLITE_BUSY, and for a statement outside a transaction. A write that a read transaction of this connection asks for
+# is not tried again (`upgrade?`).
 def step(conn: Connection, stmt: Stmt) -> Stepped
   started = Time.monotonic_ms()
   code = sqlite3_step(stmt)
   waited = false
-  while sleep_if_locked(conn, code, started)
+  while lock_wait?(conn, code, started) and not upgrade?(conn, stmt)
+    pause(started, conn.busy_timeout)
     waited = true
     code = sqlite3_step(stmt)
   end
@@ -430,41 +451,51 @@ def step(conn: Connection, stmt: Stmt) -> Stepped
   return Stepped(code: code, waited: waited)
 end
 
-# Sleeps a little and gives true when `code` says that another connection holds a lock and the wait that began at
-# `started` is not over, so the caller tries again; gives false at once otherwise. The task sleeps instead of SQLite:
-# it parks, so its thread of the compute pool is free for the connection that holds the lock.
-def sleep_if_locked(conn: Connection, code: Int, started: Int) -> Bool
-  if not locked?(conn, code)
+# A statement that writes, in a connection that holds a read lock: SQLite does not wait for the lock of the writer
+# (its busy handler is skipped, since the holder of the write lock may be waiting for our read lock, which we keep
+# until the write is done), so waiting here would stall the other connection's COMMIT until `busy_timeout` is over,
+# and then fail with the same error. `Db.transaction` begins with BEGIN IMMEDIATE, so its statements never get here.
+def upgrade?(conn: Connection, stmt: Stmt) -> Bool
+  if sqlite3_stmt_readonly(stmt) != 0 or sqlite3_libversion_number() < TXN_STATE_VERSION
     return false
   end
 
-  waited = Time.monotonic_ms() - started
-  left = conn.busy_timeout - waited
-  if left <= 0
-    return false
-  end
-
-  pause = waited / 4 + 1
-  if pause > MAX_PAUSE_MS
-    pause = MAX_PAUSE_MS
-  end
-
-  if pause > left
-    pause = left
-  end
-
-  Task.sleep(pause)
-  return true
+  return sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_READ
 end
 
-# The extended code tells a lock that will be let go from one that will not (the cases in the constants above).
-def locked?(conn: Connection, code: Int) -> Bool
+# True when `code` says that another connection holds a lock and the wait that began at `started` is not over, so
+# the caller pauses and tries again. The codes are checked first, so a step that gives a row asks nothing of SQLite.
+def lock_wait?(conn: Connection, code: Int, started: Int) -> Bool
   if code != SQLITE_BUSY and code != SQLITE_LOCKED
     return false
   end
 
-  extended = sqlite3_extended_errcode(conn.handle)
-  return extended == SQLITE_BUSY or extended == SQLITE_BUSY_RECOVERY or extended == SQLITE_LOCKED_SHAREDCACHE
+  if not waitable?(sqlite3_extended_errcode(conn.handle))
+    return false
+  end
+
+  return Time.monotonic_ms() - started < conn.busy_timeout
+end
+
+# Sleeps a little: the task parks, so its thread of the compute pool is free for the connection that holds the lock.
+# The sleep never goes past the end of the wait.
+def pause(started: Int, busy_timeout: Int) -> Void
+  waited = Time.monotonic_ms() - started
+  length = waited / 4 + 1
+  if length > MAX_PAUSE_MS
+    length = MAX_PAUSE_MS
+  end
+
+  left = busy_timeout - waited
+  if length > left
+    length = left
+  end
+
+  if length < 1
+    length = 1
+  end
+
+  Task.sleep(length)
 end
 
 def column_names(stmt: Stmt) -> List[String]
