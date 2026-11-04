@@ -3,8 +3,8 @@
 # from the API. A block that an ```output block follows is also run, and its standard output must be that text.
 # A block is a whole program, and must not start a server when it has an output block. A fence that starts with
 # `agentica` but has other words, and an output block that no agentica block precedes, are failures too.
-# The package is imported as `pkg/db/...`, which this script sets up in a temporary project from the files of
-# this checkout: a manifest, a lock with the hash that the build verifies, and deps/db/.
+# The packages are imported as `pkg/db/...` and `pkg/pool/...`, which this script sets up in a temporary project from
+# the files of this checkout: a manifest, a lock with the hash that the build verifies, and deps/db/ and deps/pool/.
 # Needs `agentica` on PATH. Usage: tools/check-site-samples.sh [CONTENT_DIR]
 set -euo pipefail
 
@@ -20,7 +20,7 @@ mkdir -p "$work/deps/db"
 cp "$root/agentica.toml" "$root"/*.agc "$work/deps/db/"
 for folder in "$root"/*/; do
   case "$(basename "$folder")" in
-    specs|test|examples|deps|build|site|tools|tmp) continue ;;
+    specs|test|examples|deps|build|site|tools|tmp|pool) continue ;;
   esac
   cp -r "$folder" "$work/deps/db/$(basename "$folder")"
 done
@@ -35,12 +35,24 @@ hash="$(
     cat "$file"
   done | sha256sum | cut -d' ' -f1
 )"
+
+# The pool package is the pool/ folder, with no native library, so its manifest is not part of the hash.
+mkdir -p "$work/deps/pool"
+cp "$root/pool/agentica.toml" "$root"/pool/*.agc "$work/deps/pool/"
+pool_hash="$(
+  cd "$work/deps/pool"
+  find . -name '*.agc' | sed 's|^\./||' | LC_ALL=C sort | while read -r file; do
+    printf '%s\0%s\0' "$file" "$(wc -c < "$file")"
+    cat "$file"
+  done | sha256sum | cut -d' ' -f1
+)"
 commit="0000000000000000000000000000000000000000"
 cat > "$work/agentica.toml" <<TOML
 name = "site_samples"
 
 [dependencies]
 db = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit" }
+pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit", subdir = "pool" }
 TOML
 cat > "$work/agentica.lock" <<LOCK
 version = 1
@@ -51,6 +63,14 @@ git = "https://github.com/agentica-lang/agentica-db"
 ref = "$commit"
 commit = "$commit"
 hash = "sha256:$hash"
+
+[[package]]
+name = "pool"
+git = "https://github.com/agentica-lang/agentica-db"
+subdir = "pool"
+ref = "$commit"
+commit = "$commit"
+hash = "sha256:$pool_hash"
 LOCK
 
 count=0

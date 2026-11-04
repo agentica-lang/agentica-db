@@ -1,5 +1,12 @@
 name = "db"
 
+# The repository is a workspace: pool/ is a package of its own (a generic resource pool, no native library) that a
+# project installs alone with `subdir = "pool"`. The members of the workspace are read from their folders by the
+# packages of this repository, so an edit there is seen by the next build.
+[workspace]
+repository = "https://github.com/agentica-lang/agentica-db"
+members = ["pool"]
+
 # The system SQLite; `extern "sqlite3"` in sqlite.agc opens the entry of the running system.
 [native.sqlite3]
 linux = { system = "libsqlite3.so.0" }
