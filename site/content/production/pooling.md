@@ -61,6 +61,7 @@ The connection goes back to the pool, whatever the block did:
 
 - A transaction the block left open is rolled back (`Db.in_transaction?` tells, without a round trip), so the next caller starts clean. Use `Db.transaction(conn)` in the block to commit.
 - A connection the block closed or lost (`Db.connected?` is false) is closed and replaced, so the next caller does not get a dead one. The database client only learns that the server ended a connection when a call on it fails, so the call that fails does so in the block that made it, and the pool replaces the connection after it.
+- On PostgreSQL too, a connection that the server ended quietly while it was idle fails the first caller that gets it, up to `size` callers, until the health check (`health_ms`) pings it and replaces it.
 - A block that crashes ends its connection: the pool rolls it back, closes it and opens another. The caller gets `error("task crashed: ...")`.
 - A block that runs past `lease_ms` ends its connection too, and its caller gets `pool error: lease timed out after N ms`.
 - A connection whose rollback fails is closed and replaced.

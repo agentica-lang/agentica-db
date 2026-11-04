@@ -175,9 +175,9 @@ Feature: Pooling
     Then it succeeds
 
     Examples:
-      | url                         |
-      | sqlite::memory:             |
-      | sqlite:file::memory:        |
+      | url                          |
+      | sqlite::memory:              |
+      | sqlite:file::memory:         |
       | sqlite:file:pool?mode=memory |
 
   # With cache=shared every connection sees one database, so the pool may have many.
