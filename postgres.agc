@@ -11,7 +11,9 @@
 ## none), in two more round trips; a call that asks for the limit it has costs none, and so does a statement that
 ## begins or ends a transaction or is a SET, which runs under the limit of the session. A `timeout_ms` of 0
 ## (`NO_TIMEOUT`) lifts the limit of the url, but not one that the server sets on its own when the url has none. A
-## `SET statement_timeout` you run yourself is undone by the put-back of the next call that has its own limit.
+## `SET statement_timeout` you run yourself is undone by the put-back of the next call that has its own limit, and so is
+## a `SELECT set_config('statement_timeout', ...)`, which is a statement like any other. A `SET LOCAL statement_timeout` is lost the same way: the call's own limit replaces it
+## for the rest of the transaction, and the put-back restores the limit of the connection, not yours.
 ##
 ## An engine failure is `postgres error <sqlstate>: <message>`, with the five character SQLSTATE of the server
 ## (`23505` for a unique violation) and its primary message. A failure without a SQLSTATE (the connection is lost,

@@ -79,3 +79,20 @@ Feature: Lifecycle
     Then job "A" gets "error pool error: closed"
     And job "B" gets "error pool error: closed"
     And the count "terminated" is 1
+
+  # The overflow resource waits for its trim (5000 ms) when the close starts; the drain waits for job "C" and the trim
+  # never runs, since closing ends every resource.
+  Scenario: Closing with a trim pending lets the running job finish and ends every resource
+    Given a pool with:
+      | setting          | value |
+      | size             | 1     |
+      | max_overflow     | 1     |
+      | overflow_idle_ms | 5000  |
+    When job "A" holds a resource for 100 ms
+    And job "B" holds a resource for 100 ms
+    And I wait for the jobs
+    And job "C" holds a resource for 400 ms
+    And I close the pool, giving the jobs 3000 ms to finish
+    And I wait for the jobs
+    Then job "C" succeeds
+    And the count "terminated" is 2

@@ -196,8 +196,14 @@ def begin_sql(conn: Connection) -> String
   end
 end
 
-# The original error wins; a failed ROLLBACK is appended, since the transaction may still be open.
+# The original error wins; a failed ROLLBACK is appended, since the transaction may still be open. A connection that is
+# no longer in a transaction is left alone: the engine ended it already (SQLite rolls back a write it interrupted), and
+# a ROLLBACK would fail with a message that hides the real error.
 def abandon[R](conn: Connection, message: String) -> Result[R]
+  if not in_transaction?(conn)
+    return error(message)
+  end
+
   rolled = execute(conn, "ROLLBACK", [])
   case rolled
     ok(_) -> return error(message)

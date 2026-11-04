@@ -22,8 +22,9 @@
 ## `timeout_ms` (a url parameter, and an argument of `query` and `execute`; none by default) bounds a statement. A
 ## watchdog task calls `sqlite3_interrupt` when the time is over, and the statement fails with `sqlite error 9:
 ## interrupted`. The wait for a lock ends with the time too. SQLite rolls back the whole transaction when it
-## interrupts a write inside one (`in_transaction?` is then false). The watchdog is awaited before the call returns,
-## so an interrupt never reaches the next statement.
+## interrupts a write inside one (`in_transaction?` is then false). A statement whose deadline has passed before its
+## first step does not run at all, so nothing is rolled back and the transaction stays open. The watchdog is awaited
+## before the call returns, so an interrupt never reaches the next statement.
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 

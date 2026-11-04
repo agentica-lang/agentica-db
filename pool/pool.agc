@@ -215,7 +215,9 @@ export def with[A, W, R](pool: Pool[A, W], body: Fn[W, Result[R]]) -> Result[R]
 end
 
 ## Refuses new jobs, lets the running ones and the ones in line finish for up to `drain_ms`, fails the rest with
-## `pool error: closed`, ends every resource and stops the pool. Closing twice does nothing.
+## `pool error: closed`, ends every resource and stops the pool. Closing twice does nothing. The owner task serves the
+## close between two steps, so while an `init` or a `terminate` blocks it the close cannot run `terminate`: after
+## `drain_ms` and two more seconds the owner is cancelled, and the VM closes the handles it owns.
 export def close[A, W](pool: Pool[A, W], drain_ms: Int) -> Void
   if not pool.counts.put_new(CLOSED, 1)
     return
@@ -252,8 +254,8 @@ end
 def answer[W, R](events: Channel[Event[R]], body: Fn[W, Result[R]], offer: Offer[W]) -> Result[Void]
   case offer
     Offer.Grant(worker) ->
-      if not events.closed?
-        events.send(Event.Started, 0)
+      # The send fails when the caller gave up and closed `events`, and then the body does not run.
+      if events.send(Event.Started, 0).ok?
         events.send(Event.Finished(body.call(worker)), SEND_MS)
       end
 
@@ -301,8 +303,18 @@ def await_start[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result[
     end
   end
 
-  events.close
-  return error("#{CHECKOUT_TIMEOUT} after #{pool.spec.checkout_ms} ms#{init_error(pool.counts)}")
+  # A grant that came in the last slice is taken: the body started, so it cannot also be told "timed out".
+  case events.recv(0)
+    ok(event) ->
+      case event
+        Event.Started -> return await_finish(pool, events)
+        Event.Finished(result) -> return result
+      end
+
+    error(_) ->
+      events.close
+      return error("#{CHECKOUT_TIMEOUT} after #{pool.spec.checkout_ms} ms#{init_error(pool.counts)}")
+  end
 end
 
 # Waits for the result of the body that started: `lease_ms`, and a moment for the lease task to answer.
@@ -328,9 +340,16 @@ def await_finish[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result
   return error("#{LEASE_TIMEOUT} after #{wait_ms} ms")
 end
 
-# The owner ended: a close denies the jobs just after it closes `jobs`, so give that a moment.
+# The owner ended: a close denies the jobs just after it closes `jobs`, so give that a moment, unless `control` is
+# closed too: the owner closes it last, after it has denied every job (or it ended in a crash and denies none), so
+# nothing more can come.
 def last_event[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result[R]
-  case events.recv(CLOSE_GRACE_MS)
+  grace_ms = CLOSE_GRACE_MS
+  if pool.control.closed?
+    grace_ms = 0
+  end
+
+  case events.recv(grace_ms)
     ok(event) ->
       case event
         Event.Started -> return last_event(pool, events)
@@ -475,7 +494,8 @@ def wait_ms[A, W](core: Core[A, W], state: Owned[W]) -> Int
     until = state.retry_at_ms
   end
 
-  if state.trim_at_ms > 0 and state.trim_at_ms < until
+  # A drain ends the pool without trimming: a trim that is due would make the wait 1 ms long until the drain is over.
+  if state.trim_at_ms > 0 and state.trim_at_ms < until and not state.closing.some?
     until = state.trim_at_ms
   end
 
@@ -752,8 +772,9 @@ def settled?(task: Task[Result[Void]]) -> Bool
 end
 
 # The end of a drain. The jobs left are failed first, so that a caller hears `closed` and not the cancel of its lease.
-# Nobody can take a resource any more (`idle` is closed and emptied) and the lease tasks that are left are cancelled,
-# with a moment for their bodies to stop, before the resources are ended: no body runs on a resource that is gone.
+# Nobody can take a resource any more (`idle` is closed and emptied) and the lease tasks and the health check that are
+# left are cancelled, with a moment for them to stop, before the resources are ended: no body or ping runs on a
+# resource that is gone.
 # Then it tells `close` that it is done.
 def finish[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
   state.jobs.values.each do |job| job.call(Offer.Deny(CLOSED_ERROR)) end
@@ -763,7 +784,8 @@ def finish[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
   end
 
   state.leases.values.each do |task| Task.cancel(task) end
-  if not state.leases.empty?
+  stop_health(state.health)
+  if not state.leases.empty? or state.health.some?
     Task.sleep(CANCEL_GRACE_MS)
   end
 
@@ -773,6 +795,14 @@ def finish[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
   core.control.close
   acknowledge(state.closing)
   return ended.with(done: true, jobs: {}, leases: {})
+end
+
+# The health check pings a resource in a task of its own, so it is cancelled before `terminate` ends that resource.
+def stop_health(health: Optional[Task[Void]]) -> Void
+  case health
+    some(task) -> Task.cancel(task)
+    none -> return
+  end
 end
 
 def acknowledge(closing: Optional[Closing]) -> Void

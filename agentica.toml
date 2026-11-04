@@ -7,6 +7,11 @@ name = "db"
 repository = "https://github.com/agentica-lang/agentica-db"
 members = ["pool"]
 
+# db_pool.agc is a pool of connections on the generic pool. The workspace reads it from pool/, so an edit there is seen
+# at once; outside the repository the commit below is fetched, so move it to a `pool-` tag once one exists.
+[dependencies]
+pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "3a10059031442feb960185ff9619065844fe4e6d", subdir = "pool" }
+
 # The system SQLite; `extern "sqlite3"` in sqlite.agc opens the entry of the running system.
 [native.sqlite3]
 linux = { system = "libsqlite3.so.0" }

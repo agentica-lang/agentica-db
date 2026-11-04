@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Pool.close` with a drain, `Pool.timeout?`: callers wait in line, the resource of a body that crashes or runs past
   `lease_ms` is checked in or ended and replaced, up to `max_overflow` more resources are made in a spike (ended after `overflow_idle_ms` of idleness), and idle
   resources are pinged and replaced by `max_age_ms` and `idle_ms`. See the Pool guide.
+- `DbPool` (`import DbPool from "pkg/db/db_pool"`), a pool of database connections on the generic pool:
+  `DbPool.start`, `DbPool.with` (the block gets a `Db.Connection`, so `Db`, `Orm` and `Migrate` work in it),
+  `DbPool.close`, `DbPool.timeout?`. A transaction left open is rolled back when the connection comes back, a block
+  that crashes or runs past `lease_ms` costs its connection, and idle connections are pinged. Sizes: 4 for SQLite, 10
+  for PostgreSQL and MySQL, `max_overflow` for spikes; `sqlite::memory:` allows one connection. See the Pooling guide.
 - `Migrate` (`import Migrate from "pkg/db/migrate"`): ordered migrations, each a version and sql statements or a
   function over the connection, applied by `Migrate.up` in one transaction each and recorded in a `schema_migrations`
   table with a checksum. A second run applies nothing; a changed, missing or out-of-order migration is an error. It
@@ -48,6 +53,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `database is locked` (SQLite 3.34 or later), so it cannot stall the other connection's `COMMIT`.
 - **Breaking:** `Sqlite.open` gives a `Sqlite.Connection` (a record with the handle and the busy timeout), and the
   payload of `Db.Connection.Sqlite` is that type; `Sqlite.Handle` is no longer exported. `Db.open` is unchanged.
+
+### Fixed
+
+- `Db.transaction` no longer sends a ROLLBACK to a connection that is not in a transaction any more, so a SQLite write
+  that times out inside one gives the timeout error alone, without `rollback failed: ... no transaction is active`.
+- `Pool.close` with a trim pending no longer wakes the owner every millisecond during the drain, does not wait 2 seconds
+  for callers when the owner is gone, and cancels the health check before it ends the resources. A caller whose
+  checkout timed out takes a grant that came in the last moment, instead of the grant running after the error.
 
 ## [0.3.0] - 2026-10-30
 

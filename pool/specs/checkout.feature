@@ -141,3 +141,15 @@ Feature: Checkout
     Then job "B" fails with a pool timeout
     And the count "made" is 2
     And the count "terminated" reaches 1 within 3000 ms
+
+  Scenario: An overflow resource is ended as soon as it is given back when overflow_idle_ms is 0
+    Given a pool with:
+      | setting          | value |
+      | size             | 1     |
+      | max_overflow     | 1     |
+      | overflow_idle_ms | 0     |
+    When job "A" holds a resource for 300 ms
+    And job "B" holds a resource for 300 ms
+    And I wait for the jobs
+    Then the count "made" is 2
+    And the count "terminated" reaches 1 within 500 ms
