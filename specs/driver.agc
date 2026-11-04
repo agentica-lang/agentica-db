@@ -224,6 +224,7 @@ def act(state: State, req: Request) -> Handled
     "pool_query" -> return reply_ok(pool_query(state, req))
     "pool_execute" -> return reply_ok(pool_execute(state, req))
     "pool_script" -> return reply_ok(pool_script(state, req.table.drop(1)))
+    "pool_close_connection" -> return reply_ok(pool_close_connection(state))
     "pool_crash" -> return reply_ok(pool_crash(state))
     "pool_hold" -> return reply_ok(pool_hold(state, req.number))
     "pool_query_while_held" -> return reply_ok(pool_query_while_held(state, req))
@@ -434,6 +435,21 @@ end
 def pool_script(state: State, rows: List[List[String]]) -> State
   return with_pool(state) do |pool|
     found = DbPool.with(pool) do |conn| run_rows(conn, rows) end
+    case found
+      error(message) -> return failed(state, message)
+      ok(_) -> return recorded(state, Outcome.Done)
+    end
+  end
+end
+
+# A block that closes the connection it was lent and ends with ok.
+def pool_close_connection(state: State) -> State
+  return with_pool(state) do |pool|
+    found = DbPool.with(pool) do |conn|
+      Db.close(conn)
+      ok()
+    end
+
     case found
       error(message) -> return failed(state, message)
       ok(_) -> return recorded(state, Outcome.Done)

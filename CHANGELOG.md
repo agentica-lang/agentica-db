@@ -15,7 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DbPool.start`, `DbPool.with` (the block gets a `Db.Connection`, so `Db`, `Orm` and `Migrate` work in it),
   `DbPool.close`, `DbPool.timeout?`. A transaction left open is rolled back when the connection comes back, a block
   that crashes or runs past `lease_ms` costs its connection, and idle connections are pinged. Sizes: 4 for SQLite, 10
-  for PostgreSQL and MySQL, `max_overflow` for spikes; `sqlite::memory:` allows one connection. See the Pooling guide.
+  for PostgreSQL and MySQL, `max_overflow` for spikes; a private in-memory SQLite database allows one connection. See
+  the Connection pool guide.
+- `Db.connected?(conn)` (no round trip): whether the connection is open and the client library still has its link.
 - `Migrate` (`import Migrate from "pkg/db/migrate"`): ordered migrations, each a version and sql statements or a
   function over the connection, applied by `Migrate.up` in one transaction each and recorded in a `schema_migrations`
   table with a checksum. A second run applies nothing; a changed, missing or out-of-order migration is an error. It
@@ -58,9 +60,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `Db.transaction` no longer sends a ROLLBACK to a connection that is not in a transaction any more, so a SQLite write
   that times out inside one gives the timeout error alone, without `rollback failed: ... no transaction is active`.
-- `Pool.close` with a trim pending no longer wakes the owner every millisecond during the drain, does not wait 2 seconds
-  for callers when the owner is gone, and cancels the health check before it ends the resources. A caller whose
-  checkout timed out takes a grant that came in the last moment, instead of the grant running after the error.
 
 ## [0.3.0] - 2026-10-30
 

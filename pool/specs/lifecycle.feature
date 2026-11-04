@@ -88,8 +88,8 @@ Feature: Lifecycle
       | size             | 1     |
       | max_overflow     | 1     |
       | overflow_idle_ms | 5000  |
-    When job "A" holds a resource for 100 ms
-    And job "B" holds a resource for 100 ms
+    When job "A" holds a resource for 300 ms
+    And job "B" holds a resource for 300 ms
     And I wait for the jobs
     And job "C" holds a resource for 400 ms
     And I close the pool, giving the jobs 3000 ms to finish

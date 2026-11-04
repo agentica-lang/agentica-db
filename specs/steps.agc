@@ -43,6 +43,7 @@ def main() -> Void
       send(ctx, Request(op: "pool_script", table: BDD.table(ctx)))
     end,
     plain_step("I run a block that crashes in the pool", "pool_crash"),
+    plain_step("I run a block that closes its connection in the pool", "pool_close_connection"),
     BDD.step("I keep a connection of the pool for {int} ms") do |ctx, args|
       send(ctx, Request(op: "pool_hold", number: args[0].to_i!))
     end,

@@ -1,7 +1,9 @@
 ---
 title: Migrations
-weight: 13
+weight: 1
 description: Apply ordered migrations with Migrate.up, which records them in a table and applies each once.
+aliases:
+  - /guide/migrations/
 ---
 
 `Migrate` keeps the schema of a database in step with your code. A migration has a version, a name and an action: sql statements, or a function over the connection. `Migrate.up(conn, migrations)` applies the ones the database has not seen, in order, and records each in the table `schema_migrations`. Import it with `import Migrate from "pkg/db/migrate"`.

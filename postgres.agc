@@ -5,15 +5,16 @@
 ## `postgres error: the connection is closed`.
 ##
 ## `timeout_ms` (a parameter of the url or key of the conninfo, which libpq never sees, and an argument of `query` and
-## `execute`) is the `statement_timeout` of the session: a statement that runs longer fails with `postgres error
-## 57014: canceling statement due to statement timeout`, and the connection works after it. A call with its own limit
-## sets it before the statement and puts the limit of the connection back after it (the server's own when the url sets
-## none), in two more round trips; a call that asks for the limit it has costs none, and so does a statement that
-## begins or ends a transaction or is a SET, which runs under the limit of the session. A `timeout_ms` of 0
-## (`NO_TIMEOUT`) lifts the limit of the url, but not one that the server sets on its own when the url has none. A
-## `SET statement_timeout` you run yourself is undone by the put-back of the next call that has its own limit, and so is
-## a `SELECT set_config('statement_timeout', ...)`, which is a statement like any other. A `SET LOCAL statement_timeout` is lost the same way: the call's own limit replaces it
-## for the rest of the transaction, and the put-back restores the limit of the connection, not yours.
+## `execute`) is the `statement_timeout` of the session: a statement that runs longer fails with `postgres error 57014:
+## canceling statement due to statement timeout`, and the connection works after it. A call with its own limit sets it
+## before the statement and puts the limit of the connection back after it (the server's own when the url sets none),
+## in two more round trips; a call that asks for the limit it has costs none, and so does a statement that begins or
+## ends a transaction or is a SET, which runs under the limit of the session. A `timeout_ms` of 0 (`NO_TIMEOUT`) lifts
+## the limit of the url, but not one that the server sets on its own when the url has none. A `SET statement_timeout`
+## you run yourself is undone by the put-back of the next call that has its own limit, and so is a `SELECT
+## set_config('statement_timeout', ...)`, which is a statement like any other. A `SET LOCAL statement_timeout` is lost
+## the same way: the call's own limit replaces it for the rest of the transaction, and the put-back restores the limit
+## of the connection, not yours.
 ##
 ## An engine failure is `postgres error <sqlstate>: <message>`, with the five character SQLSTATE of the server
 ## (`23505` for a unique violation) and its primary message. A failure without a SQLSTATE (the connection is lost,
@@ -152,6 +153,16 @@ export def in_transaction?(conn: Connection) -> Bool
 
   status = pq_transaction_status(conn.handle)
   return status == PQTRANS_INTRANS or status == PQTRANS_INERROR
+end
+
+## Whether libpq still has the connection up, from its own state and with no round trip: it is open, its status is OK
+## and the transaction status is known. A connection the server ended shows here after the first call that fails on it.
+export def connected?(conn: Connection) -> Bool
+  if Native.closed?(conn.handle) or pq_status(conn.handle) != CONNECTION_OK
+    return false
+  end
+
+  return pq_transaction_status(conn.handle) != PQTRANS_UNKNOWN
 end
 
 ## Whether the connection works: libpq says it is up and the server answers `SELECT 1`. A failed transaction is

@@ -6,7 +6,10 @@ def main() -> Void
       try Test.eq(DbPool.default_size("sqlite:app.db"), 4)
       try Test.eq(DbPool.default_size("sqlite::memory:"), 1)
       try Test.eq(DbPool.default_size("sqlite::memory:?timeout_ms=100"), 1)
+      try Test.eq(DbPool.default_size("sqlite:file::memory:"), 1)
+      try Test.eq(DbPool.default_size("sqlite:file:app?mode=memory"), 1)
       try Test.eq(DbPool.default_size("sqlite:file::memory:?cache=shared"), 4)
+      try Test.eq(DbPool.default_size("sqlite:file:app?mode=memory&cache=shared"), 4)
       try Test.eq(DbPool.default_size("postgres://u:p@localhost/app"), 10)
       return Test.eq(DbPool.default_size("mariadb://u:p@127.0.0.1/app"), 10)
     end,

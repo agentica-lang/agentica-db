@@ -2,7 +2,7 @@
 ## in `main`, and each request borrows a connection for the length of its work:
 ##
 ##     pool = DbPool.start(DbPool.Options(url: "postgres://...")).unwrap!
-##     DbPool.with(pool) do |conn| Orm.find(users, conn, key) end
+##     DbPool.with(pool) do |conn| Orm.find(conn, users, key) end
 ##
 ## The block gets a `Db.Connection`, so `Db`, `Orm` and `Migrate` work in it as they do on a connection of `Db.open`,
 ## and `Db.transaction(conn)` too. Callers wait in line when every connection is taken. The connection goes back to
@@ -10,7 +10,8 @@
 ##
 ## - A transaction the block left open is rolled back, so the next caller starts clean.
 ## - A block that crashes, or runs past `lease_ms`, costs its connection: the pool closes it and opens another.
-## - A connection that fails its rollback, or the health check, is closed and replaced the same way.
+## - A connection the block closed or lost, one that fails its rollback, and one that fails the health check are closed
+##   and replaced the same way.
 ##
 ## The connections are opened in the task that started the pool, which owns them: start the pool in a task that lives
 ## as long as it does, such as `main`.
@@ -21,8 +22,10 @@
 
 import Db from "db"
 import P from "pkg/pool/pool"
+import Sqlite from "sqlite"
 
 SQLITE_PREFIX = "sqlite:"
+SQLITE_URI_PREFIX = "sqlite:file:"
 SQLITE_MEMORY = "sqlite::memory:"
 SQLITE_SIZE = 4
 SERVER_SIZE = 10
@@ -33,10 +36,11 @@ MEMORY_SIZE = 1
 export type Pool = P.Pool[String, Db.Connection]
 
 ## How to open a pool. `url` is anything `Db.open` takes. `size` 0 takes the size of the database: 4 for SQLite (1 for
-## `sqlite::memory:`), 10 for PostgreSQL and MySQL. The other fields are the ones of the generic pool (see the Pooling
-## guide): `checkout_ms` is how long a caller waits for a connection and `lease_ms` how long a block may run, both in
-## milliseconds; `max_age_ms` closes a connection that old and `idle_ms` one unused that long (it needs `lazy`), 0
-## turns each off.
+## a private in-memory database), 10 for PostgreSQL and MySQL. The other fields are the ones of the generic pool (see
+## the Connection pool guide): `checkout_ms` is how long a caller waits for a connection and `lease_ms` how long a
+## block may run, both in milliseconds; `max_age_ms` closes a connection that old and `idle_ms` one unused that long
+## (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check that pings the idle connections
+## and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0).
 export struct Options
   url: String
   size: Int = 0
@@ -47,21 +51,21 @@ export struct Options
   max_age_ms: Int = 0
   idle_ms: Int = 0
   lazy: Bool = false
+  health_ms: Int = 5_000
 end
 
 ## Opens the connections and starts the pool. A url that does not open, or a pool that is not valid (a `size` below 1),
-## is an `error`; so is more than one connection to `sqlite::memory:`, each of which would be an empty database of its
-## own (`file::memory:?cache=shared` is one database to all).
+## is an `error`; so is more than one connection to a private in-memory SQLite database (`sqlite::memory:`,
+## `sqlite:file::memory:`, a `file:` name with `mode=memory`), each of which would be an empty database of its
+## own. With `cache=shared` in the name the database is one to all, and the size is free.
 export def start(options: Options) -> Result[Pool]
   size = options.size
   if size == 0
     size = default_size(options.url)
   end
 
-  if options.url.start_with?(SQLITE_MEMORY) and size + options.max_overflow > 1
-    return error(
-      "db error: a pool of #{SQLITE_MEMORY} can have one connection only: each connection is a database of its own",
-    )
+  if private_memory?(options.url) and size + options.max_overflow > 1
+    return error("db error: a pool of a private in-memory database can have one connection only: each is its own")
   end
 
   spec = P.Spec(
@@ -78,6 +82,7 @@ export def start(options: Options) -> Result[Pool]
     max_age_ms: options.max_age_ms,
     idle_ms: options.idle_ms,
     lazy: options.lazy,
+    health_ms: options.health_ms,
   )
 
   return P.start(spec)
@@ -107,7 +112,7 @@ end
 
 ## The size of a pool for a url when `Options.size` is 0.
 export def default_size(url: String) -> Int
-  if url.start_with?(SQLITE_MEMORY)
+  if private_memory?(url)
     return MEMORY_SIZE
   end
 
@@ -118,17 +123,36 @@ export def default_size(url: String) -> Int
   return SERVER_SIZE
 end
 
+# A SQLite url whose database lives in the connection: `sqlite::memory:`, or a `file:` name that is `:memory:` or has
+# `mode=memory`, unless `cache=shared` makes it one database for every connection of the process.
+def private_memory?(url: String) -> Bool
+  if url.start_with?(SQLITE_MEMORY)
+    return true
+  end
+
+  if not url.start_with?(SQLITE_URI_PREFIX) or url.include?("cache=shared")
+    return false
+  end
+
+  return url.include?(":memory:") or url.include?("mode=memory")
+end
+
 def connect(url: String) -> Result[Db.Connection]
   return Db.open(url)
 end
 
-# Gets a connection back after a block. A transaction the block left open is rolled back (`Db.in_transaction?` reads
-# the state of the connection, no round trip), and a connection that is still in one after that is not reused. A
-# crashed block ends its connection after a rollback that may fail, since the connection is closed anyway; a block that
-# timed out may still be running, so nobody touches its connection but the pool, which closes it.
+# Gets a connection back after a block. A connection the block closed or lost is not reused (`Db.connected?`, no round
+# trip). A transaction the block left open is rolled back (`Db.in_transaction?` reads the state of the connection, no
+# round trip), and a connection that is still in one after that is not reused. A crashed block ends its connection
+# after a rollback that may fail, since the connection is closed anyway. A block that timed out may still be running
+# its statement: on SQLite it is interrupted, so that closing the connection does not wait for it, and nobody touches
+# the connection but the pool, which closes it. The other databases keep running the statement until their own limit
+# (`timeout_ms` of the url): set it under `lease_ms`.
 def check_in(conn: Db.Connection, outcome: P.Outcome) -> Result[Void]
   case outcome
-    P.Outcome.TimedOut -> return error("db pool: the block ran past lease_ms")
+    P.Outcome.TimedOut ->
+      interrupt(conn)
+      return error("db pool: the block ran past lease_ms")
     P.Outcome.Crashed ->
       roll_back(conn)
       return error("db pool: the block crashed")
@@ -137,8 +161,8 @@ def check_in(conn: Db.Connection, outcome: P.Outcome) -> Result[Void]
 end
 
 def reset(conn: Db.Connection) -> Result[Void]
-  if not Db.in_transaction?(conn)
-    return ok()
+  if not Db.connected?(conn)
+    return error("db pool: the block closed or lost the connection")
   end
 
   try roll_back(conn)
@@ -150,12 +174,19 @@ def reset(conn: Db.Connection) -> Result[Void]
 end
 
 def roll_back(conn: Db.Connection) -> Result[Void]
-  if not Db.in_transaction?(conn)
+  if not Db.connected?(conn) or not Db.in_transaction?(conn)
     return ok()
   end
 
   try Db.execute(conn, "ROLLBACK", [])
   return ok()
+end
+
+def interrupt(conn: Db.Connection) -> Void
+  case conn
+    Db.Connection.Sqlite(handle) -> Sqlite.interrupt(handle)
+    _ -> return
+  end
 end
 
 def ping(conn: Db.Connection) -> Result[Void]

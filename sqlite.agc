@@ -179,6 +179,21 @@ export def in_transaction?(conn: Connection) -> Bool
   return sqlite3_get_autocommit(conn.handle) == 0
 end
 
+## Whether the connection is open. SQLite has no link that can be lost, so a closed handle is all there is to know
+## without running a statement.
+export def connected?(conn: Connection) -> Bool
+  return not Native.closed?(conn.handle)
+end
+
+## Stops the statement that is running on the connection, if any, which then fails with `sqlite error 9: interrupted`.
+## A pool calls it when a block outlives its lease: `close` waits for a running `sqlite3_step`, and this lets it end.
+## An interrupt while no statement runs does nothing. Not for `Db`: only the pool reaches it.
+export def interrupt(conn: Connection) -> Void
+  if not Native.closed?(conn.handle)
+    sqlite3_interrupt(conn.handle)
+  end
+end
+
 ## Whether the connection works: it is open and answers `SELECT 1`.
 export def healthy?(conn: Connection) -> Bool
   if Native.closed?(conn.handle)

@@ -1,7 +1,9 @@
 ---
 title: MySQL and MariaDB
-weight: 7
+weight: 3
 description: Open a MySQL or MariaDB database through MariaDB Connector/C, the url, TLS, types and limits.
+aliases:
+  - /guide/mysql/
 ---
 
 The MySQL adapter uses MariaDB Connector/C (`libmariadb.so.3`), which talks to MySQL and MariaDB servers. It is tested with MariaDB 11 and MySQL 8.4. `libmysqlclient` cannot take its place.
@@ -75,7 +77,7 @@ A `Text` parameter goes into a column of any of those types. A `datetime` reads 
 
 ## Transactions
 
-A transaction starts with `START TRANSACTION`. They do not nest: `BEGIN` and `START TRANSACTION` fail with `mysql error: a transaction is already in progress` while the server reports one open. See [transactions](/guide/transactions/).
+A transaction starts with `START TRANSACTION`. They do not nest: `BEGIN` and `START TRANSACTION` fail with `mysql error: a transaction is already in progress` while the server reports one open. See [transactions](/basics/transactions/).
 
 ## Connections
 

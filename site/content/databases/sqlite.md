@@ -1,7 +1,9 @@
 ---
 title: SQLite
-weight: 5
+weight: 1
 description: Open a SQLite file or an in-memory database, the settings of a connection, and what is special about SQLite.
+aliases:
+  - /guide/sqlite/
 ---
 
 The SQLite adapter uses the system `libsqlite3`. It needs no server, so it is also the database for tests.
@@ -81,7 +83,7 @@ A `?` always starts the parameters, so a file whose name holds a `?` cannot be o
 
 ## What to know
 
-- Parameters bind with the type of the `Db.Value`. A `Db.Value.Bool` is stored as 0 or 1 and reads back as `Db.Value.Int`, and NaN is stored as NULL. See [values](/guide/values/).
+- Parameters bind with the type of the `Db.Value`. A `Db.Value.Bool` is stored as 0 or 1 and reads back as `Db.Value.Int`, and NaN is stored as NULL. See [values](/basics/values/).
 - A text is bound with its length, so a text with a NUL is stored and read back whole.
 - A transaction starts with `BEGIN IMMEDIATE`, which needs write access to the database.
 - `execute` gives the rows changed by an `insert`, `update` or `delete`.

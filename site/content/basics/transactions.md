@@ -2,6 +2,8 @@
 title: Transactions
 weight: 4
 description: Db.transaction commits when the block gives ok and rolls back when it gives error.
+aliases:
+  - /guide/transactions/
 ---
 
 `Db.transaction(conn) do |tx| ... end` runs the block between the `BEGIN` and the `COMMIT` of the database. It gives a `Result[R]`, where `R` is the type of the block's `ok` value.

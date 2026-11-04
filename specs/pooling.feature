@@ -80,6 +80,55 @@ Feature: Pooling
       | postgres | postgres error 42P01:          |
       | mysql    | mysql error 1146:              |
 
+  # The block closes its connection and ends with ok: the pool must not lend the closed connection to the next caller.
+  Scenario Outline: A connection that the block closed is replaced on <adapter>
+    Given a "<adapter>" database
+    When I start a pool on "[URL]" with:
+      | option | value |
+      | size   | 1     |
+    And I run a block that closes its connection in the pool
+    Then it succeeds
+    When I query "select 1 as v" in the pool
+    Then the result is:
+      | v     |
+      | Int 1 |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
+  # The block ends its own session. The statement fails, libpq knows the connection is down, and the next caller gets a
+  # new one.
+  Scenario: A connection that the server ended during the block is replaced on postgres
+    Given a "postgres" database
+    When I start a pool on "[URL]" with:
+      | option | value |
+      | size   | 1     |
+    And I query "select pg_terminate_backend(pg_backend_pid())" in the pool
+    Then it fails with "postgres error"
+    When I query "select 1 as v" in the pool
+    Then the result is:
+      | v     |
+      | Int 1 |
+
+  # A statement that runs past lease_ms on SQLite is interrupted, so closing its connection does not wait for it: the
+  # next caller gets the new connection within its checkout_ms.
+  Scenario: A long statement that outlives lease_ms does not stall the pool on sqlite
+    Given a "sqlite" database
+    When I start a pool on "[URL]" with:
+      | option      | value |
+      | size        | 1     |
+      | lease_ms    | 300   |
+      | checkout_ms | 3000  |
+    And I query "[SLOW]" in the pool
+    Then it fails with "pool error: lease timed out after 300 ms"
+    When I query "select 1 as v" in the pool
+    Then the result is:
+      | v     |
+      | Int 1 |
+
   Scenario Outline: A caller that waits too long for a connection gets a checkout timeout on <adapter>
     Given a "<adapter>" database
     When I start a pool on "[URL]" with:
@@ -111,19 +160,37 @@ Feature: Pooling
       | v     |
       | Int 1 |
 
-  Scenario: A pool of sqlite::memory: cannot have more than one connection on sqlite
+  Scenario Outline: A pool of a private in-memory database cannot have more than one connection on sqlite
     Given a "sqlite" database
-    When I start a pool on "sqlite::memory:" with:
+    When I start a pool on "<url>" with:
       | option | value |
       | size   | 2     |
-    Then it fails with "db error: a pool of sqlite::memory: can have one connection only"
-    When I start a pool on "sqlite::memory:" with:
+    Then it fails with "db error: a pool of a private in-memory database can have one connection only"
+    When I start a pool on "<url>" with:
       | option       | value |
       | max_overflow | 1     |
-    Then it fails with "db error: a pool of sqlite::memory: can have one connection only"
-    When I start a pool on "sqlite::memory:" with:
+    Then it fails with "db error: a pool of a private in-memory database can have one connection only"
+    When I start a pool on "<url>" with:
       | option | value |
     Then it succeeds
+
+    Examples:
+      | url                         |
+      | sqlite::memory:             |
+      | sqlite:file::memory:        |
+      | sqlite:file:pool?mode=memory |
+
+  # With cache=shared every connection sees one database, so the pool may have many.
+  Scenario: A pool of a shared in-memory database can have more than one connection on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:file:pool?mode=memory&cache=shared" with:
+      | option | value |
+      | size   | 2     |
+    And I execute "create table t (x integer)" in the pool
+    And I query "select count(*) as n from t" in the pool
+    Then the result is:
+      | n     |
+      | Int 0 |
 
   Scenario: A pool whose connections do not open does not start on sqlite
     Given a "sqlite" database
@@ -135,7 +202,7 @@ Feature: Pooling
   # The url timeout_ms and the timeout_ms of a call both work on a pooled connection, which works after a timeout.
   Scenario Outline: A statement timeout works through the pool on <adapter>
     Given a "<adapter>" database
-    When I start a pool on "[URL]&timeout_ms=200" with:
+    When I start a pool on "[URL]&timeout_ms=<limit>" with:
       | option | value |
       | size   | 1     |
     And I query "[SLOW]" in the pool
@@ -148,7 +215,7 @@ Feature: Pooling
     Then it fails with a timeout
 
     Examples:
-      | adapter  |
-      | sqlite   |
-      | postgres |
-      | mysql    |
+      | adapter  | limit |
+      | sqlite   | 20    |
+      | postgres | 200   |
+      | mysql    | 200   |

@@ -91,4 +91,4 @@ end
 done
 ```
 
-Every call gives a `Result`, so the program uses `try` to pass an `error` up, and `main` is the one place that looks at it. The next pages explain each call: [connecting](/guide/connecting/), [queries](/guide/queries/), [values](/guide/values/) and [transactions](/guide/transactions/).
+Every call gives a `Result`, so the program uses `try` to pass an `error` up, and `main` is the one place that looks at it. The next pages explain each call: [connecting](/basics/connecting/), [queries](/basics/queries/), [values](/basics/values/) and [transactions](/basics/transactions/).

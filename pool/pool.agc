@@ -33,6 +33,8 @@ NEXT_JOB = "next_job"
 CLOSED = "closed"
 # A key of the counters per failed `init`: the text after the prefix is its error. Only the last one is kept.
 INIT_ERROR = "init failed: "
+# The key a body and its caller race for in `answer` and `await_start`: whoever puts it first decides.
+DECIDED = "decided"
 
 CLOSED_ERROR = "pool error: closed"
 OWNER_ENDED_ERROR = "pool error: owner task ended"
@@ -206,12 +208,13 @@ export def with[A, W, R](pool: Pool[A, W], body: Fn[W, Result[R]]) -> Result[R]
   end
 
   events: Channel[Event[R]] = Channel.new(2)
-  sent = enqueue(pool) do |offer| answer(events, body, offer) end
+  claim: ATS[String, Int] = ATS.new()
+  sent = enqueue(pool) do |offer| answer(events, claim, body, offer) end
   if not sent.ok?
     return error(refusal(pool))
   end
 
-  return await_start(pool, events)
+  return await_start(pool, events, claim)
 end
 
 ## Refuses new jobs, lets the running ones and the ones in line finish for up to `drain_ms`, fails the rest with
@@ -249,13 +252,20 @@ def enqueue[A, W](pool: Pool[A, W], job: Job[W]) -> Result[Void]
   return ok()
 end
 
-# Runs inside the job. A caller that gave up has closed `events`: its body must not run. The runner always ends with
-# `ok`, so an error of the runner is the VM's: a crash or a cancel.
-def answer[W, R](events: Channel[Event[R]], body: Fn[W, Result[R]], offer: Offer[W]) -> Result[Void]
+# Runs inside the job. The body and the caller's checkout timeout settle who goes first with `claim`, in one
+# atomic step
+# (`put_new`): a body that gets it has started and its caller waits for the result; a caller that gets it gave up, and
+# the body does not run. The runner always ends with `ok`, so an error of the runner is the VM's: a crash or a cancel.
+def answer[W, R](
+  events: Channel[Event[R]],
+  claim: ATS[String, Int],
+  body: Fn[W, Result[R]],
+  offer: Offer[W],
+) -> Result[Void]
   case offer
     Offer.Grant(worker) ->
-      # The send fails when the caller gave up and closed `events`, and then the body does not run.
-      if events.send(Event.Started, 0).ok?
+      if claim.put_new(DECIDED, 1)
+        events.send(Event.Started, 0)
         events.send(Event.Finished(body.call(worker)), SEND_MS)
       end
 
@@ -285,8 +295,8 @@ end
 
 # Waits for the body to start for as long as `checkout_ms` (and a little more, so that the lease task's own error,
 # which says why, comes first when the owner is alive), in slices, so that the end of the owner (a crash, or a close)
-# is noticed. A caller that gives up closes `events`, so its body never runs.
-def await_start[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result[R]
+# is noticed. A caller that gives up claims the start first, so its body never runs.
+def await_start[A, W, R](pool: Pool[A, W], events: Channel[Event[R]], claim: ATS[String, Int]) -> Result[R]
   deadline = Time.monotonic_ms() + pool.spec.checkout_ms + CHECKOUT_SLACK_MS
   while Time.monotonic_ms() < deadline
     case events.recv((deadline - Time.monotonic_ms()).clamp(1, POLL_MS))
@@ -303,18 +313,15 @@ def await_start[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result[
     end
   end
 
-  # A grant that came in the last slice is taken: the body started, so it cannot also be told "timed out".
-  case events.recv(0)
-    ok(event) ->
-      case event
-        Event.Started -> return await_finish(pool, events)
-        Event.Finished(result) -> return result
-      end
-
-    error(_) ->
-      events.close
-      return error("#{CHECKOUT_TIMEOUT} after #{pool.spec.checkout_ms} ms#{init_error(pool.counts)}")
+  # The deadline came. A body that claimed the start in the last slice runs, so its result is awaited and the
+  # caller does
+  # not hear "timed out" for work that happened; else the caller claims it, and the body never runs.
+  if not claim.put_new(DECIDED, 1)
+    return await_finish(pool, events)
   end
+
+  events.close
+  return error("#{CHECKOUT_TIMEOUT} after #{pool.spec.checkout_ms} ms#{init_error(pool.counts)}")
 end
 
 # Waits for the result of the body that started: `lease_ms`, and a moment for the lease task to answer.
