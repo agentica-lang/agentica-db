@@ -14,9 +14,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`sqlite:app.db?journal_mode=delete&foreign_keys=off`); `fts5=required` makes `open` fail when the system SQLite has
   no FTS5. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is (`file:app.db?mode=ro`,
   `file::memory:?cache=shared`); the URI flag is on for every build.
+- `timeout_ms` for every database: a url parameter (none by default) and a last argument of `Db.query` and
+  `Db.execute` (`-1` takes the connection's, `0` has none). SQLite interrupts the statement and stops the wait for a
+  lock (`sqlite error 9`), PostgreSQL sets `statement_timeout` (`57014`), MySQL sets `max_execution_time` for a SELECT
+  (`3024`) and MariaDB `max_statement_time` (`1969`), with the client read and write timeouts as a backstop.
+  `Db.timeout?(message)` recognizes these failures.
+- `Db.in_transaction?(conn)` (no round trip) and `Db.healthy?(conn)` for the three databases.
 
 ### Changed
 
+- **Breaking:** `Postgres.Handle` and `Mysql.Handle` in `Db.Connection` are now the records `Postgres.Connection` and
+  `Mysql.Connection` (the handle with the timeout of the connection and, for MySQL, the flavor of the server). Code that
+  only passes the `Db.Connection` around is not affected.
 - **Breaking:** a SQLite connection now opens with `journal_mode=wal` and `foreign_keys=on` (SQLite's own defaults
   were a rollback journal and foreign keys off). A file database stays in WAL mode once opened. Add
   `?journal_mode=delete&foreign_keys=off` to the url for the old behavior. The default `busy_timeout` stays 5000 ms. A

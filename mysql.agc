@@ -8,6 +8,16 @@
 ## Every statement goes through the prepared statement API (`mysql_stmt_*`): the sql is sent as it is, with its `?`
 ## placeholders, and the values are bound, never spliced.
 ##
+## `timeout_ms` (a parameter of the url, and an argument of `query` and `execute`) bounds a statement on the server.
+## The adapter reads the flavor of the server from its version at `open`. MySQL gets `max_execution_time`, which limits
+## only a SELECT: a statement that runs longer fails with `mysql error 3024`. MariaDB gets `max_statement_time`, in
+## seconds, which limits every statement: `mysql error 1969`. A call with its own limit sets the variable before the
+## statement and puts the limit of the connection back after it, in two more round trips; a call that asks for the
+## limit it has costs none. A url with `timeout_ms` also sets the client read and write timeouts, in whole seconds,
+## to that limit plus a margin, as a backstop for what the server does not time (an INSERT on MySQL, a lost network):
+## a statement that hits it fails with `mysql error 2013` (lost connection) and the connection is gone. The backstop
+## is fixed at `open`, so a call that asks for a limit longer than the one of the url is cut at the backstop.
+##
 ## An engine failure is `mysql error <code>: <message>`, with the numeric code of the server (`1062` for a duplicate
 ## key) or of the client library (`2002` for a server that cannot be reached) and its message. A bad input is
 ## `mysql error: <message>`. A message never holds the url or the password.
@@ -38,6 +48,12 @@ OPT_LOCAL_INFILE = 8
 OPT_SSL_VERIFY_SERVER_CERT = 21
 OPT_SSL_CA = 27
 OPT_SSL_ENFORCE = 38
+# MYSQL_OPT_READ_TIMEOUT and MYSQL_OPT_WRITE_TIMEOUT, in seconds, as numbered in MariaDB Connector/C 3.x.
+OPT_READ_TIMEOUT = 11
+OPT_WRITE_TIMEOUT = 12
+# The seconds the client waits beyond the `timeout_ms` of the url: the server times a statement first.
+BACKSTOP_MARGIN_S = 10
+MS_PER_SECOND = 1000
 # mariadb_value MARIADB_CONNECTION_SERVER_STATUS, and its bit SERVER_STATUS_IN_TRANS.
 INFO_SERVER_STATUS = 30
 # STMT_ATTR_UPDATE_MAX_LENGTH: the result metadata then holds the longest value of each column.
@@ -76,6 +92,20 @@ TEXT_WIDTH_LIMIT = 256
 TEXT_ROOM = 32
 # The statements whose affected rows execute reports; every other one gives 0, a SELECT too.
 COUNTING_VERBS = Set.new(["insert", "update", "delete", "replace"])
+
+## The server software, which decides the variable that limits a statement.
+export enum Flavor
+  MySql
+  MariaDb
+end
+
+## An open connection, the server it talks to and the limit of a statement it was opened with (0: none). `handle` is
+## public because a struct has no private fields: treat it as opaque and pass the `Connection` around.
+export struct Connection
+  handle: Handle
+  flavor: Flavor
+  timeout_ms: Int = 0
+end
 
 # A column of a result: its name, what to read, and the size of its buffer.
 struct Column
@@ -159,6 +189,8 @@ extern "mariadb"
   def mysql_options(mysql: Handle, option: C.Int32, value: C.Pointer) -> C.Int32
   def mysql_options_text(mysql: Handle, option: C.Int32, value: C.String) -> C.Int32 = "mysql_options"
   compute def mysql_set_character_set(mysql: Handle, name: C.String) -> C.Int32
+  def mysql_get_server_info(mysql: Handle) -> C.String
+  compute def mysql_ping(mysql: Handle) -> C.Int32
   def mysql_errno(mysql: Handle) -> C.Int32
   def mysql_error(mysql: Handle) -> C.String
   def mariadb_get_info(mysql: Handle, value: C.Int32, arg: C.Pointer) -> C.Bool
@@ -191,7 +223,7 @@ extern "mariadb"
 end
 
 ## Connects with a `mysql://` or `mariadb://` url (see `MysqlUrl`). The client character set is utf8mb4.
-export def open(url: String) -> Result[Handle]
+export def open(url: String) -> Result[Connection]
   target = try MysqlUrl.parse(url)
   try load_library()
   mysql = try init()
@@ -220,19 +252,56 @@ export def open(url: String) -> Result[Handle]
     return abandon(mysql)
   end
 
-  return ok(mysql)
+  conn = Connection(handle: mysql, flavor: flavor_of(mysql_get_server_info(mysql)), timeout_ms: target.timeout_ms)
+  limited = limit_session(conn)
+  case limited
+    ok(_) -> return ok(conn)
+    error(message) ->
+      Native.close(mysql)
+      return error(message)
+  end
 end
 
 ## Closes the connection; closing it again does nothing.
-export def close(handle: Handle) -> Void
-  Native.close(handle)
+export def close(conn: Connection) -> Void
+  Native.close(conn.handle)
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
-## Two columns with one name are an error: alias them. A statement without parameters that the server does not
+## Two columns with one name are an error: alias them. `timeout_ms` is the limit of this call: -1 takes the one of the
+## connection, 0 is none. A statement without parameters that the server does not
 ## prepare (`START TRANSACTION`, `BEGIN`, `SAVEPOINT`, `USE` and `LOCK TABLES` on MySQL) goes through the text
 ## protocol, which is safe because there is nothing to bind.
-export def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
+export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
+  return limited(conn, timeout_ms) do run_query(conn.handle, sql, params) end
+end
+
+## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
+## replaced. The text protocol is used as for `query`, and `timeout_ms` is as there.
+export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
+  return limited(conn, timeout_ms) do run_execute(conn.handle, sql, params) end
+end
+
+## Whether the server says a transaction is open on the connection, from the status of its last reply: no round trip.
+## A closed connection is not in one.
+export def in_transaction?(conn: Connection) -> Bool
+  if Native.closed?(conn.handle)
+    return false
+  end
+
+  return transaction_open?(conn.handle)
+end
+
+## Whether the connection works: it is open and the server answers a ping.
+export def healthy?(conn: Connection) -> Bool
+  if Native.closed?(conn.handle)
+    return false
+  end
+
+  return mysql_ping(conn.handle) == 0
+end
+
+def run_query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
   try check_open(handle)
   statement = try MysqlSql.inspect(sql)
   try check_params(params)
@@ -247,9 +316,7 @@ export def query(handle: Handle, sql: String, params: List[Value]) -> Result[Lis
   end
 end
 
-## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
-## replaced. The text protocol is used as for `query`.
-export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
+def run_execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
   try check_open(handle)
   statement = try MysqlSql.inspect(sql)
   try check_params(params)
@@ -279,8 +346,9 @@ def init() -> Result[Handle]
   end
 end
 
-# Options set before the connection: the connect timeout (0 keeps the library's), no LOCAL INFILE, and the TLS mode
-# (the library's own when the url sets none). The library says whether it took an option, and a refused one stops
+# Options set before the connection: the connect timeout (0 keeps the library's), no LOCAL INFILE, the backstop of the
+# `timeout_ms` of the url, and the TLS mode (the library's own when the url sets none). The library says whether it
+# took an option, and a refused one stops
 # the connection: a TLS option that did nothing would connect without the check that was asked for.
 def configure(mysql: Handle, target: MysqlUrl.Target) -> Result[Void]
   if target.timeout > 0
@@ -288,6 +356,12 @@ def configure(mysql: Handle, target: MysqlUrl.Target) -> Result[Void]
   end
 
   try set_number(mysql, OPT_LOCAL_INFILE, 0)
+  if target.timeout_ms > 0
+    backstop = (target.timeout_ms + MS_PER_SECOND - 1) / MS_PER_SECOND + BACKSTOP_MARGIN_S
+    try set_number(mysql, OPT_READ_TIMEOUT, backstop)
+    try set_number(mysql, OPT_WRITE_TIMEOUT, backstop)
+  end
+
   case target.tls
     MysqlUrl.Tls.Default -> return ok()
     MysqlUrl.Tls.Required -> return require_tls(mysql, "")
@@ -336,7 +410,7 @@ def set_flag(mysql: Handle, option: Int) -> Result[Void]
 end
 
 # Frees the connection when it does not work: a failed connect still holds the error.
-def abandon(mysql: Handle) -> Result[Handle]
+def abandon(mysql: Handle) -> Result[Connection]
   message = failure(mysql_errno(mysql), mysql_error(mysql))
   Native.close(mysql)
   return error(message)
@@ -376,20 +450,73 @@ end
 # nest here, as in the other adapters, so a BEGIN or START TRANSACTION is refused while the server says that one is
 # open.
 def check_begin(mysql: Handle, verb: String) -> Result[Void]
-  if (verb == "begin" or verb == "start") and in_transaction?(mysql)
+  if (verb == "begin" or verb == "start") and transaction_open?(mysql)
     return error("mysql error: a transaction is already in progress")
   end
 
   return ok()
 end
 
-def in_transaction?(mysql: Handle) -> Bool
+# The server's own flag, kept up to date by every reply: no round trip.
+def transaction_open?(mysql: Handle) -> Bool
   open: Bool = Native.memory_pointer(POINTER_SIZE) do |status|
     failed = mariadb_get_info(mysql, INFO_SERVER_STATUS, status)
     not failed and Native.get_uint32(status, 0) % 2 == 1
   end
 
   return open
+end
+
+# MariaDB says so in its version, `11.4.2-MariaDB` (and `5.5.5-11.4.2-MariaDB` for an old client protocol).
+def flavor_of(version: String) -> Flavor
+  if version.include?("MariaDB")
+    return Flavor.MariaDb
+  end
+
+  return Flavor.MySql
+end
+
+# Runs `body` under the limit of the call. A limit other than the connection's is set before and put back after, also
+# when the body failed (a lost connection fails the put-back, and the body's own failure is the one given).
+def limited[R](conn: Connection, timeout_ms: Int, body: Fn[Result[R]]) -> Result[R]
+  if timeout_ms < 0 or timeout_ms == conn.timeout_ms
+    return body.call()
+  end
+
+  try check_open(conn.handle)
+  try set_limit(conn, timeout_ms)
+  done = body.call()
+  restored = set_limit(conn, conn.timeout_ms)
+  case done
+    ok(_) ->
+      try restored
+      return done
+    error(_) -> return done
+  end
+end
+
+def limit_session(conn: Connection) -> Result[Void]
+  if conn.timeout_ms == 0
+    return ok()
+  end
+
+  return set_limit(conn, conn.timeout_ms)
+end
+
+def set_limit(conn: Connection, ms: Int) -> Result[Void]
+  try run_execute(conn.handle, limit_sql(conn.flavor, ms), [])
+  return ok()
+end
+
+# MySQL counts the limit in milliseconds and MariaDB in seconds, which may have a fraction: 2500 ms is 2.500.
+def limit_sql(flavor: Flavor, ms: Int) -> String
+  case flavor
+    Flavor.MySql -> return "SET SESSION max_execution_time = #{ms}"
+    Flavor.MariaDb ->
+      millis = (ms % MS_PER_SECOND).to_s
+      padded = List.repeat("0", 3 - millis.length).join("") + millis
+      return "SET SESSION max_statement_time = #{ms / MS_PER_SECOND}.#{padded}"
+  end
 end
 
 def check_params(params: List[Value]) -> Result[Void]

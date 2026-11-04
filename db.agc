@@ -7,6 +7,10 @@
 ## `<adapter> error: <message>`, as in `sqlite error: the sql has 1 parameter, got 0`. A failure of this module
 ## itself, such as an unknown url, is `db error: <message>`.
 ##
+## `timeout_ms` bounds the time of a statement: a url parameter (`sqlite:app.db?timeout_ms=2000`, none by default) and
+## an argument of `query` and `execute`. A statement that runs longer fails, and `timeout?` knows its message. The
+## connection works after it.
+##
 ## One import is enough: `Db.Value` and `Db.Row` are the types of `value.agc`.
 
 import Mysql from "mysql"
@@ -21,14 +25,22 @@ SQLITE_PREFIX = "sqlite:"
 POSTGRES_PREFIXES = ["postgres://", "postgresql://"]
 MYSQL_PREFIXES = ["mysql://", "mariadb://"]
 MAX_SCHEME = 16
+# The failures of a statement that ran over its `timeout_ms`: SQLite interrupted it, the SQLSTATE query_canceled of
+# PostgreSQL, and the errors of MySQL (max_execution_time) and MariaDB (max_statement_time).
+TIMEOUT_PREFIXES = ["sqlite error 9:", "postgres error 57014:", "mysql error 3024:", "mysql error 1969:"]
+
+## The `timeout_ms` of a call that takes the one of the connection.
+export CONNECTION_DEFAULT = -1
+## The `timeout_ms` of a call that has no limit.
+export NO_TIMEOUT = 0
 
 ## An open connection, owned by the task that opened it. Close it with `close`, or the end of the task closes it (the
 ## end of `main` closes one still open). Open it in the task that keeps it (usually `main`), or hand it over with
 ## `Task.spawn_owning(&f, conn)`.
 export enum Connection
   Sqlite(Sqlite.Connection)
-  Postgres(Postgres.Handle)
-  Mysql(Mysql.Handle)
+  Postgres(Postgres.Connection)
+  Mysql(Mysql.Connection)
 end
 
 ## Opens the database a url names: `sqlite:PATH` (`sqlite::memory:` for a private in-memory database; the SQLite
@@ -64,21 +76,23 @@ export def open(url: String) -> Result[Connection]
 end
 
 ## Opens a SQLite database file, or `:memory:`. Parameters after a `?` set `journal_mode` (default `wal`),
-## `foreign_keys` (default `on`), `busy_timeout` in milliseconds (default 5000) and `fts5=required`
-## (see `sqlite.agc`).
+## `foreign_keys` (default `on`), `busy_timeout` in milliseconds (default 5000), `timeout_ms` (default none) and
+## `fts5=required` (see `sqlite.agc`).
 export def open_sqlite(path: String) -> Result[Connection]
   handle = try Sqlite.open(path)
   return ok(Connection.Sqlite(handle))
 end
 
 ## Opens a PostgreSQL database from a libpq url, or from a conninfo string (`host=localhost dbname=app`), which libpq
-## also takes.
+## also takes. `timeout_ms` is a parameter of the url, or a key of the conninfo, that this package reads and libpq
+## never sees: it sets the `statement_timeout` of the session.
 export def open_postgres(url: String) -> Result[Connection]
   handle = try Postgres.open(url)
   return ok(Connection.Postgres(handle))
 end
 
 ## Opens a MySQL or MariaDB database from a `mysql://user:password@host:3306/database` url (also `mariadb://`).
+## `timeout_ms` is a parameter of the url (see `mysql.agc`).
 export def open_mysql(url: String) -> Result[Connection]
   handle = try Mysql.open(url)
   return ok(Connection.Mysql(handle))
@@ -93,22 +107,57 @@ export def close(conn: Connection) -> Void
   end
 end
 
-## Runs a statement and gives its rows, in column order; a statement without a result gives none.
-export def query(conn: Connection, sql: String, params: List[V.Value]) -> Result[List[V.Row]]
+## Runs a statement and gives its rows, in column order; a statement without a result gives none. `timeout_ms` is the
+## limit of this call: `CONNECTION_DEFAULT` (-1) takes the one of the connection, `NO_TIMEOUT` (0) has none.
+export def query(
+  conn: Connection,
+  sql: String,
+  params: List[V.Value],
+  timeout_ms: Int = CONNECTION_DEFAULT,
+) -> Result[List[V.Row]]
   case conn
-    Connection.Sqlite(handle) -> return Sqlite.query(handle, sql, params)
-    Connection.Postgres(handle) -> return Postgres.query(handle, sql, params)
-    Connection.Mysql(handle) -> return Mysql.query(handle, sql, params)
+    Connection.Sqlite(handle) -> return Sqlite.query(handle, sql, params, timeout_ms)
+    Connection.Postgres(handle) -> return Postgres.query(handle, sql, params, timeout_ms)
+    Connection.Mysql(handle) -> return Mysql.query(handle, sql, params, timeout_ms)
   end
 end
 
-## Runs a statement and gives the number of rows it inserted, updated or deleted.
-export def execute(conn: Connection, sql: String, params: List[V.Value]) -> Result[Int]
+## Runs a statement and gives the number of rows it inserted, updated or deleted. `timeout_ms` is as in `query`.
+export def execute(
+  conn: Connection,
+  sql: String,
+  params: List[V.Value],
+  timeout_ms: Int = CONNECTION_DEFAULT,
+) -> Result[Int]
   case conn
-    Connection.Sqlite(handle) -> return Sqlite.execute(handle, sql, params)
-    Connection.Postgres(handle) -> return Postgres.execute(handle, sql, params)
-    Connection.Mysql(handle) -> return Mysql.execute(handle, sql, params)
+    Connection.Sqlite(handle) -> return Sqlite.execute(handle, sql, params, timeout_ms)
+    Connection.Postgres(handle) -> return Postgres.execute(handle, sql, params, timeout_ms)
+    Connection.Mysql(handle) -> return Mysql.execute(handle, sql, params, timeout_ms)
   end
+end
+
+## Whether a transaction is open on the connection (also one that failed and waits for its ROLLBACK). The adapter
+## reads it from the state of the connection, without a round trip. A closed connection is not in one.
+export def in_transaction?(conn: Connection) -> Bool
+  case conn
+    Connection.Sqlite(handle) -> return Sqlite.in_transaction?(handle)
+    Connection.Postgres(handle) -> return Postgres.in_transaction?(handle)
+    Connection.Mysql(handle) -> return Mysql.in_transaction?(handle)
+  end
+end
+
+## Whether the connection works: it is open and the server answers. A closed or lost connection is not healthy.
+export def healthy?(conn: Connection) -> Bool
+  case conn
+    Connection.Sqlite(handle) -> return Sqlite.healthy?(handle)
+    Connection.Postgres(handle) -> return Postgres.healthy?(handle)
+    Connection.Mysql(handle) -> return Mysql.healthy?(handle)
+  end
+end
+
+## Whether the failure message is the one of a statement that ran over its `timeout_ms`.
+export def timeout?(message: String) -> Bool
+  return TIMEOUT_PREFIXES.any? do |prefix| message.start_with?(prefix) end
 end
 
 ## Runs the block between the adapter's BEGIN and COMMIT and gives the value of the block's `ok`. An `error` from the

@@ -30,10 +30,13 @@ export OK = "ok"
 ## a key that is not generated, partial: write a Partial) and `orm_update` (table, partial), `orm_patch` (number: the key, text: the changes as JSON), `orm_delete` (number: the key or
 ## cells: the key as a typed cell, text: schema name), `orm_marker` (text: `insert` or `update`),
 ## `orm_builder` (text: how the query ends, table: its steps) and `orm_find` (text: the key as a typed cell),
-## `round_trips` (table: column type and cell), `float_oracle` (text: a float literal), and the
+## `round_trips` (table: column type and cell), `float_oracle` (text: a float literal), `query_within` and
+## `execute_within` (text: sql, number: the `timeout_ms` of the call), `in_transaction`, `not_in_transaction`,
+## `healthy` and `not_healthy` (they check the answer of `Db.in_transaction?` and `Db.healthy?`), and the
 ## expectations `expect_rows` (table: header and rows), `expect_last` (number, table), `expect_count` (number),
-## `expect_ok`, `expect_prefix`, `expect_exact`, `expect_mentions`, `expect_hides` and `expect_kind` (text; for the
-## last, the kind that `Orm.classify` gives the failure, such as `Conflict`).
+## `expect_ok`, `expect_timeout` (the failure is one that `Db.timeout?` knows), `expect_prefix`, `expect_exact`,
+## `expect_mentions`, `expect_hides` and `expect_kind` (text; for the last, the kind that `Orm.classify` gives the
+## failure, such as `Conflict`).
 export struct Request
   op: String
   text: String = ""

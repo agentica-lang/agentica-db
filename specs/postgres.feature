@@ -175,3 +175,14 @@ Feature: PostgreSQL
     Then the query "select 1 as v" returns:
       | v     |
       | Int 1 |
+
+  # libpq refuses a url parameter it does not know, so the open working shows that the adapter keeps `timeout_ms` away.
+  Scenario: The url timeout_ms sets statement_timeout of the session on postgres
+    Given a "postgres" database
+    Then the query "show statement_timeout" returns:
+      | statement_timeout |
+      | Text 0            |
+    When I open "[URL]&timeout_ms=1500"
+    Then the query "show statement_timeout" returns:
+      | statement_timeout |
+      | Text 1500ms       |

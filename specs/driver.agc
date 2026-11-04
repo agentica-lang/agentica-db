@@ -16,6 +16,22 @@ SESSIONS_SQL = {
   "postgres": "select count(*) as n from pg_stat_activity where pid = ?",
   "mysql": "select count(*) as n from information_schema.processlist where id = ?",
 }
+# What [SLOW] and [WORK] stand for, per adapter: a statement that runs for many seconds, and one that works for about
+# half a second and gives the row `n = 1`.
+SLOW_SQL = {
+  "sqlite": (
+    "with recursive c(x) as (select 1 union all select x + 1 from c limit 400000000) select count(*) as n from c"
+  ),
+  "postgres": "select pg_sleep(5)",
+  "mysql": (
+    "select count(*) from information_schema.columns a, information_schema.columns b, information_schema.columns c"
+  ),
+}
+WORK_SQL = {
+  "sqlite": "with recursive c(x) as (select 1 union all select x + 1 from c limit 6000000) select min(x) as n from c",
+  "postgres": "select 1 as n from pg_sleep(0.6)",
+  "mysql": "select 1 as n from dual where sleep(0.6) = 0",
+}
 SESSION_POLL_MS = 50
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 SQLITE_MEMORY = "sqlite::memory:"
@@ -190,6 +206,12 @@ def act(state: State, req: Request) -> Handled
     "open_url" -> return reply_ok(open_at(state, state.adapter, expand(state, req.text)))
     "execute" -> return reply_ok(with_params(state, req, &execute))
     "query" -> return reply_ok(with_params(state, req, &query))
+    "query_within" -> return reply_ok(query_within(state, sql_of(state, req.text), [], req.number))
+    "execute_within" -> return reply_ok(execute_within(state, sql_of(state, req.text), [], req.number))
+    "in_transaction" -> return check_connection(state, req.op)
+    "not_in_transaction" -> return check_connection(state, req.op)
+    "healthy" -> return check_connection(state, req.op)
+    "not_healthy" -> return check_connection(state, req.op)
     "transaction" -> return reply_ok(transaction(state, req))
     "orm_query" if req.partial -> return reply_ok(with_params(state, req, &partial_query))
     "orm_query" -> return reply_ok(with_params(state, req, &orm_query))
@@ -301,6 +323,13 @@ def scratch_dir() -> String
   return "#{SCRATCH_ROOT}/scratch"
 end
 
+# The sql of a step: [SLOW] and [WORK] are the statements of the adapter, then the markers of a cell.
+def sql_of(state: State, text: String) -> String
+  slow = SLOW_SQL.get(state.adapter, "")
+  work = WORK_SQL.get(state.adapter, "")
+  return Cells.expand(text.replace("[SLOW]", slow).replace("[WORK]", work))
+end
+
 # Runs `Migrate.up` with the rows of the table (`version`, `name`, `sql`; the header row is skipped). The sql cell
 # holds statements separated by `;` (no `;` inside a literal), or `code:` and one statement that a function migration
 # runs. The outcome is the versions applied, one row each, so a re-run shows no row. `text` is the history table, or
@@ -395,25 +424,56 @@ end
 def with_params(state: State, req: Request, run: Fn[State, String, List[Db.Value], State]) -> State
   case Cells.parse_all(req.cells)
     error(message) -> return failed(state, message)
-    ok(params) -> return run.call(state, Cells.expand(req.text), params)
+    ok(params) -> return run.call(state, sql_of(state, req.text), params)
   end
 end
 
 def execute(state: State, sql: String, params: List[Db.Value]) -> State
+  return execute_within(state, sql, params, Db.CONNECTION_DEFAULT)
+end
+
+def query(state: State, sql: String, params: List[Db.Value]) -> State
+  return query_within(state, sql, params, Db.CONNECTION_DEFAULT)
+end
+
+def execute_within(state: State, sql: String, params: List[Db.Value], timeout_ms: Int) -> State
   return with_conn(state) do |conn|
-    case Db.execute(conn, sql, params)
+    case Db.execute(conn, sql, params, timeout_ms)
       error(message) -> return failed(state, message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
 end
 
-def query(state: State, sql: String, params: List[Db.Value]) -> State
+def query_within(state: State, sql: String, params: List[Db.Value], timeout_ms: Int) -> State
   return with_conn(state) do |conn|
-    case Db.query(conn, sql, params)
+    case Db.query(conn, sql, params, timeout_ms)
       error(message) -> return failed(state, message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
     end
+  end
+end
+
+# The answer of `Db.in_transaction?` or `Db.healthy?` is the one the op names. A closed connection is still the
+# connection of the state, which is how a step asks about it.
+def check_connection(state: State, op: String) -> Handled
+  if state.conns.empty?
+    return Handled(state: state, reply: NO_DATABASE)
+  end
+
+  if connection_answer(state.conns[0], op)
+    return reply_ok(state)
+  end
+
+  return Handled(state: state, reply: "the connection did not answer for #{op}")
+end
+
+def connection_answer(conn: Db.Connection, op: String) -> Bool
+  case op
+    "in_transaction" -> return Db.in_transaction?(conn)
+    "not_in_transaction" -> return not Db.in_transaction?(conn)
+    "healthy" -> return Db.healthy?(conn)
+    _ -> return not Db.healthy?(conn)
   end
 end
 
@@ -1235,6 +1295,7 @@ def judge(last: Outcome, req: Request) -> String
   wanted = Cells.expand(req.text)
   case req.op
     "expect_ok" -> return judge_ok(last)
+    "expect_timeout" -> return judge_failure(last, "that is a timeout", "") do |message| Db.timeout?(message) end
     "expect_count" -> return judge_count(last, req.number)
     "expect_rows" -> return judge_rows(last, req.table)
     "expect_last" -> return judge_last(last, req.number, req.table)

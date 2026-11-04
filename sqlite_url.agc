@@ -2,9 +2,10 @@
 ##
 ## `app.db?journal_mode=delete&foreign_keys=off&busy_timeout=250&fts5=required`. The parameters are `journal_mode`
 ## (`wal`, `delete`, `truncate`, `persist`, `memory` or `off`), `foreign_keys` (`on` or `off`), `busy_timeout` (a
-## number of milliseconds, at most nine digits) and `fts5=required`. Names and values are lowercase and case-sensitive
-## (SQLite itself takes `WAL`; this reader does not), and a value is not percent-decoded. A name given twice keeps its
-## last value. A `?` always starts the parameters, so a path that holds one (or the Windows `\\?\` prefix) cannot be
+## number of milliseconds, at most nine digits), `timeout_ms` (the same: the limit of each statement, none by default)
+## and `fts5=required`. Names and values are lowercase and case-sensitive (SQLite itself takes `WAL`; this reader does
+## not), and a value is not percent-decoded. A name given twice keeps its last value. A `?` always starts the
+## parameters, so a path that holds one (or the Windows `\\?\` prefix) cannot be
 ## named here: write it as a `file:` URI. A text that starts with `file:` is a SQLite URI, and its `?` belongs to
 ## SQLite: it is returned whole as the path, with the default settings. An error is `sqlite error: <message>`.
 
@@ -25,6 +26,7 @@ export struct Settings
   uri: Bool = false
   foreign_keys: Bool = true
   busy_timeout: Int = 5000
+  timeout_ms: Int = 0
   fts5: Bool = false
 end
 
@@ -85,14 +87,17 @@ def read_settings(query: String) -> Result[Settings]
     elsif name == "foreign_keys" and one_of?(["on", "off"], value)
       settings = settings.with(foreign_keys: value == "on")
     elsif name == "busy_timeout"
-      settings = settings.with(busy_timeout: try read_milliseconds(value))
+      settings = settings.with(busy_timeout: try read_milliseconds(value, name))
+    elsif name == "timeout_ms"
+      settings = settings.with(timeout_ms: try read_milliseconds(value, name))
     elsif name == "fts5" and value == "required"
       settings = settings.with(fts5: true)
     elsif one_of?(["journal_mode", "foreign_keys", "fts5"], name)
       return error("sqlite error: the url parameter #{name} has a value that is not allowed: #{value}")
     else
       return error(
-        "sqlite error: unknown url parameter #{name}, expected journal_mode, foreign_keys, busy_timeout " + "or fts5",
+        "sqlite error: unknown url parameter #{name}, expected journal_mode, foreign_keys, busy_timeout, " +
+        "timeout_ms or fts5",
       )
     end
   end
@@ -102,11 +107,11 @@ end
 
 # A non-empty run of ASCII digits, at most nine (about 11 days): a wait of that many milliseconds is far from any
 # overflow in the clock arithmetic of the retry loop.
-def read_milliseconds(text: String) -> Result[Int]
+def read_milliseconds(text: String, name: String) -> Result[Int]
   bytes = text.bytes.to_a
   not_digits = bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end
   if bytes.empty? or bytes.size > MAX_BUSY_TIMEOUT_DIGITS or not_digits
-    return error("sqlite error: the url busy_timeout is not a number of milliseconds")
+    return error("sqlite error: the url #{name} is not a number of milliseconds")
   end
 
   return text.to_i

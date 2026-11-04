@@ -29,6 +29,8 @@ end
 
 The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`, `options`). A conninfo string such as `host=localhost dbname=app` works with `Db.open_postgres`. Set `connect_timeout` (in seconds): without it, an unreachable host waits as long as the operating system does. The client encoding is always UTF8.
 
+`timeout_ms` is the one parameter this package reads itself: libpq never sees it, in a url or in a conninfo string (see [timeouts](#timeouts)).
+
 A connection that cannot open, or a url libpq cannot parse, is `postgres error: <libpq message>`. For a url libpq cannot parse, its message may quote the url, password included: do not log it blindly.
 
 ## Types
@@ -53,6 +55,12 @@ Write `?`, never `$1`. The adapter rewrites `?` to `$n` outside string literals,
 ## Errors
 
 An engine failure is `postgres error <SQLSTATE>: <message>`, as in `postgres error 23505: duplicate key value violates unique constraint "users_name_key"`. Common codes are `42601` (syntax), `23505` (unique), `23503` (foreign key), `23502` (not null) and `42P01` (missing table). The message is the server's, in the language of its `lc_messages`. A failure without a SQLSTATE, such as a dropped connection, is `postgres error: <message>`.
+
+## Timeouts
+
+`timeout_ms` sets the `statement_timeout` of the session at `open` (`postgres://...?timeout_ms=2000`; `host=localhost timeout_ms=2000` for a conninfo string). A statement that runs longer fails with `postgres error 57014: canceling statement due to statement timeout`, and the connection works after it; `Db.timeout?(message)` recognizes it. The `timeout_ms` argument of `Db.query` and `Db.execute` sets the limit of one call (`-1` takes the connection's, `0` has none): the adapter sets `statement_timeout` before the statement and puts the connection's back after it, which costs two more round trips, and costs none when the call asks for the limit the connection has. Without `timeout_ms` nothing is bounded.
+
+`Db.in_transaction?(conn)` reads the transaction state libpq keeps (also `true` after a failed statement, until the `ROLLBACK`), and `Db.healthy?(conn)` checks the connection and sends `SELECT 1`.
 
 ## More
 

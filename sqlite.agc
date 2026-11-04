@@ -19,6 +19,12 @@
 ## `BEGIN`, a read, then the write) is not waited for: SQLite does not wait there either, since the connection that
 ## holds the lock may be waiting for this one to let go of its read lock. It fails at once.
 ##
+## `timeout_ms` (a url parameter, and an argument of `query` and `execute`; none by default) bounds a statement. A
+## watchdog task calls `sqlite3_interrupt` when the time is over, and the statement fails with `sqlite error 9:
+## interrupted`. The wait for a lock ends with the time too. SQLite rolls back the whole transaction when it
+## interrupts a write inside one (`in_transaction?` is then false). The watchdog is awaited before the call returns,
+## so an interrupt never reaches the next statement.
+##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
 import SqliteLock from "sqlite_lock"
@@ -40,6 +46,7 @@ SQLITE_BLOB = 4
 OPEN_FLAGS = 70
 SQLITE_READONLY = 8
 SQLITE_LOCKED = 6
+SQLITE_INTERRUPT = 9
 # The state of a connection with a read transaction open, for `sqlite3_txn_state`, which SQLite has since 3.34.0
 # (3034000 for `sqlite3_libversion_number`). A system library that is older never says it, and the write is waited for.
 SQLITE_TXN_READ = 1
@@ -51,11 +58,20 @@ NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
 TRANSIENT_DESTRUCTOR = -1
 
-## An open database and the time its statements wait for a lock. `handle` is public because a struct has no private
-## fields, but its type is not exported (a user cannot name it): treat it as opaque and pass the `Connection` around.
+## An open database, the time its statements wait for a lock, and the limit of a statement (0: none). `handle` is
+## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
+## opaque and pass the `Connection` around. `deadline` is set only on the copy that a bounded call works with.
 export struct Connection
   handle: Handle
   busy_timeout: Int
+  timeout_ms: Int = 0
+  deadline: Int = 0
+end
+
+# What the watchdog of a bounded call needs.
+struct Watch
+  handle: Handle
+  ms: Int
 end
 
 # The code of a step and whether it waited for a lock before: a statement that writes and was run again by SQLite
@@ -72,6 +88,8 @@ extern "sqlite3"
   def sqlite3_extended_errcode(db: Handle) -> C.Int32
   def sqlite3_errmsg(db: Handle) -> C.String
   def sqlite3_errstr(code: C.Int32) -> C.String
+  def sqlite3_interrupt(db: Handle) -> Void
+  def sqlite3_get_autocommit(db: Handle) -> C.Int32
   def sqlite3_changes(db: Handle) -> C.Int32
   def sqlite3_total_changes(db: Handle) -> C.Int32
   # Prepare is compute too: a big schema makes it slow. The probe is the same C function with an out pointer.
@@ -117,7 +135,12 @@ export def open(path: String) -> Result[Connection]
     return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
 
-  conn = Connection(handle: opened.db, busy_timeout: target.settings.busy_timeout)
+  conn = Connection(
+    handle: opened.db,
+    busy_timeout: target.settings.busy_timeout,
+    timeout_ms: target.settings.timeout_ms,
+  )
+
   configured = configure(conn, target.settings)
   case configured
     ok(_) -> return ok(conn)
@@ -134,8 +157,37 @@ export def close(conn: Connection) -> Void
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
-## Two columns with one name are an error: alias them.
-export def query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
+## Two columns with one name are an error: alias them. `timeout_ms` is the limit of this call: -1 takes the one of the
+## connection, 0 is none.
+export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
+  return bounded(conn, timeout_ms) do |run| run_query(run, sql, params) end
+end
+
+## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
+## `timeout_ms` is as in `query`.
+export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
+  return bounded(conn, timeout_ms) do |run| run_execute(run, sql, params) end
+end
+
+## Whether a transaction is open, which SQLite knows without asking the database. A closed connection is not in one.
+export def in_transaction?(conn: Connection) -> Bool
+  if Native.closed?(conn.handle)
+    return false
+  end
+
+  return sqlite3_get_autocommit(conn.handle) == 0
+end
+
+## Whether the connection works: it is open and answers `SELECT 1`.
+export def healthy?(conn: Connection) -> Bool
+  if Native.closed?(conn.handle)
+    return false
+  end
+
+  return run_query(conn, "SELECT 1", []).ok?
+end
+
+def run_query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
   stmt = try prepare(conn, sql, params)
   names = column_names(stmt)
   if names.uniq.size != names.size
@@ -148,8 +200,7 @@ export def query(conn: Connection, sql: String, params: List[Value]) -> Result[L
   return rows
 end
 
-## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
-export def execute(conn: Connection, sql: String, params: List[Value]) -> Result[Int]
+def run_execute(conn: Connection, sql: String, params: List[Value]) -> Result[Int]
   stmt = try prepare(conn, sql, params)
   before = sqlite3_total_changes(conn.handle)
   # A statement that returns rows is run for its effect: its rows are stepped over, not read.
@@ -159,13 +210,58 @@ export def execute(conn: Connection, sql: String, params: List[Value]) -> Result
   return ok(changes_since(conn, before))
 end
 
+# Runs `body` with the limit of the call. With a limit, a watchdog task interrupts the statement when the time is over
+# and the waits for a lock stop at the same deadline. The watchdog is cancelled and awaited before the call returns:
+# an interrupt that came after the statement ended would be taken by the next one. It is a `Result[Void]` task so that
+# the await of a cancelled one is a value.
+def bounded[R](conn: Connection, timeout_ms: Int, body: Fn[Connection, Result[R]]) -> Result[R]
+  limit = timeout_ms
+  if limit < 0
+    limit = conn.timeout_ms
+  end
+
+  if limit == 0
+    return body.call(conn)
+  end
+
+  deadline = Time.monotonic_ms() + limit
+  watchdog_task = Task.spawn(&watchdog, Watch(handle: conn.handle, ms: limit))
+  done = body.call(conn.with(deadline: deadline))
+  Task.cancel(watchdog_task)
+  Task.await(watchdog_task)
+  return timed_out(done, limit, deadline)
+end
+
+def watchdog(watch: Watch) -> Result[Void]
+  Task.sleep(watch.ms)
+  sqlite3_interrupt(watch.handle)
+  return ok()
+end
+
+# A lock that was still held when the deadline stopped the wait is a timeout like an interrupt.
+def timed_out[R](done: Result[R], limit: Int, deadline: Int) -> Result[R]
+  case done
+    ok(_) -> return done
+    error(message) ->
+      busy = message.start_with?("sqlite error #{SqliteLock.SQLITE_BUSY}:")
+      locked = busy or message.start_with?("sqlite error #{SQLITE_LOCKED}:")
+      if locked and Time.monotonic_ms() >= deadline
+        return error(
+          "sqlite error #{SQLITE_INTERRUPT}: interrupted, the timeout of #{limit} ms ended while waiting for a lock",
+        )
+      end
+
+      return done
+  end
+end
+
 def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
   if settings.fts5 and not fts5?(conn)
     return error("sqlite error: this SQLite was built without FTS5 (fts5=required)")
   end
 
   # Set in both cases: a build can turn foreign keys on by default.
-  try execute(conn, "PRAGMA foreign_keys = #{on_off(settings.foreign_keys)}", [])
+  try run_execute(conn, "PRAGMA foreign_keys = #{on_off(settings.foreign_keys)}", [])
   try set_journal_mode(conn, settings)
   return ok()
 end
@@ -186,7 +282,7 @@ end
 # app would rather stop at startup than run in another mode. An explicit journal_mode is always an error.
 def set_journal_mode(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
   mode = settings.journal_mode
-  asked = query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
+  asked = run_query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
   case asked
     error(message) ->
       if not settings.journal_given and message.start_with?("sqlite error #{SQLITE_READONLY}:")
@@ -214,12 +310,12 @@ end
 
 # Tries to create an FTS5 table in the temp schema, which no file keeps.
 def fts5?(conn: Connection) -> Bool
-  made = execute(conn, "CREATE VIRTUAL TABLE temp.agentica_fts5_probe USING fts5(x)", [])
+  made = run_execute(conn, "CREATE VIRTUAL TABLE temp.agentica_fts5_probe USING fts5(x)", [])
   if not made.ok?
     return false
   end
 
-  execute(conn, "DROP TABLE temp.agentica_fts5_probe", [])
+  run_execute(conn, "DROP TABLE temp.agentica_fts5_probe", [])
   return true
 end
 
@@ -270,7 +366,7 @@ def prepare_buffer(conn: Connection, buf: C.Pointer) -> Result[Stmt]
   started = Time.monotonic_ms()
   prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
   while lock_wait?(conn, prepared.result, started)
-    pause(started, conn.busy_timeout)
+    pause(conn, started)
     prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
   end
 
@@ -291,7 +387,7 @@ def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
   started = Time.monotonic_ms()
   probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
   while lock_wait?(conn, probe.result, started)
-    pause(started, conn.busy_timeout)
+    pause(conn, started)
     probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
   end
 
@@ -311,7 +407,7 @@ def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
   more_started = Time.monotonic_ms()
   more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
   while lock_wait?(conn, more.result, more_started)
-    pause(more_started, conn.busy_timeout)
+    pause(conn, more_started)
     more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
   end
 
@@ -429,7 +525,7 @@ def step(conn: Connection, stmt: Stmt) -> Stepped
   code = sqlite3_step(stmt)
   waited = false
   while lock_wait?(conn, code, started) and not upgrade?(conn, stmt)
-    pause(started, conn.busy_timeout)
+    pause(conn, started)
     waited = true
     code = sqlite3_step(stmt)
   end
@@ -466,19 +562,29 @@ def lock_wait?(conn: Connection, code: Int, started: Int) -> Bool
     return false
   end
 
-  return Time.monotonic_ms() - started < conn.busy_timeout
+  now = Time.monotonic_ms()
+  if conn.deadline > 0 and now >= conn.deadline
+    return false
+  end
+
+  return now - started < conn.busy_timeout
 end
 
 # Sleeps a little: the task parks, so its thread of the compute pool is free for the connection that holds the lock.
-# The sleep never goes past the end of the wait.
-def pause(started: Int, busy_timeout: Int) -> Void
-  waited = Time.monotonic_ms() - started
+# The sleep never goes past the end of the wait, nor the deadline of the call.
+def pause(conn: Connection, started: Int) -> Void
+  now = Time.monotonic_ms()
+  waited = now - started
   length = waited / 4 + 1
   if length > MAX_PAUSE_MS
     length = MAX_PAUSE_MS
   end
 
-  left = busy_timeout - waited
+  left = conn.busy_timeout - waited
+  if conn.deadline > 0 and conn.deadline - now < left
+    left = conn.deadline - now
+  end
+
   if length > left
     length = left
   end
