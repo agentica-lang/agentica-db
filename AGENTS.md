@@ -19,7 +19,9 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                (identifier names and quotes), errors.agc
   support/     value.agc (Value, Row; db.agc re-exports them), milliseconds.agc (the timeout_ms and
                busy_timeout numbers of the url readers)
-  examples/    users.agc, a runnable web-handler style example of the Orm; specs/examples.feature runs it
+  examples/    users.agc, a runnable web-handler style example of the Orm; migrate_layout.agc, with migrations.agc
+               and migrations/ (one file per migration), the layout of the Migrations guide;
+               specs/examples.feature runs both
   specs/ test/ the features and the unit tests of the package
 src/pool/      package "pool": a generic pool of resources (pool.agc, import Pool from "pkg/pool/pool"), no
                native library, no import of db, its own agentica.toml, specs/ and test/
@@ -114,8 +116,9 @@ that moves a folder, move the `ref` (and the lock) to its merge commit.
   badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url readers
   (`test/mysql_url_test.agc`, `test/postgres_url_test.agc`, `test/sqlite_url_test.agc`), the timeout messages
   (`test/db_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`)
-  and the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a connection is a scenario. A
-  behavior is proven once: a common scenario is an outline with one row per adapter that the behavior applies to, not
+  and the identifier check of the Orm (`test/orm_dialect_test.agc`), and `test/migrations_layout_test.agc` (it opens no
+  connection: it checks the list of `examples/migrations.agc` against its folder, as the guide teaches). Anything that
+  opens a connection is a scenario. A behavior is proven once: a common scenario is an outline with one row per adapter that the behavior applies to, not
   one per variant of the input, and a case a unit test proves is not repeated in a feature, except the one integration
   row per adapter that shows the helper is wired in (a bad url, a NUL in the sql).
 - Ruby forms first (`start_with?`, `each`, `Value.Text(...)`); style: `agentica-code-guidelines` of the Agentica

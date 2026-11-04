@@ -57,7 +57,7 @@ done
 
 ## Lay out migrations
 
-Give each migration its own file, numbered so that the folder lists them in order, like Rails: `migrations/m0001_create_users.agc`, `migrations/m0002_users_name_index.agc`... Each file exports one `migration()`, and a `code` migration keeps its function in the same file.
+Give each migration its own file, numbered with zero-padded versions so that the folder lists them in order, like Rails: `migrations/m0001_create_users.agc`, `migrations/m0002_users_name_index.agc`... Each file exports one `migration()`, and a `code` migration keeps its function in the same file.
 
 ```agentica
 import Db from "pkg/db/db"
@@ -73,7 +73,7 @@ def first_user(tx: Db.Connection) -> Result[Void]
 end
 ```
 
-`migrations.agc` only imports the files and returns the list in order. An import path is relative to the importing file, so the files of the folder are imported as `migrations/m0001_create_users` from the file next to the folder.
+`migrations.agc` only imports the files and returns the list in order (the two `ruby` blocks below mirror `src/db/examples/migrations.agc` and `src/db/test/migrations_layout_test.agc` of the repository, so a change to one updates the other). An import path is relative to the importing file, so the files of the folder are imported as `migrations/m0001_create_users` from the file next to the folder.
 
 ```ruby
 import Migrate from "pkg/db/migrate"
@@ -86,7 +86,7 @@ export def all() -> List[Migrate.Migration]
 end
 ```
 
-`up` does not see the folder, so a file that is missing from the list is never applied. Add a test for it: the versions go from 1 to N with no gap, and N is the number of files in the folder (`Dir.list` is relative to the folder you run `agentica test` in).
+`up` does not see the folder, so a file that is missing from the list is never applied. Add a test for it: the versions go from 1 to N with no gap, and N is the number of `.agc` files in the folder (`Dir.list` is relative to the folder you run `agentica test` in).
 
 ```ruby
 import Migrations from "../src/migrations"
@@ -96,14 +96,14 @@ def main() -> Void
     Test.test("every migration file is in the list, numbered 1 to N") do
       versions = Migrations.all().map do |migration| migration.version end
       try Test.eq(versions, (1..versions.length).to_a)
-      files = try Dir.list("src/migrations")
+      files = (try Dir.list("src/migrations")).select do |name| name.end_with?(".agc") end
       return Test.eq(files.length, versions.length)
     end,
   ])
 end
 ```
 
-With timestamp versions (see "What `up` refuses") the versions are not 1 to N, so keep only the count check. A runnable copy of this layout is in `src/db/examples/` of the repository (`migrations.agc`, `migrations/` and `migrate_layout.agc`).
+With timestamp versions (see "What `up` refuses") the versions are not 1 to N, so keep only the count check. A runnable copy of this layout is in `src/db/examples/` of the repository (`migrations.agc`, `migrations/` and `migrate_layout.agc`, which the specs run).
 
 ## What `up` does
 

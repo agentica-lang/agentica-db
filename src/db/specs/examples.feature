@@ -25,7 +25,7 @@ Feature: Examples
 
       """
 
-  Scenario: The migrations example applies one file per migration, and a second run applies nothing
+  Scenario: The migrations example on sqlite applies one file per migration, and a second run applies nothing
     Given the Agentica program "../examples/migrate_layout.agc"
     Then the program exits with code 0 within 30000 milliseconds
     And stdout is:
