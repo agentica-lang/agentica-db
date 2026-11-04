@@ -249,3 +249,46 @@ Feature: SQLite
     And the query "select count(*) as n from t" returns:
       | n     |
       | Int 1 |
+
+  # SQLite rolls back the whole transaction when it interrupts a write inside one, so the earlier write is gone too.
+  Scenario: A write that times out inside a transaction rolls the transaction back on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?timeout_ms=200"
+    And I execute "create table t (x integer)"
+    And I execute "begin"
+    And I execute "insert into t values (1)"
+    And I execute "with recursive c(x) as (select 1 union all select x + 1 from c limit 400000000) insert into t select x from c"
+    Then it fails with a timeout
+    And the connection is not in a transaction
+    And the query "select count(*) as n from t" returns:
+      | n     |
+      | Int 0 |
+
+  # The wait for a lock ends with the deadline too, not only a running statement: the lock is held for 1500 ms and
+  # the busy_timeout is 5000 ms.
+  Scenario: The wait for a lock ends at the timeout on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/deadline.db?journal_mode=delete&timeout_ms=300"
+    And I execute "create table t (x integer)"
+    And another task on "sqlite:[SCRATCH]/deadline.db?journal_mode=delete" holds the write lock for 1500 ms while I query "select x from t"
+    Then it fails with a timeout
+
+  # SQLite does all the work of a write with RETURNING in the first step, and rolls it back when it is interrupted
+  # while the rows are read; the adapter must not return early on a later step and leave the write behind.
+  Scenario: A write with RETURNING that times out is rolled back, in autocommit and in a transaction on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?timeout_ms=400"
+    And I execute "create table t (x integer)"
+    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 300000) select x from c returning x"
+    Then it fails with a timeout
+    And the connection is not in a transaction
+    And the query "select count(*) as n from t" returns:
+      | n     |
+      | Int 0 |
+    When I execute "begin"
+    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 300000) select x from c returning x"
+    Then it fails with a timeout
+    And the connection is not in a transaction
+    And the query "select count(*) as n from t" returns:
+      | n     |
+      | Int 0 |

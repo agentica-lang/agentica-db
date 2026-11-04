@@ -18,6 +18,7 @@ def main() -> Void
       try Test.eq(found.password, "pw")
       try Test.eq(found.database, "app")
       try Test.eq(found.timeout, 5)
+      try Test.eq(target_of("mysql://u@h?timeout_ms=2500").timeout_ms, 2500)
       try Test.eq(found.ca, "/etc/ca.pem")
       try Test.eq(found.tls, MysqlUrl.Tls.Verify)
       bare = target_of("mariadb://localhost")
@@ -25,6 +26,7 @@ def main() -> Void
       try Test.eq(bare.user, "")
       try Test.eq(bare.database, "")
       try Test.eq(bare.timeout, 0)
+      try Test.eq(bare.timeout_ms, 0)
       try Test.eq(bare.tls, MysqlUrl.Tls.Default)
       return Test.eq(target_of("mysql://[::1]:3307/").host, "::1")
     end,
@@ -52,11 +54,12 @@ def main() -> Void
 
       try refused(
         "mysql://u:hunter2@h?nope=1",
-        "the url has an unknown parameter, the ones that exist are connect_timeout, ssl_mode and ssl_ca",
+        "the url has an unknown parameter, the ones that exist are connect_timeout, timeout_ms, ssl_mode and ssl_ca",
       )
 
       try refused("mysql://u:hunter2@h?ssl_mode=nope", "the url ssl_mode is required or verify")
       try refused("mysql://u:hunter2@h?connect_timeout=x", "the url connect_timeout is not a number of seconds")
+      try refused("mysql://u:hunter2@h?timeout_ms=1000000000", "the url timeout_ms is not a number of milliseconds")
       try refused("mysql://u:hunter2@[::1", "the url has an IPv6 host without a closing bracket")
       try refused("mysql://u:hunter2@h?ssl_mode=verify&ssl_ca=x.pem&ssl_mode=required", "the url sets ssl_mode twice")
       return refused("mysql://u:h%00@h", "the url contains a NUL character")

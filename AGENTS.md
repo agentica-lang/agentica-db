@@ -1,9 +1,11 @@
 # agentica-db
 
 One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc` with its url reader
-`sqlite_url.agc` and its lock rule `sqlite_lock.agc`, `postgres.agc` with its placeholder scanner `postgres_sql.agc`,
-`mysql.agc` with its statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all through the C FFI. No C
-code of ours. `orm.agc` is a typed layer over `Db` (plain structs in and out, always bound `?` parameters) with
+`sqlite_url.agc` and its lock rule `sqlite_lock.agc`, `postgres.agc` with its placeholder scanner `postgres_sql.agc`
+and its url reader `postgres_url.agc` (it takes `timeout_ms` out of the url before libpq sees it), `mysql.agc` with
+its statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all through the C FFI. No C code of ours.
+`milliseconds.agc` reads the `timeout_ms` and `busy_timeout` numbers of their url readers. `orm.agc` is a typed layer
+over `Db` (plain structs in and out, always bound `?` parameters) with
 `orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the sql of the query builder) and `orm/dialect.agc`
 (identifier names and quotes); it takes a `Db.Connection` and never touches an adapter. `examples/users.agc` is a
 runnable web-handler style example of the Orm; `specs/examples.feature` runs it and checks its output. `migrate.agc` is
@@ -42,8 +44,9 @@ the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.fea
 
 - Search with `rg`.
 - An adapter keeps its `extern` block private and exports only the wrapper (`wrapping` guide of the Agentica
-  site: `library/io-and-system/native/wrapping`). An adapter has the same four functions as `db.agc`:
-  `open`, `close`, `query`, `execute`. `db.agc` dispatches on `Connection`; `transaction` stays in `db.agc`.
+  site: `library/io-and-system/native/wrapping`). An adapter has the same functions as `db.agc`:
+  `open`, `close`, `query`, `execute` (both take a last `timeout_ms`, -1 for the connection's), `in_transaction?` and
+  `healthy?`. `db.agc` dispatches on `Connection`; `transaction` stays in `db.agc`.
   `db.agc` also re-exports `Value` and `Row` of `value.agc` (`export V.Value`), so a user imports `Db` only. The
   connection of each adapter is a native resource (`sqlite3_close_v2`, `PQfinish`, `mysql_close`): the end of the task
   or of `main` closes it, and `Native.closed?` turns a use after `close` into an error (SQLite keeps the runtime
@@ -69,9 +72,11 @@ the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.fea
   `Value` as text: `Int 31`, `Float -0.25`, `Text ana`, `Blob 0,1,255`, `Bool true`, `Null`, `Repeat 5000 Blob 7`;
   `[NUL]`, `[LF]`, `[TAB]`, `[VT]`, `[FF]`, `[CR]` and `[SP]` stand for characters a cell cannot hold. In a step text,
   `[URL]` is the url of the server of the adapter in the scenario, PostgreSQL or MySQL (`[URL]&name=value` adds a url
-  parameter), `[SERVER]` is it without its scheme, `[ADDRESS]` is its host and port only, and `[SCRATCH]` is a folder
-  under `tmp/`. A feature that uses a marker says so in its description. A step has a budget of one million VM steps,
-  so a `Repeat` cell of more than about 40000 items stops the driver.
+  parameter), `[SERVER]` is it without its scheme, `[ADDRESS]` is its host and port only, `[SCRATCH]` is a folder
+  under `tmp/`, `[SLOW]` is a statement of the adapter that runs for many seconds and `[WORK]` one that works for about
+  half a second and gives the row `n = 1` (`specs/timeouts.feature`). A feature that uses a marker says so in its
+  description. A step has a budget of one million VM steps, so a `Repeat` cell of more than about 40000 items stops
+  the driver.
 - Add a step only when no step can say it. Lines of 119 characters at most, except a step line that holds a long sql.
 - A statement that fails must be checked by the next `Then` (`it fails with ...`): the driver refuses any new request
   while the last failure is unchecked, so a failing setup step fails the scenario. The last step of a scenario is a
@@ -79,8 +84,9 @@ the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.fea
 - Scenario names are unique: put a column of the Examples in the title of an outline with several rows.
 - `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would say
   badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url readers
-  (`test/mysql_url_test.agc`, `test/sqlite_url_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`) and
-  the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a connection is a scenario. A
+  (`test/mysql_url_test.agc`, `test/postgres_url_test.agc`, `test/sqlite_url_test.agc`), the timeout messages
+  (`test/db_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`)
+  and the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a connection is a scenario. A
   behavior is proven once: a common scenario is an outline with one row per adapter that the behavior applies to, not
   one per variant of the input, and a case a unit test proves is not repeated in a feature, except the one integration
   row per adapter that shows the helper is wired in (a bad url, a NUL in the sql).

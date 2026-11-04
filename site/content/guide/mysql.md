@@ -32,9 +32,17 @@ The url is `mysql://user:password@host:port/database?parameter=value`, and `mari
 - The user, the password and the database are percent-decoded: write `p%40ss` for `p@ss`.
 - The host is required, the port is 3306 by default, an IPv6 host is `[::1]`, and the database is optional.
 - Use an address. The host `localhost` makes the client library use the local socket, which is not where a container listens.
-- The parameters are `connect_timeout` (seconds; set it, since an unreachable host otherwise waits as long as the operating system does) and `ssl_mode`. Any other parameter is an error.
+- The parameters are `connect_timeout` (seconds; set it, since an unreachable host otherwise waits as long as the operating system does), `timeout_ms` (the limit of each statement, see [timeouts](#timeouts)) and `ssl_mode`. Any other parameter is an error.
 
 A bad url is `mysql error: <message>`, and the message never repeats a part of the url. A server that does not accept the connection is `mysql error <code>: <message>`, with the code of the client library or the server (`2002` unreachable, `1045` access denied, `1049` unknown database).
+
+## Timeouts
+
+`timeout_ms` (a url parameter, or the `timeout_ms` argument of `Db.query` and `Db.execute`: `-1` takes the connection's, `0` has none) is set on the server, and the adapter reads at `open` which server it is. MySQL gets `max_execution_time`, which limits only a `SELECT`: it fails with `mysql error 3024`. A `DO` or an `INSERT` is not bounded on MySQL. An interrupted `SLEEP()` ends early without an error: `select sleep(5)` on MySQL 8.4, `DO SLEEP(20)` on MariaDB. MariaDB gets `max_statement_time`, which limits every statement: `mysql error 1969`. `Db.timeout?(message)` recognizes both, and the connection works after them. A call with its own limit sets the variable before the statement and puts the connection's back after it (two more round trips, none when the call asks for the limit the connection has; the server's default comes back when the url has no `timeout_ms`). Without `timeout_ms` nothing is bounded.
+
+A url with `timeout_ms` also sets the client read and write timeouts, in whole seconds, to the limit plus 10 seconds, as a backstop for what the server does not time (a `DO` or an `INSERT` on MySQL, a lost network). A statement that hits it fails with `mysql error 2013: Lost connection to server during query` and the connection is gone (`Db.healthy?(conn)` is `false`). The backstop is fixed at `open`, so a call that asks for a limit longer than the url's, `0` included, is cut at the backstop: open with the longer `timeout_ms` for it.
+
+`Db.in_transaction?(conn)` reads the status flag of the last reply from the server, and `Db.healthy?(conn)` pings it.
 
 ## TLS
 

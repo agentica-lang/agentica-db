@@ -19,6 +19,16 @@ def main() -> Void
     BDD.step("I execute {string} with:") do |ctx, args| send(ctx, with_params("execute", args[0], ctx)) end,
     text_step("I query {string}", "query"),
     BDD.step("I query {string} with:") do |ctx, args| send(ctx, with_params("query", args[0], ctx)) end,
+    BDD.step("I query {string} with a timeout of {int} ms") do |ctx, args|
+      send(ctx, Request(op: "query_within", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("I execute {string} with a timeout of {int} ms") do |ctx, args|
+      send(ctx, Request(op: "execute_within", text: args[0], number: args[1].to_i!))
+    end,
+    plain_step("the connection is in a transaction", "in_transaction"),
+    plain_step("the connection is not in a transaction", "not_in_transaction"),
+    plain_step("the connection is healthy", "healthy"),
+    plain_step("the connection is not healthy", "not_healthy"),
     BDD.step("I run these statements in a transaction:") do |ctx, args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx)))
     end,
@@ -112,6 +122,7 @@ def main() -> Void
       send(ctx, Request(op: "expect_count", number: args[0].to_i!))
     end,
     plain_step("it succeeds", "expect_ok"),
+    plain_step("it fails with a timeout", "expect_timeout"),
     text_step("it fails with {string}", "expect_prefix"),
     text_step("the failure is a {string} error", "expect_kind"),
     text_step("it fails with exactly {string}", "expect_exact"),

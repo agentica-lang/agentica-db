@@ -42,6 +42,10 @@ When you know the database, call its function. They take the same arguments as `
 
 The pages of [SQLite](/guide/sqlite/), [PostgreSQL](/guide/postgresql/) and [MySQL](/guide/mysql/) have the url parameters of each.
 
+## Checking a connection
+
+`Db.in_transaction?(conn)` says whether a transaction is open, and `Db.healthy?(conn)` whether the connection works. The first asks the connection for its state and sends nothing to the server. The second may send a cheap statement or a ping. A closed connection is not in a transaction and not healthy; neither function stops the program. A pool uses them to roll back and to check a connection it takes back.
+
 ## Errors
 
 An error is a `Result` failure: `error(message)`. There are two shapes. An engine failure is `<adapter> error <code>: <message>`, as in `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs, is `<adapter> error: <message>`. A failure of `Db` itself, such as an unknown url, is `db error: <message>`. A bad input is an error and never stops the program.

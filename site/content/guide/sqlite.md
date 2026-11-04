@@ -35,6 +35,7 @@ A connection is set up for a web app. The parameters after a `?` change the sett
 | `journal_mode` | `wal`, `delete`, `truncate`, `persist`, `memory`, `off` | `wal` |
 | `foreign_keys` | `on`, `off` | `on` |
 | `busy_timeout` | milliseconds, 0 or more | `5000` |
+| `timeout_ms` | milliseconds, the limit of each statement | none |
 | `fts5` | `required` | not checked |
 
 ```agentica
@@ -63,6 +64,12 @@ true
 - `fts5=required` makes `open` fail with `sqlite error: this SQLite was built without FTS5 (fts5=required)` when the system library has no FTS5, instead of failing later at the first `create virtual table`.
 - Names and values are lowercase and case-sensitive (`journal_mode=WAL` is an error, although SQLite itself takes it), and a value is not percent-decoded. A repeated name keeps its last value. A parameter that is not in the table, an empty one (`?&x=1`), one without `=` or a value that is not allowed is `sqlite error: ...`.
 - `sqlite:app.db?journal_mode=delete&foreign_keys=off` is SQLite's own behavior before these defaults.
+
+### Timeouts
+
+`timeout_ms` (a url parameter, or the `timeout_ms` argument of `Db.query` and `Db.execute`: `-1` takes the connection's, `0` has none) ends a statement that runs longer. A watchdog task calls `sqlite3_interrupt` when the time is over, and the statement fails with `sqlite error 9: interrupted`; `Db.timeout?(message)` tells it from other failures. The connection works after it. The wait for a lock (`busy_timeout`) ends at the same deadline and fails the same way.
+
+SQLite rolls back the whole transaction when it interrupts a write inside one, the earlier writes of the transaction included: `Db.in_transaction?(conn)` is then `false`, and the `ROLLBACK` that `Db.transaction` sends fails (its message is appended to the timeout error). A read that times out leaves the transaction open.
 
 ### SQLite URIs
 

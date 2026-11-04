@@ -4,12 +4,14 @@ weight: 2
 description: Run sql with query and execute, and pass values as bound parameters.
 ---
 
-Two functions run sql. Both take the connection, the sql and a list of parameters.
+Two functions run sql. Both take the connection, the sql and a list of parameters, and an optional `timeout_ms`.
 
 | Function | Gives |
 |---|---|
-| `Db.query(conn, sql, params)` | `Result[List[Db.Row]]`, the rows of the statement; a statement without a result gives none |
-| `Db.execute(conn, sql, params)` | `Result[Int]`, the rows inserted, updated or deleted |
+| `Db.query(conn, sql, params, timeout_ms)` | `Result[List[Db.Row]]`, the rows of the statement; a statement without a result gives none |
+| `Db.execute(conn, sql, params, timeout_ms)` | `Result[Int]`, the rows inserted, updated or deleted |
+
+`timeout_ms` is the limit of the call in milliseconds (`-1`, the default, takes the connection's `timeout_ms`; `0` has none). A statement that runs over it fails, and `Db.timeout?(message)` tells that failure from others. See the page of each database.
 
 A `Db.Row` is a `Map[String, Db.Value]`, in column order. Read a column with `row["name"]` and look at the `Db.Value` with `case`.
 
