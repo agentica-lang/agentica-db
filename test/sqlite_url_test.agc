@@ -45,13 +45,18 @@ def main() -> Void
       try refused("a.db?&foreign_keys=off", "the url has an empty parameter")
       try refused("a.db?foreign_keys=off&", "the url has an empty parameter")
       try refused("a.db?journal_mode", "the url parameter journal_mode has no value, write name=value")
-      return refused("a.db?color=red", "unknown url parameter color, expected journal_mode, foreign_keys, " +
-                                       "busy_timeout or fts5")
+      return refused(
+        "a.db?color=red",
+        "unknown url parameter color, expected journal_mode, foreign_keys, " + "busy_timeout or fts5",
+      )
     end,
     Test.test("names and values are lowercase and case-sensitive, and nothing is percent-decoded") do
       try refused("a.db?journal_mode=WAL", "the url parameter journal_mode has a value that is not allowed: WAL")
-      try refused("a.db?Foreign_Keys=on", "unknown url parameter Foreign_Keys, expected journal_mode, " +
-                                          "foreign_keys, busy_timeout or fts5")
+      try refused(
+        "a.db?Foreign_Keys=on",
+        "unknown url parameter Foreign_Keys, expected journal_mode, " + "foreign_keys, busy_timeout or fts5",
+      )
+
       try refused("a.db?foreign_keys=ON", "the url parameter foreign_keys has a value that is not allowed: ON")
       try refused("a.db?journal_mode=%77al", "the url parameter journal_mode has a value that is not allowed: %77al")
       try refused("a.db?fts5=yes", "the url parameter fts5 has a value that is not allowed: yes")

@@ -80,8 +80,18 @@ export def parse(url: String) -> Result[Target]
     return error("mysql error: the url contains a NUL character")
   end
 
-  return ok(Target(host: address.host, port: address.port, user: user, password: password, database: database,
-                   timeout: options.timeout, tls: options.tls, ca: options.ca))
+  return ok(
+    Target(
+      host: address.host,
+      port: address.port,
+      user: user,
+      password: password,
+      database: database,
+      timeout: options.timeout,
+      tls: options.tls,
+      ca: options.ca,
+    ),
+  )
 end
 
 # The text before the first `separator` and the text after it (empty when there is none).
@@ -212,8 +222,10 @@ def read_query(query: String) -> Result[Options]
       ca = try decode(halves[1])
       options = options.with(ca: ca)
     else
-      return error("mysql error: the url has an unknown parameter, the ones that exist are connect_timeout, " +
-                   "ssl_mode and ssl_ca")
+      return error(
+        "mysql error: the url has an unknown parameter, the ones that exist are connect_timeout, " +
+        "ssl_mode and ssl_ca",
+      )
     end
   end
 
@@ -221,7 +233,7 @@ def read_query(query: String) -> Result[Options]
     return error("mysql error: the url ssl_mode=verify needs ssl_ca=PATH")
   end
 
-  if (not verify) and not options.ca.empty?
+  if not verify and not options.ca.empty?
     return error("mysql error: the url ssl_ca works only with ssl_mode=verify")
   end
 

@@ -101,8 +101,12 @@ end
 
 ## Runs the sql and reads each row with `decode`, for a result that is not one struct (a join, a count). The error
 ## of `decode` is the error of the call.
-export def query_as[R](conn: Db.Connection, sql: String, params: List[Db.Value],
-                       decode: Fn[Db.Row, Result[R]]) -> Result[List[R]]
+export def query_as[R](
+  conn: Db.Connection,
+  sql: String,
+  params: List[Db.Value],
+  decode: Fn[Db.Row, Result[R]],
+) -> Result[List[R]]
   rows = try Db.query(conn, sql, params)
   found: List[R] = []
   for row in rows
@@ -521,7 +525,7 @@ def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Res
   end
 
   # Json has no list of keys: an object with only the known keys is the same object when no key was unknown.
-  if (try canonical(JSON.object(known))) != (try canonical(changes))
+  if try canonical(JSON.object(known)) != try canonical(changes)
     return refuse(schema, "the changes have a key that is not a column")
   end
 

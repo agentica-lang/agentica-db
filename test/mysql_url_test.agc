@@ -45,10 +45,16 @@ def main() -> Void
       try refused("mysql://u:%ff@h", "the url has a percent escape that is not UTF-8")
       try refused("mysql://u:hunter2@h?ssl_mode=verify", "the url ssl_mode=verify needs ssl_ca=PATH")
       try refused("mysql://u:hunter2@h?ssl_ca=x.pem", "the url ssl_ca works only with ssl_mode=verify")
-      try refused("mysql://u:hunter2@h?ssl_mode=required&ssl_ca=x.pem",
-                  "the url ssl_ca works only with ssl_mode=verify")
-      try refused("mysql://u:hunter2@h?nope=1",
-                  "the url has an unknown parameter, the ones that exist are connect_timeout, ssl_mode and ssl_ca")
+      try refused(
+        "mysql://u:hunter2@h?ssl_mode=required&ssl_ca=x.pem",
+        "the url ssl_ca works only with ssl_mode=verify",
+      )
+
+      try refused(
+        "mysql://u:hunter2@h?nope=1",
+        "the url has an unknown parameter, the ones that exist are connect_timeout, ssl_mode and ssl_ca",
+      )
+
       try refused("mysql://u:hunter2@h?ssl_mode=nope", "the url ssl_mode is required or verify")
       try refused("mysql://u:hunter2@h?connect_timeout=x", "the url connect_timeout is not a number of seconds")
       try refused("mysql://u:hunter2@[::1", "the url has an IPv6 host without a closing bracket")

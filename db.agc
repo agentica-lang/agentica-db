@@ -57,8 +57,10 @@ export def open(url: String) -> Result[Connection]
     return open_mysql(url)
   end
 
-  return error("db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory:, " +
-               "postgres:// or mysql://")
+  return error(
+    "db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory:, " +
+    "postgres:// or mysql://",
+  )
 end
 
 ## Opens a SQLite database file, or `:memory:`. Parameters after a `?` set `journal_mode` (default `wal`),

@@ -39,7 +39,6 @@ SQLITE_BLOB = 4
 # every build, whatever its default.
 OPEN_FLAGS = 70
 SQLITE_READONLY = 8
-SQLITE_BUSY = 5
 SQLITE_LOCKED = 6
 # The state of a connection with a read transaction open, for `sqlite3_txn_state`, which SQLite has since 3.34.0
 # (3034000 for `sqlite3_libversion_number`). A system library that is older never says it, and the write is waited for.
@@ -368,9 +367,7 @@ end
 
 # The text goes with its length, so a NUL inside it is kept; SQLite copies it (transient) before the buffer is freed.
 def bind_text(stmt: Stmt, index: Int, text: String) -> Int
-  code: Int = Native.from_string(text) do |buf|
-    sqlite3_bind_text(stmt, index, buf, text.bytesize, transient())
-  end
+  code: Int = Native.from_string(text) do |buf| sqlite3_bind_text(stmt, index, buf, text.bytesize, transient()) end
 
   return code
 end
@@ -461,7 +458,7 @@ end
 # True when `code` says that another connection holds a lock and the wait that began at `started` is not over, so
 # the caller pauses and tries again. The codes are checked first, so a step that gives a row asks nothing of SQLite.
 def lock_wait?(conn: Connection, code: Int, started: Int) -> Bool
-  if code != SQLITE_BUSY and code != SQLITE_LOCKED
+  if code != SqliteLock.SQLITE_BUSY and code != SQLITE_LOCKED
     return false
   end
 

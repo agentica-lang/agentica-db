@@ -72,6 +72,7 @@ jobs:
         run: |
           agentica --version
           make check
+          agentica fmt --check *.agc orm examples specs test
           make site-samples
 
       # The sqlite job of macOS and Windows runs the scenarios named "on sqlite" (an outline has "on <adapter>"), so a
@@ -142,6 +143,7 @@ jobs:
         run: |
           agentica --version
           agentica check *.agc orm examples specs test
+          agentica fmt --check *.agc orm examples specs test
 
       # The SQLite scenarios, the users example (a scenario of examples.feature) and the unit tests of test/, which
       # need no connection.

@@ -201,8 +201,17 @@ export def open(url: String) -> Result[Handle]
     return error(configured.message)
   end
 
-  connected = mysql_real_connect(mysql, target.host, target.user, target.password, target.database, target.port,
-                                 Native.null(), FOUND_ROWS)
+  connected = mysql_real_connect(
+    mysql,
+    target.host,
+    target.user,
+    target.password,
+    target.database,
+    target.port,
+    Native.null(),
+    FOUND_ROWS,
+  )
+
   if Native.null?(connected)
     return abandon(mysql)
   end
@@ -377,7 +386,7 @@ end
 def in_transaction?(mysql: Handle) -> Bool
   open: Bool = Native.memory_pointer(POINTER_SIZE) do |status|
     failed = mariadb_get_info(mysql, INFO_SERVER_STATUS, status)
-    (not failed) and Native.get_uint32(status, 0) % 2 == 1
+    not failed and Native.get_uint32(status, 0) % 2 == 1
   end
 
   return open
@@ -471,7 +480,7 @@ end
 def send(stmt: Stmt, params: List[Value]) -> Bool
   sent: Bool = Native.memory_pointer(max_one(params.size) * Native.size_of(MysqlBind)) do |binds|
     owned = fill_binds(binds, params)
-    bound = params.empty? or (not mysql_stmt_bind_param(stmt, binds))
+    bound = params.empty? or not mysql_stmt_bind_param(stmt, binds)
     ran = bound and mysql_stmt_execute(stmt) == 0
     for buffer in owned
       Native.free(buffer)
@@ -685,9 +694,18 @@ def bind_columns(binds: C.Pointer, columns: List[Column]) -> List[Slots]
   for column in columns
     lengths = Native.memory_pointer(Native.size_of(UnsignedLong))
     slot = Slots(data: Native.memory_pointer(max_one(column.size)), length: lengths, null: Native.memory_pointer(8))
-    put_bind(binds, index, bind_at(binds, index).with(length: slot.length, is_null: slot.null, buffer: slot.data,
-                                                      buffer_length: column.size,
-                                                      buffer_type: buffer_type(column.kind)))
+    put_bind(
+      binds,
+      index,
+      bind_at(binds, index).with(
+        length: slot.length,
+        is_null: slot.null,
+        buffer: slot.data,
+        buffer_length: column.size,
+        buffer_type: buffer_type(column.kind),
+      ),
+    )
+
     slots = slots.push(slot)
     index += 1
   end

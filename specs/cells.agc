@@ -8,15 +8,7 @@
 import {Row, Value} from "../value"
 
 SHOW_LIMIT = 60
-MARKERS = {
-  "[NUL]": 0,
-  "[TAB]": 9,
-  "[LF]": 10,
-  "[VT]": 11,
-  "[FF]": 12,
-  "[CR]": 13,
-  "[SP]": 32,
-}
+MARKERS = {"[NUL]": 0, "[TAB]": 9, "[LF]": 10, "[VT]": 11, "[FF]": 12, "[CR]": 13, "[SP]": 32}
 
 ## Replaces the markers of characters in `text` with the characters.
 export def expand(text: String) -> String
