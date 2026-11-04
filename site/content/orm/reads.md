@@ -1,7 +1,9 @@
 ---
-title: "ORM: reads"
-weight: 9
+title: Reads
+weight: 2
 description: Read rows into structs with Orm.query, Orm.query_as and Orm.find.
+aliases:
+  - /guide/orm-reads/
 ---
 
 The reads take the connection first.

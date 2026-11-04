@@ -1,7 +1,9 @@
 ---
 title: PostgreSQL
-weight: 6
+weight: 2
 description: Open a PostgreSQL database through libpq, the types, errors and what is not supported.
+aliases:
+  - /guide/postgresql/
 ---
 
 The PostgreSQL adapter uses the system `libpq` (PostgreSQL 12 or later). `open` gives an `error` when the library is missing.
@@ -66,6 +68,6 @@ An engine failure is `postgres error <SQLSTATE>: <message>`, as in `postgres err
 
 - `execute` counts the rows of `INSERT`, `UPDATE`, `DELETE` and `MERGE`, also with `RETURNING`. Other statements, `SELECT` too, give 0.
 - `COPY` is not supported. The adapter ends it and gives `postgres error: COPY is not supported`, and the connection keeps working.
-- A transaction starts with `BEGIN`. See [transactions](/guide/transactions/) for the rules.
+- A transaction starts with `BEGIN`. See [transactions](/basics/transactions/) for the rules.
 - `open`, `query` and `execute` run on the compute pool, so other tasks keep running while the server works.
 - Use a connection from one task at a time, and never close it while a query runs. If a task is cancelled, or `Task.await(task, ms)` times out, while a query runs, the libpq call still runs to its end and its result is dropped. Close that connection and open a new one.

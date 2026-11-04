@@ -1,6 +1,8 @@
 ---
 title: agentica-db
 description: A database package for Agentica. One API for SQLite, PostgreSQL and MySQL or MariaDB, and a small typed ORM.
+aliases:
+  - /guide/
 ---
 
 agentica-db is a database package for [Agentica](https://agentica-lang.github.io/agentica/). One API, `Db`, opens SQLite, PostgreSQL and MySQL or MariaDB, runs queries with bound parameters, and runs transactions. A small layer on top, `Orm`, reads rows into plain structs.
@@ -36,7 +38,11 @@ end
 ```
 
 - [Getting started](/getting-started/) installs the package and shows the system libraries it needs.
-- The [guide](/guide/) has a page for each part: connecting, queries, values, transactions, the three databases, the ORM and testing.
+- [Basics](/basics/): connecting, queries, values and transactions.
+- [ORM](/orm/): schema, reads, the query builder, writes and errors.
+- [Production](/production/): timeouts and the generic pool.
+- [Tools](/tools/): migrations and testing.
+- [Databases](/databases/): the reference for SQLite, PostgreSQL, and MySQL and MariaDB.
 - The source and the changelog are [on GitHub](https://github.com/agentica-lang/agentica-db).
 
 Not yet: a connection pool and preloading of related rows.

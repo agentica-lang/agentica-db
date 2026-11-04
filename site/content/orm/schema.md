@@ -1,7 +1,9 @@
 ---
-title: "ORM: schema"
-weight: 8
+title: Schema
+weight: 1
 description: Tie a struct to a table with Orm.schema, check it, and how fields map to columns.
+aliases:
+  - /guide/orm-schema/
 ---
 
 `Orm` is a small typed layer over `Db`. A schema ties a plain struct to a table. Every function takes the `Db.Connection` and gives a new value: there is no global connection and no lazy loading. Import it with `import Orm from "pkg/db/orm"`.
@@ -81,10 +83,10 @@ A generated key must be an `Int`. The key of a table the database numbers is wri
 - A column has the name of its field. The Orm quotes every name (double quotes for PostgreSQL, backticks for MySQL and SQLite), so a name is exact in PostgreSQL, which folds an unquoted name to lower case.
 - A field is an `Int`, a `Float`, a `Bool` or a `String`, alone or inside an `Optional` or a `JsonField`.
 - A column that can be NULL is an `Optional[T]`: NULL reads as `none`, and `none` writes a NULL. With a default, `age: Optional[Int] = none`, a value can leave it out.
-- A `JsonField[T]` field also tells a column that is not there: NULL reads as `JsonField.Null`, and a column the query does not select is `JsonField.Absent`, which a write leaves alone (see [writes](/guide/orm-writes/)). Use it only when that matters.
+- A `JsonField[T]` field also tells a column that is not there: NULL reads as `JsonField.Null`, and a column the query does not select is `JsonField.Absent`, which a write leaves alone (see [writes](/orm/writes/)). Use it only when that matters.
 - A NULL in any other field is an error, and so is a missing column for any field but a `JsonField`. An `Optional` field needs its column in the select, NULL or not: for a projection that leaves a column out, use a `JsonField` field or `query_as`.
 - A `Bool` column of SQLite and MySQL comes back from `Db` as 0 or 1, and the Orm reads it as a `Bool`.
 - An `Int` column is read as a `Float` for a `Float` field, unless the `Int` is beyond 2^53, which could round: that is an error.
 - A `numeric`, a date or a uuid arrives as `Text`: use a `String` field.
 
-Errors of the Orm are `Result` failures, like those of `Db`. [ORM: errors](/guide/orm-errors/) tells the kinds apart.
+Errors of the Orm are `Result` failures, like those of `Db`. The [errors page](/orm/errors/) tells the kinds apart.

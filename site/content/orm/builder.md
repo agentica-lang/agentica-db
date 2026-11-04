@@ -1,7 +1,9 @@
 ---
-title: "ORM: query builder"
-weight: 10
+title: Query builder
+weight: 3
 description: Build a query with from, where_eq, where_in, order_by, limit and offset, and end it with all, one or count.
+aliases:
+  - /guide/orm-builder/
 ---
 
 `Orm.from(schema)` starts a query. The steps take the query first and give a new one, so they chain with `|>`. The query ends in `all`, `one`, `count`, `update_all` or `delete_all`. A query is a value: every step gives a new one.
@@ -19,7 +21,7 @@ description: Build a query with from, where_eq, where_in, order_by, limit and of
 | `Orm.all(query, conn)` | `Result[List[T]]` |
 | `Orm.one(query, conn)` | `Result[Optional[T]]`, the first row or `none` |
 | `Orm.count(query, conn)` | `Result[Int]`, the rows the conditions keep (order and page do not count) |
-| `Orm.update_all(query, conn, changes)` and `Orm.delete_all(query, conn)` | see [writes](/guide/orm-writes/) |
+| `Orm.update_all(query, conn, changes)` and `Orm.delete_all(query, conn)` | see [writes](/orm/writes/) |
 
 ```agentica
 import Db from "pkg/db/db"

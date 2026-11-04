@@ -2,6 +2,8 @@
 title: Queries
 weight: 2
 description: Run sql with query and execute, and pass values as bound parameters.
+aliases:
+  - /guide/queries/
 ---
 
 Two functions run sql. Both take the connection, the sql and a list of parameters, and an optional `timeout_ms`.

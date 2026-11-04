@@ -1,7 +1,9 @@
 ---
-title: Pool
-weight: 15
+title: Generic pool
+weight: 3
 description: A generic pool of resources, its own package in the pool/ folder of this repository.
+aliases:
+  - /guide/pool/
 ---
 
 `pool/` is a package of its own in this repository (a workspace member), for any resource that is made once and lent to one caller at a time: a database connection, an HTTP connection, a worker. It has no native library. A project that needs only the pool installs it alone with `subdir`, and pins a commit with `ref` until a `pool-` tag exists:

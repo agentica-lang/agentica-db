@@ -2,6 +2,8 @@
 title: Values
 weight: 3
 description: The Db.Value type for parameters and columns, and how each database maps to it.
+aliases:
+  - /guide/values/
 ---
 
 `Db.Value` is the one type that crosses the database boundary, for parameters and for result columns. Each adapter turns a variant into the native type of its database.
