@@ -4,7 +4,7 @@ weight: 2
 description: Limit the time of a statement with timeout_ms, as a url parameter or per call, and what each database does when it runs over.
 ---
 
-`timeout_ms` bounds the time of a statement, in milliseconds. A statement that runs longer fails with an `error`, and the connection works after it. Without a limit nothing is bounded.
+`timeout_ms` bounds the time of a statement, in milliseconds. A statement that runs longer fails with an `error`, and the connection works after it, except on MySQL and MariaDB, where a `DO`, an `INSERT`, a `SLEEP()` or the client backstop (see below) can end the connection. Without a limit no statement is bounded, though on SQLite a wait for a lock still ends after `busy_timeout` (5000 ms by default).
 
 ## Set the limit
 
@@ -17,7 +17,7 @@ description: Limit the time of a statement with timeout_ms, as a url parameter o
 
 `Db.NO_TIMEOUT` lifts the limit of the url, but not one that the server sets for the session when the url has none. On MySQL and MariaDB, a connection opened with a url `timeout_ms` still cuts the call at the client backstop (see below).
 
-`timeout_ms` is a parameter that this package reads itself. The database library never sees it, so it works in a PostgreSQL conninfo string too (`host=localhost timeout_ms=2000`).
+`timeout_ms` is a parameter that this package reads itself. libpq never sees it, in a url or in a conninfo string (`host=localhost timeout_ms=2000`).
 
 ## Tell a timeout
 
@@ -58,12 +58,13 @@ done
 |---|---|---|
 | SQLite | a watchdog task calls `sqlite3_interrupt` when the time is over | `sqlite error 9: interrupted` |
 | PostgreSQL | sets the `statement_timeout` of the session | `postgres error 57014: canceling statement due to statement timeout` |
-| MySQL | sets `max_execution_time`, which limits only a `SELECT` | `mysql error 3024` |
+| MySQL | sets `max_execution_time` (the adapter tells MySQL from MariaDB by the version of the server at `open`), which limits only a `SELECT` | `mysql error 3024` |
 | MariaDB | sets `max_statement_time`, which limits every statement | `mysql error 1969` |
 
 - SQLite: the wait for a lock (`busy_timeout`) ends at the same deadline and fails the same way. SQLite rolls back the whole transaction when it interrupts a write inside one. A read that times out leaves the transaction open.
 - PostgreSQL: a call with its own limit sets `statement_timeout` before the statement and puts the connection's back after it, which costs two more round trips. It costs none when the call asks for the limit the connection has, or when the statement is `BEGIN`, `COMMIT`, `ROLLBACK` or another that starts, ends or steps inside a transaction.
-- MySQL: a `DO` or an `INSERT` is not bounded. An interrupted `SLEEP()` ends early without an error.
+- MySQL: a `DO` or an `INSERT` is not bounded.
+- MySQL and MariaDB: an interrupted `SLEEP()` ends early without an error (`select sleep(5)` on MySQL 8.4, `DO SLEEP(20)` on MariaDB).
 - MySQL and MariaDB: a url with `timeout_ms` also sets the client read and write timeouts, in whole seconds, to the limit plus 10 seconds. That is the backstop for what the server does not time. A statement that hits it fails with `mysql error 2013: Lost connection to server during query`, and the connection is gone. The backstop is fixed at `open`, so a call that asks for a longer limit than the url's, `Db.NO_TIMEOUT` included, is cut at it: open with the longer `timeout_ms` for such calls.
 
 The details are in the Timeouts sections of [SQLite](/databases/sqlite/#timeouts), [PostgreSQL](/databases/postgresql/#timeouts) and [MySQL and MariaDB](/databases/mysql/#timeouts).
