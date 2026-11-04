@@ -890,7 +890,9 @@ def blocked?(probe: Db.Connection) -> Bool
       return true
     end
 
-    Task.sleep(1)
+    # Zero yields to the other tasks and no more: a lock that a rolled back write takes again at every try is held for
+    # a moment only, so the probe asks as often as it can.
+    Task.sleep(0)
   end
 
   return false
