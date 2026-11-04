@@ -133,6 +133,13 @@ struct Fresh
   sql: String
 end
 
+# A query that a task ran, with the times at which it started and ended (the clock is the one of this process).
+struct Timed
+  started: Int
+  ended: Int
+  found: Result[List[Db.Row]]
+end
+
 # A task that holds the write lock of the database at the url for `ms` milliseconds.
 struct Hold
   url: String
@@ -875,9 +882,10 @@ def execute_waiting(state: State, req: Request) -> Handled
   end
 end
 
-# The three steps below start a task with a connection of its own, and act once the task holds a lock. The task is
-# seen by a probe, a connection that never waits (busy_timeout=0): its read fails while another connection holds a lock
-# that refuses new readers, which is a PENDING lock (a commit that waits for the readers) or an EXCLUSIVE one.
+# The next two steps start a task with a connection of its own, and act once the task holds a lock that does not go
+# away (a COMMIT that waits stays open; a transaction holds its lock). The task is seen by a probe, a connection that
+# never waits (busy_timeout=0): its read fails while another connection holds a lock that refuses new readers, which
+# is a PENDING lock (a commit that waits for the readers) or an EXCLUSIVE one.
 def probe_url(url: String) -> String
   return "#{url}&busy_timeout=0"
 end
@@ -890,9 +898,7 @@ def blocked?(probe: Db.Connection) -> Bool
       return true
     end
 
-    # Zero yields to the other tasks and no more: a lock that a rolled back write takes again at every try is held for
-    # a moment only, so the probe asks as often as it can.
-    Task.sleep(0)
+    Task.sleep(1)
   end
 
   return false
@@ -902,37 +908,43 @@ def never_blocked() -> String
   return "the task never held a lock in #{BLOCKED_WAIT_MS} ms"
 end
 
-# The query runs in a task on a connection of its own while this connection, which holds a read lock, commits once the
-# task waits for it: the query waits for the lock, then its rows or its failure are the outcome. A statement that
-# writes in autocommit mode is rolled back by SQLite while it waits, so the task is seen only now and then; the probe
-# polls until it is.
+def timed_query(job: Fresh) -> Timed
+  started = Time.monotonic_ms()
+  found = fresh_query(job)
+  return Timed(started: started, ended: Time.monotonic_ms(), found: found)
+end
+
+# The query runs in a task on a connection of its own while this connection, which holds a read lock, commits after
+# `req.number` milliseconds: the query waits for the lock, then its rows or its failure are the outcome. A statement
+# that writes in autocommit mode is rolled back by SQLite while it waits, so no lock shows that the task waits; the
+# times do: the task must have started well before the commit and have ended after it, and nothing but the lock of this
+# connection keeps a statement that long.
 def query_until_commit(state: State, req: Request) -> Handled
   if state.conns.empty?
     return reply_ok(failed(state, NO_DATABASE))
   end
 
-  url = expand(state, req.text)
-  case Db.open(probe_url(url))
-    error(message) -> return Handled(state: state, reply: message)
-    ok(probe) ->
-      task = Task.spawn(&fresh_query, Fresh(url: url, sql: Cells.expand(req.cells[0])))
-      seen = blocked?(probe)
-      Db.close(probe)
-      committed = Db.execute(state.conns[0], "COMMIT", [])
-      found = Task.await(task)
-      if not seen
-        return Handled(state: state, reply: never_blocked())
-      end
-
-      if not committed.ok?
-        return reply_ok(failed(state, committed.message))
-      end
-
-      case found
-        error(message) -> return reply_ok(failed(state, message))
-        ok(rows) -> return reply_ok(recorded(state, Outcome.Rows(rows)))
-      end
+  task = Task.spawn(&timed_query, Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0])))
+  Task.sleep(req.number)
+  committed_at = Time.monotonic_ms()
+  committed = Db.execute(state.conns[0], "COMMIT", [])
+  timed = Task.await(task)
+  if not committed.ok?
+    return reply_ok(failed(state, committed.message))
   end
+
+  if timed.started > committed_at - req.number / 2 or timed.ended < committed_at
+    return Handled(state: state, reply: "the query did not wait for the commit: #{timed_range(timed, committed_at)}")
+  end
+
+  case timed.found
+    error(message) -> return reply_ok(failed(state, message))
+    ok(rows) -> return reply_ok(recorded(state, Outcome.Rows(rows)))
+  end
+end
+
+def timed_range(timed: Timed, committed_at: Int) -> String
+  return "it ran from #{timed.started} to #{timed.ended} ms and the commit was at #{committed_at} ms"
 end
 
 # A task writes in a transaction and waits at its COMMIT for this connection, which holds a read lock. This connection

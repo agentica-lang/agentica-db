@@ -47,8 +47,8 @@ def main() -> Void
     BDD.step("the program opens {string}") do |ctx, args| BDD.when_line(ctx, args[0]) end,
     BDD.step("the program answers a line starting with {string}", &answers_with),
     text_step("another task executes {string}", "execute_in_task"),
-    BDD.step("another task on {string} queries {string} while I commit once it waits") do |ctx, args|
-      send(ctx, Request(op: "query_until_commit", text: args[0], cells: [args[1]]))
+    BDD.step("another task on {string} queries {string} while I commit after {int} ms") do |ctx, args|
+      send(ctx, Request(op: "query_until_commit", text: args[0], cells: [args[1]], number: args[2].to_i!))
     end,
     BDD.step("another task on {string} commits {string} while I execute {string} once it waits") do |ctx, args|
       send(ctx, Request(op: "write_while_blocked", text: args[0], cells: [args[1], args[2]]))

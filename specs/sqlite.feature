@@ -202,14 +202,15 @@ Feature: SQLite
       | 300 |
 
   # In a rollback journal the writer gets its lock at once but its commit waits for the reader, which makes SQLite run
-  # the statement again: the rows of the first run must not be kept. The reader commits only when the task waits.
+  # the statement again: the rows of the first run must not be kept. The step checks that the task was still waiting
+  # when the reader committed.
   Scenario: A statement that writes and returns rows gives them once after it waited for a lock on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/returning.db?journal_mode=delete"
     And I execute "create table t (x integer)"
     And I execute "begin"
     And I query "select count(*) as n from t"
-    And another task on "sqlite:[SCRATCH]/returning.db?journal_mode=delete" queries "insert into t values (7), (8) returning x" while I commit once it waits
+    And another task on "sqlite:[SCRATCH]/returning.db?journal_mode=delete" queries "insert into t values (7), (8) returning x" while I commit after 200 ms
     Then the result is:
       | x     |
       | Int 7 |
