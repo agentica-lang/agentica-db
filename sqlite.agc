@@ -21,6 +21,7 @@
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
+import SqliteLock from "sqlite_lock"
 import SqliteUrl from "sqlite_url"
 import {Row, Value} from "value"
 
@@ -44,11 +45,6 @@ SQLITE_LOCKED = 6
 # (3034000 for `sqlite3_libversion_number`). A system library that is older never says it, and the write is waited for.
 SQLITE_TXN_READ = 1
 TXN_STATE_VERSION = 3_034_000
-# The extended codes that mean "wait and try again": a WAL that another connection is recovering, and a table of a
-# shared cache held by another connection. SQLITE_BUSY_SNAPSHOT (517) is not one of them: the snapshot of a read
-# transaction is stale for good, and only a rollback helps.
-SQLITE_BUSY_RECOVERY = 261
-SQLITE_LOCKED_SHAREDCACHE = 262
 # The sleep between two tries starts at 1 ms, grows with the time already waited and stops at 25 ms.
 MAX_PAUSE_MS = 25
 # The length argument that means "up to the NUL" for the sql.
@@ -162,13 +158,6 @@ export def execute(conn: Connection, sql: String, params: List[Value]) -> Result
   Native.close(stmt)
   try ran
   return ok(changes_since(conn, before))
-end
-
-## Whether an extended error code is a lock that another connection will let go, which the adapter waits for:
-## SQLITE_BUSY, its WAL recovery, and a table of a shared cache. A snapshot that is stale for good (517) and a table
-## lock inside one connection (6) are not. Exported for its unit test.
-export def waitable?(extended: Int) -> Bool
-  return extended == SQLITE_BUSY or extended == SQLITE_BUSY_RECOVERY or extended == SQLITE_LOCKED_SHAREDCACHE
 end
 
 def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
@@ -460,6 +449,12 @@ def upgrade?(conn: Connection, stmt: Stmt) -> Bool
     return false
   end
 
+  # Only SQLITE_BUSY itself is that refusal: a table lock of a shared cache (262) or a WAL being recovered (261) goes
+  # away without this connection letting go of anything.
+  if not SqliteLock.plain_busy?(sqlite3_extended_errcode(conn.handle))
+    return false
+  end
+
   return sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_READ
 end
 
@@ -470,7 +465,7 @@ def lock_wait?(conn: Connection, code: Int, started: Int) -> Bool
     return false
   end
 
-  if not waitable?(sqlite3_extended_errcode(conn.handle))
+  if not SqliteLock.waitable?(sqlite3_extended_errcode(conn.handle))
     return false
   end
 

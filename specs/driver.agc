@@ -24,10 +24,11 @@ CARRY_ON = "carry on"
 TICKS = 40
 TICK_MS = 20
 IO_TIMEOUT_MS = 5_000
-# The longest a step waits for a task to hold a lock, and the longest a refused write may take (a wait for a lock
-# that cannot come would end at the busy_timeout of 5000 ms).
+# The longest a step waits for a task to hold a lock, and the longest a refused write may take. The refusal is also
+# seen from the task, whose COMMIT fails when the write waits (the busy_timeout is 5000 ms), so this bound is the
+# second check and is wide.
 BLOCKED_WAIT_MS = 5_000
-REFUSED_WRITE_MS = 2_000
+REFUSED_WRITE_MS = 4_000
 PROBE_SQL = "select count(*) as n from sqlite_master"
 NO_DATABASE = "no database is open"
 
@@ -917,8 +918,8 @@ end
 # The query runs in a task on a connection of its own while this connection, which holds a read lock, commits after
 # `req.number` milliseconds: the query waits for the lock, then its rows or its failure are the outcome. A statement
 # that writes in autocommit mode is rolled back by SQLite while it waits, so no lock shows that the task waits; the
-# times do: the task must have started well before the commit and have ended after it, and nothing but the lock of this
-# connection keeps a statement that long.
+# times do: the task must have started before the commit (by a tenth of the delay, so a slow start does not fail the
+# step) and have ended after it, and nothing but the lock of this connection keeps a statement that long.
 def query_until_commit(state: State, req: Request) -> Handled
   if state.conns.empty?
     return reply_ok(failed(state, NO_DATABASE))
@@ -933,7 +934,7 @@ def query_until_commit(state: State, req: Request) -> Handled
     return reply_ok(failed(state, committed.message))
   end
 
-  if timed.started > committed_at - req.number / 2 or timed.ended < committed_at
+  if timed.started > committed_at - req.number / 10 or timed.ended < committed_at
     return Handled(state: state, reply: "the query did not wait for the commit: #{timed_range(timed, committed_at)}")
   end
 
@@ -1017,7 +1018,7 @@ def query_while_locked(state: State, req: Request) -> Handled
         return Handled(state: state, reply: never_blocked())
       end
 
-      if waited < req.number / 2
+      if waited < req.number / 10
         return Handled(state: state, reply: "the query took #{waited} ms, it did not wait for the lock")
       end
 

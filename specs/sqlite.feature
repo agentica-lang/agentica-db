@@ -236,6 +236,8 @@ Feature: SQLite
   # for: that connection commits only after this one lets go of its read lock, so both would wait for the busy_timeout.
   # SQLite does not wait here either, and the write fails at once. The other connection commits when this one ends
   # its transaction. `Db.transaction` begins with BEGIN IMMEDIATE and never gets here.
+  # This needs SQLite 3.34 or later (`sqlite3_txn_state`): the adapter waits as before with an older library, and this
+  # scenario then fails. The stall exists only in a rollback journal (`journal_mode=delete`), which is why it uses one.
   Scenario: A write in a transaction that has read fails at once and lets the other commit on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/deferred.db?journal_mode=delete"
