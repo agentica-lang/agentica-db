@@ -57,7 +57,7 @@ done
 
 ## Lay out migrations
 
-Give each migration its own file, numbered with zero-padded versions so that the folder lists them in order, like Rails: `migrations/m0001_create_users.agc`, `migrations/m0002_users_name_index.agc`... Each file exports one `migration()`, and a `code` migration keeps its function in the same file.
+Give each migration its own file, as Rails does, numbered with zero-padded versions so that the folder lists them in order: `migrations/m0001_create_users.agc`, `migrations/m0002_users_name_index.agc`... Each file exports one `migration()`, and a `code` migration keeps its function in the same file.
 
 ```agentica
 import Db from "pkg/db/db"
@@ -73,7 +73,7 @@ def first_user(tx: Db.Connection) -> Result[Void]
 end
 ```
 
-`migrations.agc` only imports the files and returns the list in order (the two `ruby` blocks below mirror `src/db/examples/migrations.agc` and `src/db/test/migrations_layout_test.agc` of the repository, so a change to one updates the other). An import path is relative to the importing file, so the files of the folder are imported as `migrations/m0001_create_users` from the file next to the folder.
+`migrations.agc` only imports the files and returns the list in order. An import path is relative to the importing file, so the files of the folder are imported as `migrations/m0001_create_users` from the file next to the folder.
 
 ```ruby
 import Migrate from "pkg/db/migrate"
@@ -103,7 +103,7 @@ def main() -> Void
 end
 ```
 
-With timestamp versions (see "What `up` refuses") the versions are not 1 to N, so keep only the count check. A runnable copy of this layout is in `src/db/examples/` of the repository (`migrations.agc`, `migrations/` and `migrate_layout.agc`, which the specs run).
+With timestamp versions (see "What `up` refuses") the versions are not 1 to N, so keep only the count check: `up` itself refuses a list whose versions do not strictly ascend, which catches a file listed twice. A runnable copy of this layout is in `src/db/examples/` of the repository (`migrations.agc`, `migrations/` and `migrate_layout.agc`, which the specs run).
 
 ## What `up` does
 
