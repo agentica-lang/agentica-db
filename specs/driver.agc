@@ -5,6 +5,7 @@
 
 import Cells from "cells"
 import Db from "../db"
+import DbPool from "../db_pool"
 import Migrate from "../migrate"
 import Orm from "../orm"
 import Protocol from "protocol"
@@ -47,6 +48,10 @@ BLOCKED_WAIT_MS = 5_000
 REFUSED_WRITE_MS = 4_000
 PROBE_SQL = "select count(*) as n from sqlite_master"
 NO_DATABASE = "no database is open"
+NO_POOL = "no pool is started"
+POOL_DRAIN_MS = 1_000
+# The time a holder needs to take the connection of the pool before the step asks for one too.
+HOLD_START_MS = 150
 
 # The struct of the Orm scenarios: the table `people`, whose age is a value or NULL.
 struct Person
@@ -112,10 +117,11 @@ enum Outcome
   Done
 end
 
-# `conns` holds the one connection, or none: a connection has no empty value. `checked` is true once an expectation
-# has read `last`.
+# `conns` holds the one connection, or none: a connection has no empty value; `pools` holds the one pool the same way.
+# `checked` is true once an expectation has read `last`.
 struct State
   conns: List[Db.Connection]
+  pools: List[DbPool.Pool]
   adapter: String
   last: Outcome
   checked: Bool
@@ -124,6 +130,12 @@ end
 struct Handled
   state: State
   reply: String
+end
+
+# A task that keeps a connection of the pool for `ms` milliseconds.
+struct Held
+  pool: DbPool.Pool
+  ms: Int
 end
 
 # A statement run in a task on the connection of the driver.
@@ -167,7 +179,7 @@ def main() -> Void
   # The runner never closes the input of the driver, so the folder of a scenario that ended stays until the next
   # scenario starts: scenarios run one at a time, and each starts from nothing.
   clean_scratch()
-  state = State(conns: [], adapter: "", last: Outcome.Nothing, checked: true)
+  state = State(conns: [], pools: [], adapter: "", last: Outcome.Nothing, checked: true)
   line = IO.gets
   while line.ok?
     handled = handle(state, line.unwrap_or(""))
@@ -208,6 +220,14 @@ def act(state: State, req: Request) -> Handled
     "query" -> return reply_ok(with_params(state, req, &query))
     "query_within" -> return reply_ok(query_within(state, sql_of(state, req.text), [], req.number))
     "execute_within" -> return reply_ok(execute_within(state, sql_of(state, req.text), [], req.number))
+    "pool_start" -> return reply_ok(pool_start(state, req))
+    "pool_query" -> return reply_ok(pool_query(state, req))
+    "pool_execute" -> return reply_ok(pool_execute(state, req))
+    "pool_script" -> return reply_ok(pool_script(state, req.table.drop(1)))
+    "pool_close_connection" -> return reply_ok(pool_close_connection(state))
+    "pool_crash" -> return reply_ok(pool_crash(state))
+    "pool_hold" -> return reply_ok(pool_hold(state, req.number))
+    "pool_query_while_held" -> return reply_ok(pool_query_while_held(state, req))
     "in_transaction" -> return check_connection(state, req.op)
     "not_in_transaction" -> return check_connection(state, req.op)
     "healthy" -> return check_connection(state, req.op)
@@ -248,7 +268,7 @@ def reply_ok(state: State) -> Handled
 end
 
 def recorded(state: State, outcome: Outcome) -> State
-  return State(conns: state.conns, adapter: state.adapter, last: outcome, checked: false)
+  return State(conns: state.conns, pools: state.pools, adapter: state.adapter, last: outcome, checked: false)
 end
 
 def failed(state: State, message: String) -> State
@@ -285,8 +305,9 @@ def open_at(state: State, adapter: String, url: String) -> State
   end
 
   case Db.open(url)
-    error(message) -> return State(conns: [], adapter: adapter, last: Outcome.Failed(message), checked: false)
-    ok(conn) -> return State(conns: [conn], adapter: adapter, last: Outcome.Done, checked: false)
+    error(message) ->
+      return State(conns: [], pools: state.pools, adapter: adapter, last: Outcome.Failed(message), checked: false)
+    ok(conn) -> return State(conns: [conn], pools: state.pools, adapter: adapter, last: Outcome.Done, checked: false)
   end
 end
 
@@ -328,6 +349,152 @@ def sql_of(state: State, text: String) -> String
   slow = SLOW_SQL.get(state.adapter, "")
   work = WORK_SQL.get(state.adapter, "")
   return Cells.expand(text.replace("[SLOW]", slow).replace("[WORK]", work))
+end
+
+# Closes the pool of the scenario, if any, and starts the one the request names: the url (with its markers) and a table
+# of options, a header and a name and value per row. A pool that does not start is the outcome of the step.
+def pool_start(state: State, req: Request) -> State
+  state.pools.each do |old| DbPool.close(old, POOL_DRAIN_MS) end
+  url = expand(state, req.text)
+  if url.include?(scratch_dir())
+    Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
+  end
+
+  stopped = State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
+  case pool_options(url, req.table.drop(1))
+    error(message) -> return failed(stopped, message)
+    ok(options) ->
+      case DbPool.start(options)
+        error(message) -> return failed(stopped, message)
+        ok(pool) ->
+          return State(
+            conns: stopped.conns,
+            pools: [pool],
+            adapter: stopped.adapter,
+            last: Outcome.Done,
+            checked: false,
+          )
+      end
+  end
+end
+
+def pool_options(url: String, rows: List[List[String]]) -> Result[DbPool.Options]
+  options = DbPool.Options(url: url)
+  for row in rows
+    options = try pool_setting(options, row[0], row[1])
+  end
+
+  return ok(options)
+end
+
+def pool_setting(options: DbPool.Options, name: String, value: String) -> Result[DbPool.Options]
+  case name
+    "size" -> return ok(options.with(size: try value.to_i))
+    "max_overflow" -> return ok(options.with(max_overflow: try value.to_i))
+    "checkout_ms" -> return ok(options.with(checkout_ms: try value.to_i))
+    "lease_ms" -> return ok(options.with(lease_ms: try value.to_i))
+    _ -> return error("unknown pool option #{name.inspect}")
+  end
+end
+
+# Runs `run` with the pool, or records the failure of having none.
+def with_pool(state: State, run: Fn[DbPool.Pool, State]) -> State
+  if state.pools.empty?
+    return failed(state, NO_POOL)
+  end
+
+  return run.call(state.pools[0])
+end
+
+# One block of the pool runs the statement, and the pool checks the connection in after it. The `number` of the request
+# is the `timeout_ms` of the call (`CONNECTION_DEFAULT` for none).
+def pool_query(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    sql = sql_of(state, req.text)
+    found = DbPool.with(pool) do |conn| Db.query(conn, sql, [], req.number) end
+    case found
+      error(message) -> return failed(state, message)
+      ok(rows) -> return recorded(state, Outcome.Rows(rows))
+    end
+  end
+end
+
+def pool_execute(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    sql = sql_of(state, req.text)
+    found = DbPool.with(pool) do |conn| Db.execute(conn, sql, [], req.number) end
+    case found
+      error(message) -> return failed(state, message)
+      ok(count) -> return recorded(state, Outcome.Counted(count))
+    end
+  end
+end
+
+# The statements of the table (the header row is skipped) run in one block, one after the other, and the first failure
+# ends the block. Nothing commits or rolls back: a BEGIN in them is left open for the pool to deal with.
+def pool_script(state: State, rows: List[List[String]]) -> State
+  return with_pool(state) do |pool|
+    found = DbPool.with(pool) do |conn| run_rows(conn, rows) end
+    case found
+      error(message) -> return failed(state, message)
+      ok(_) -> return recorded(state, Outcome.Done)
+    end
+  end
+end
+
+# A block that closes the connection it was lent and ends with ok.
+def pool_close_connection(state: State) -> State
+  return with_pool(state) do |pool|
+    found = DbPool.with(pool) do |conn|
+      Db.close(conn)
+      ok()
+    end
+
+    case found
+      error(message) -> return failed(state, message)
+      ok(_) -> return recorded(state, Outcome.Done)
+    end
+  end
+end
+
+# A block that crashes (`to_i!` of a text that is not a number halts the task of the block).
+def pool_crash(state: State) -> State
+  return with_pool(state) do |pool|
+    found = DbPool.with(pool) do |conn| ok("not a number".to_i!) end
+    case found
+      error(message) -> return failed(state, message)
+      ok(_) -> return recorded(state, Outcome.Done)
+    end
+  end
+end
+
+# A block that keeps its connection for `ms` milliseconds.
+def pool_hold(state: State, ms: Int) -> State
+  return with_pool(state) do |pool|
+    case hold(Held(pool: pool, ms: ms))
+      error(message) -> return failed(state, message)
+      ok(_) -> return recorded(state, Outcome.Done)
+    end
+  end
+end
+
+def hold(job: Held) -> Result[Void]
+  return DbPool.with(job.pool) do |conn|
+    Task.sleep(job.ms)
+    ok()
+  end
+end
+
+# A task takes a connection and keeps it for `req.number` milliseconds while this one asks for a connection too. The
+# outcome is the one of this query; the task is awaited, so nothing runs on after the step.
+def pool_query_while_held(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    holder = Task.spawn(&hold, Held(pool: pool, ms: req.number))
+    Task.sleep(HOLD_START_MS)
+    asked = pool_query(state, req.with(number: Db.CONNECTION_DEFAULT))
+    Task.await(holder)
+    return asked
+  end
 end
 
 # Runs `Migrate.up` with the rows of the table (`version`, `name`, `sql`; the header row is skipped). The sql cell
@@ -374,7 +541,7 @@ end
 def clean_scratch() -> Void
   locked = "#{scratch_dir()}/readonly.db"
   if File.stat(locked, IO_TIMEOUT_MS).ok?
-    set_access(State(conns: [], adapter: "", last: Outcome.Nothing, checked: true), locked, true)
+    set_access(State(conns: [], pools: [], adapter: "", last: Outcome.Nothing, checked: true), locked, true)
   end
 
   Path.remove(scratch_dir(), IO_TIMEOUT_MS)
@@ -1281,7 +1448,7 @@ def float_oracle(state: State, literal: String) -> Handled
 end
 
 def expect(state: State, req: Request) -> Handled
-  checked = State(conns: state.conns, adapter: state.adapter, last: state.last, checked: true)
+  checked = State(conns: state.conns, pools: state.pools, adapter: state.adapter, last: state.last, checked: true)
   verdict = judge(state.last, req)
   if verdict.empty?
     return reply_ok(checked)

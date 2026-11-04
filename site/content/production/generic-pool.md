@@ -6,7 +6,7 @@ aliases:
   - /guide/pool/
 ---
 
-`pool/` is a package of its own in this repository (a workspace member), for any resource that is made once and lent to one caller at a time: a database connection, an HTTP connection, a worker. It has no native library. A project that needs only the pool installs it alone with `subdir`, and pins a commit with `ref` until a `pool-` tag exists:
+`pool/` is a package of its own in this repository (a workspace member), for any resource that is made once and lent to one caller at a time: a database connection, an HTTP connection, a worker. It has no native library. For database connections use [`DbPool`](/production/pooling/), which is built on this pool. A project that needs only the pool installs it alone with `subdir`, and pins a commit with `ref` until a `pool-` tag exists:
 
 ```toml
 [dependencies]
@@ -81,4 +81,4 @@ The errors are `pool error: checkout timed out after N ms` (with the last error 
 
 - Start the pool in a task that lives as long as it does, such as `main`: the owner task ends with the task that started it.
 - Cancelling a caller does not cancel its body; `lease_ms` bounds it.
-- `init` and `terminate` run in the owner task, so they should not block for long, and a crash in one ends the pool (its callers get `pool error: owner task ended`). `checkin` and `ping` have 5 seconds each.
+- `init` and `terminate` run in the owner task, so they should not block for long, and a crash in one ends the pool (its callers get `pool error: owner task ended`). While one blocks, `Pool.close` cannot run `terminate`: after `drain_ms` and two more seconds the owner is cancelled and the VM closes the handles it owns. `checkin` and `ping` have 5 seconds each.

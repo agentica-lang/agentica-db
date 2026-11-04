@@ -199,3 +199,15 @@ Feature: MySQL and MariaDB
       | v     |
       | Int 0 |
 
+
+  # An interrupted SLEEP() is no failure: MariaDB ends a DO SLEEP early, and MySQL does not bound a DO at all, so the
+  # statement succeeds on both. (`select sleep(2)` differs: MySQL ends it early with the row 1, MariaDB fails it with
+  # 1969.)
+  Scenario: A DO SLEEP under a timeout_ms is not a failure on mysql
+    Given a "mysql" database
+    When I open "[URL]&timeout_ms=200"
+    And I execute "do sleep(1)"
+    Then it succeeds
+    And the query "select 1 as v" returns:
+      | v     |
+      | Int 1 |

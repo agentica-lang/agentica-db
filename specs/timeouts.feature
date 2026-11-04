@@ -51,22 +51,23 @@ Feature: Query timeouts
       | postgres |
       | mysql    |
 
-  # 0 lifts the limit for one call, and the limit of the url is back after it.
+  # 0 lifts the limit for one call, and the limit of the url is back after it. The limit is under what [WORK] takes
+  # (20 ms on SQLite, whose [WORK] is quick on a fast machine), and the last statement is [SLOW], which any limit stops.
   Scenario Outline: A call can lift the timeout of the connection on <adapter>
     Given a "<adapter>" database
-    When I open "[URL]&timeout_ms=200"
+    When I open "[URL]&timeout_ms=<limit>"
     And I query "[WORK]" with a timeout of 0 ms
     Then the result is:
       | n     |
       | Int 1 |
-    When I query "[WORK]"
+    When I query "[SLOW]"
     Then it fails with a timeout
 
     Examples:
-      | adapter  |
-      | sqlite   |
-      | postgres |
-      | mysql    |
+      | adapter  | limit |
+      | sqlite   | 20    |
+      | postgres | 200   |
+      | mysql    | 200   |
 
   Scenario Outline: A connection without timeout_ms is not bounded on <adapter>
     Given a "<adapter>" database

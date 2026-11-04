@@ -32,7 +32,12 @@ export OK = "ok"
 ## `orm_builder` (text: how the query ends, table: its steps) and `orm_find` (text: the key as a typed cell),
 ## `round_trips` (table: column type and cell), `float_oracle` (text: a float literal), `query_within` and
 ## `execute_within` (text: sql, number: the `timeout_ms` of the call), `in_transaction`, `not_in_transaction`,
-## `healthy` and `not_healthy` (they check the answer of `Db.in_transaction?` and `Db.healthy?`), and the
+## `healthy` and `not_healthy` (they check the answer of `Db.in_transaction?` and `Db.healthy?`), the ops of
+## `DbPool`: `pool_start` (text: a database url, table: header and the options `size`, `max_overflow`, `checkout_ms`
+## and `lease_ms`), `pool_query` and `pool_execute` (text: sql, number: the `timeout_ms` of the call; each runs in one
+## block of the pool), `pool_script` (table: header and statements, run in one block), `pool_close_connection` (a block that closes its connection), `pool_crash` (a block that crashes), `pool_hold` (number: the milliseconds a block keeps its
+## connection), `pool_query_while_held` (text: sql, number: the milliseconds a task keeps a connection of the pool
+## while this one queries), and the
 ## expectations `expect_rows` (table: header and rows), `expect_last` (number, table), `expect_count` (number),
 ## `expect_ok`, `expect_timeout` (the failure is one that `Db.timeout?` knows), `expect_prefix`, `expect_exact`,
 ## `expect_mentions`, `expect_hides` and `expect_kind` (text; for the last, the kind that `Orm.classify` gives the

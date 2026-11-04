@@ -10,6 +10,8 @@ over `Db` (plain structs in and out, always bound `?` parameters) with
 (identifier names and quotes); it takes a `Db.Connection` and never touches an adapter. `examples/users.agc` is a
 runnable web-handler style example of the Orm; `specs/examples.feature` runs it and checks its output. `migrate.agc` is
 the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.feature`.
+`db_pool.agc` is `DbPool`, a pool of `Db` connections on the generic pool of `pool/` (`pkg/pool/pool`, declared in
+`[dependencies]`); `specs/pooling.feature` drives it through the `pool_*` ops of `specs/driver.agc`.
 
 The repository is a workspace (`[workspace]` in `agentica.toml`): `pool/` is a member, a generic pool of resources
 (`pool/pool.agc`, `import Pool from "pkg/pool/pool"`) with its own `agentica.toml`, no native library, no import of
@@ -53,8 +55,8 @@ declares `subdir = "pool"` like any user, and the workspace reads it from its fo
 - Search with `rg`.
 - An adapter keeps its `extern` block private and exports only the wrapper (`wrapping` guide of the Agentica
   site: `library/io-and-system/native/wrapping`). An adapter has the same functions as `db.agc`:
-  `open`, `close`, `query`, `execute` (both take a last `timeout_ms`, -1 for the connection's), `in_transaction?` and
-  `healthy?`. `db.agc` dispatches on `Connection`; `transaction` stays in `db.agc`.
+  `open`, `close`, `query`, `execute` (both take a last `timeout_ms`, -1 for the connection's), `in_transaction?`,
+  `connected?` and `healthy?` (SQLite also has `interrupt`, for the pool only). `db.agc` dispatches on `Connection`; `transaction` stays in `db.agc`.
   `db.agc` also re-exports `Value` and `Row` of `value.agc` (`export V.Value`), so a user imports `Db` only. The
   connection of each adapter is a native resource (`sqlite3_close_v2`, `PQfinish`, `mysql_close`): the end of the task
   or of `main` closes it, and `Native.closed?` turns a use after `close` into an error (SQLite keeps the runtime

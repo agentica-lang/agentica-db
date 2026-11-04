@@ -292,3 +292,19 @@ Feature: SQLite
     And the query "select count(*) as n from t" returns:
       | n     |
       | Int 0 |
+
+  # SQLite has rolled the transaction back by itself, so Db.transaction sends no ROLLBACK that would fail and bury the
+  # timeout in a "no transaction is active" message.
+  Scenario: A write that times out inside Db.transaction gives the timeout alone on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?timeout_ms=200"
+    And I execute "create table t (x integer)"
+    And I run these statements in a transaction:
+      | sql                                                                                                    |
+      | insert into t values (1)                                                                               |
+      | with recursive c(x) as (select 1 union all select x + 1 from c limit 400000000) insert into t select x from c |
+    Then it fails with a timeout
+    And the failure never shows "rollback failed"
+    And the query "select count(*) as n from t" returns:
+      | n     |
+      | Int 0 |

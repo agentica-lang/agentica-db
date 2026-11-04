@@ -9,7 +9,7 @@ aliases:
 `Db.transaction(conn) do |tx| ... end` runs the block between the `BEGIN` and the `COMMIT` of the database. It gives a `Result[R]`, where `R` is the type of the block's `ok` value.
 
 - The block gives `ok(value)`: the transaction commits and the call gives `ok(value)`.
-- The block gives `error(message)`, or the commit fails: the transaction rolls back and the call gives that error. If the rollback fails too, its message is added after a semicolon.
+- The block gives `error(message)`, or the commit fails: the transaction rolls back and the call gives that error. If the rollback fails too, its message is added after a semicolon. A transaction the database has ended already (SQLite does when it interrupts a write on a timeout) is not rolled back again.
 
 Use the `tx` the block receives, not the outer connection, for the statements of the transaction.
 

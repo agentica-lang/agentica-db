@@ -207,6 +207,32 @@ Feature: PostgreSQL
       | statement_timeout |
       | Text 1500ms       |
 
+  # SET is a control verb too: SET TRANSACTION fails (25001) after any other statement of the transaction, and the
+  # set_config of a limit of its own would be one.
+  Scenario: A call with a timeout on SET TRANSACTION after BEGIN leaves the statement_timeout alone on postgres
+    Given a "postgres" database
+    When I open "[URL]&timeout_ms=1500"
+    And I execute "begin" with a timeout of 5000 ms
+    And I execute "set transaction isolation level serializable" with a timeout of 5000 ms
+    Then it succeeds
+    When I execute "rollback" with a timeout of 5000 ms
+    Then the query "show statement_timeout" returns:
+      | statement_timeout |
+      | Text 1500ms       |
+
+  # The set_config of a call with its own limit replaces a SET LOCAL of the transaction, and the put-back restores the
+  # limit of the connection (it is a session setting), so the SET LOCAL is gone.
+  Scenario: A call with a timeout replaces a SET LOCAL statement_timeout on postgres
+    Given a "postgres" database
+    When I open "[URL]&timeout_ms=1500"
+    And I execute "begin" with a timeout of 5000 ms
+    And I execute "set local statement_timeout = 200"
+    And I query "select pg_sleep(0.6)" with a timeout of 5000 ms
+    Then it succeeds
+    And the query "show statement_timeout" returns:
+      | statement_timeout |
+      | Text 1500ms       |
+
   # The put-back of a call goes to what the server gives the session when the url has no timeout_ms (here the `options`
   # of the url), not to 0.
   Scenario: A call with a timeout puts back the statement_timeout the server gave the session on postgres

@@ -150,6 +150,17 @@ export def in_transaction?(conn: Connection) -> Bool
   end
 end
 
+## Whether the connection is open and not known to be lost, from what the client library keeps and with no round trip.
+## A closed connection is not connected; a connection the server ended shows here once a call has failed on it
+## (`healthy?` asks the server). A pool checks it after a block, since a block can close or lose its connection.
+export def connected?(conn: Connection) -> Bool
+  case conn
+    Connection.Sqlite(handle) -> return Sqlite.connected?(handle)
+    Connection.Postgres(handle) -> return Postgres.connected?(handle)
+    Connection.Mysql(handle) -> return Mysql.connected?(handle)
+  end
+end
+
 ## Whether the connection works: it is open and the server answers (SQLite and MySQL: a query or a ping; PostgreSQL:
 ## `SELECT 1` under the session's `statement_timeout`). It does not mean that a statement can run: a PostgreSQL
 ## connection in a failed transaction is healthy but refuses statements until the ROLLBACK, so a pool rolls back (see
@@ -196,8 +207,14 @@ def begin_sql(conn: Connection) -> String
   end
 end
 
-# The original error wins; a failed ROLLBACK is appended, since the transaction may still be open.
+# The original error wins; a failed ROLLBACK is appended, since the transaction may still be open. A connection that is
+# no longer in a transaction is left alone: the engine ended it already (SQLite rolls back a write it interrupted), and
+# a ROLLBACK would fail with a message that hides the real error.
 def abandon[R](conn: Connection, message: String) -> Result[R]
+  if not in_transaction?(conn)
+    return error(message)
+  end
+
   rolled = execute(conn, "ROLLBACK", [])
   case rolled
     ok(_) -> return error(message)

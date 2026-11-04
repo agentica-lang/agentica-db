@@ -62,6 +62,9 @@ BACKSTOP_MARGIN_S = 10
 MS_PER_SECOND = 1000
 # mariadb_value MARIADB_CONNECTION_SERVER_STATUS, and its bit SERVER_STATUS_IN_TRANS.
 INFO_SERVER_STATUS = 30
+# What `mysql_get_socket` gives for a connection whose link the library has closed (it does so when a call finds the
+# server gone: errors 2006 and 2013). The low 32 bits of an invalid socket are all ones on every system.
+NO_SOCKET = -1
 # STMT_ATTR_UPDATE_MAX_LENGTH: the result metadata then holds the longest value of each column.
 ATTR_UPDATE_MAX_LENGTH = 0
 # The error of a statement that the server does not prepare.
@@ -198,6 +201,7 @@ extern "mariadb"
   def mysql_get_server_info(mysql: Handle) -> C.String
   compute def mysql_ping(mysql: Handle) -> C.Int32
   def mysql_errno(mysql: Handle) -> C.Int32
+  def mysql_get_socket(mysql: Handle) -> C.Int32
   def mysql_error(mysql: Handle) -> C.String
   def mariadb_get_info(mysql: Handle, value: C.Int32, arg: C.Pointer) -> C.Bool
   def mysql_stmt_init(mysql: Handle) -> Stmt
@@ -296,6 +300,17 @@ export def in_transaction?(conn: Connection) -> Bool
   end
 
   return transaction_open?(conn.handle)
+end
+
+## Whether the connection is open and the client library still has its link to the server, with no round trip. The
+## library closes the link when a call finds the server gone (error 2006 or 2013), so a connection the server ended
+## shows here after the first call that fails on it; `healthy?` asks the server.
+export def connected?(conn: Connection) -> Bool
+  if Native.closed?(conn.handle)
+    return false
+  end
+
+  return mysql_get_socket(conn.handle) != NO_SOCKET
 end
 
 ## Whether the connection works: it is open and the server answers a ping.

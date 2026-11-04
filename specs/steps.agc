@@ -10,6 +10,8 @@ import {Request} from "protocol"
 
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 REPLY_MS = 60_000
+# The `timeout_ms` of a call that takes the one of the connection (`Db.CONNECTION_DEFAULT`).
+CONNECTION_DEFAULT = -1
 
 def main() -> Void
   BDD.run([
@@ -25,6 +27,29 @@ def main() -> Void
     BDD.step("I execute {string} with a timeout of {int} ms") do |ctx, args|
       send(ctx, Request(op: "execute_within", text: args[0], number: args[1].to_i!))
     end,
+    BDD.step("I start a pool on {string} with:") do |ctx, args|
+      send(ctx, Request(op: "pool_start", text: args[0], table: BDD.table(ctx)))
+    end,
+    BDD.step("I query {string} in the pool") do |ctx, args|
+      send(ctx, Request(op: "pool_query", text: args[0], number: CONNECTION_DEFAULT))
+    end,
+    BDD.step("I query {string} in the pool with a timeout of {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_query", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("I execute {string} in the pool") do |ctx, args|
+      send(ctx, Request(op: "pool_execute", text: args[0], number: CONNECTION_DEFAULT))
+    end,
+    BDD.step("I run these statements in one block of the pool:") do |ctx, args|
+      send(ctx, Request(op: "pool_script", table: BDD.table(ctx)))
+    end,
+    plain_step("I run a block that crashes in the pool", "pool_crash"),
+    plain_step("I run a block that closes its connection in the pool", "pool_close_connection"),
+    BDD.step("I keep a connection of the pool for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_hold", number: args[0].to_i!))
+    end,
+    BDD.step(
+      "another task keeps a connection of the pool for {int} ms while I query {string} in the pool",
+    ) do |ctx, args| send(ctx, Request(op: "pool_query_while_held", text: args[1], number: args[0].to_i!)) end,
     plain_step("the connection is in a transaction", "in_transaction"),
     plain_step("the connection is not in a transaction", "not_in_transaction"),
     plain_step("the connection is healthy", "healthy"),

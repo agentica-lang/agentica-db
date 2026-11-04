@@ -45,6 +45,6 @@ end
 - [Databases](/databases/): the reference for SQLite, PostgreSQL, and MySQL and MariaDB.
 - The source and the changelog are [on GitHub](https://github.com/agentica-lang/agentica-db).
 
-Not yet: a connection pool and preloading of related rows.
+Not yet: preloading of related rows.
 
 agentica-db needs Agentica 0.18.0 or later, and is under the Apache License 2.0.
