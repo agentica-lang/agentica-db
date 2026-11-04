@@ -1,14 +1,16 @@
 ## The PostgreSQL adapter, through the system libpq.
 ##
-## `open` gives a `Handle`, which the task that opened it owns. Close it with `close`, or the end of the task closes
-## it (PQfinish, the free function of the connection resource). A closed handle gives
+## `open` gives a `Connection`, which the task that opened it owns. Close it with `close`, or the end of the task
+## closes it (PQfinish, the free function of the connection resource). A closed handle gives
 ## `postgres error: the connection is closed`.
 ##
 ## `timeout_ms` (a parameter of the url or key of the conninfo, which libpq never sees, and an argument of `query` and
 ## `execute`) is the `statement_timeout` of the session: a statement that runs longer fails with `postgres error
 ## 57014: canceling statement due to statement timeout`, and the connection works after it. A call with its own limit
-## sets it before the statement and puts the limit of the connection back after it, in two more round trips; a call
-## that asks for the limit it has costs none.
+## sets it before the statement and puts the limit of the connection back after it (the server's own when the url sets
+## none), in two more round trips; a call that asks for the limit it has costs none, and so does a statement that
+## begins or ends a transaction, which runs under the limit of the session. A `timeout_ms` of 0 (`NO_TIMEOUT`) lifts
+## the limit of the url, but not one that the server sets on its own when the url has none.
 ##
 ## An engine failure is `postgres error <sqlstate>: <message>`, with the five character SQLSTATE of the server
 ## (`23505` for a unique violation) and its primary message. A failure without a SQLSTATE (the connection is lost,
@@ -48,6 +50,9 @@ HEX_BASE = 16
 PQTRANS_INTRANS = 2
 PQTRANS_INERROR = 3
 PQTRANS_UNKNOWN = 4
+# The verbs of the statements that begin, end or step inside a transaction.
+TRANSACTION_VERBS = Set.new(["begin", "start", "commit", "end", "rollback", "abort", "savepoint", "release"])
+SET_TIMEOUT_SQL = "SELECT set_config('statement_timeout', ?, false)"
 ABORTED_COMMIT_SQLSTATE = "25P02"
 ACTIVE_TRANSACTION_SQLSTATE = "25001"
 # The statements whose command tag counts rows changed; a SELECT counts rows too, but execute does not report them.
@@ -125,13 +130,13 @@ end
 ## Two columns with one name are an error: alias them. `timeout_ms` is the limit of this call: -1 takes the one of
 ## the connection, 0 is none.
 export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
-  return limited(conn, timeout_ms) do run_query(conn.handle, sql, params) end
+  return limited(conn, timeout_ms, sql) do run_query(conn.handle, sql, params) end
 end
 
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
 ## `timeout_ms` is as in `query`.
 export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
-  return limited(conn, timeout_ms) do run_execute(conn.handle, sql, params) end
+  return limited(conn, timeout_ms, sql) do run_execute(conn.handle, sql, params) end
 end
 
 ## Whether a transaction is open or failed and waits for its ROLLBACK, as libpq knows it: no round trip. A closed
@@ -185,21 +190,25 @@ def run_execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
 end
 
 # Runs `body` under the limit of the call. A limit other than the session's is set before and put back after, also
-# when the body failed. Putting it back fails only on a lost connection, or in a transaction that the body's failure
-# aborted: that transaction can only roll back, and the rollback undoes the SET too.
-def limited[R](conn: Connection, timeout_ms: Int, body: Fn[Result[R]]) -> Result[R]
-  if timeout_ms < 0 or timeout_ms == conn.timeout_ms
+# when the body failed. A statement that controls a transaction runs under the limit of the session: a SET before a
+# BEGIN would stay out of the transaction while its put-back went in, and a ROLLBACK of an aborted transaction cannot
+# be preceded by any other statement. The put-back is not part of the result: it fails only on a lost connection (the
+# next call says so) or in a transaction that the body's failure aborted, and the rollback undoes the SET too.
+def limited[R](conn: Connection, timeout_ms: Int, sql: String, body: Fn[Result[R]]) -> Result[R]
+  if timeout_ms < 0 or timeout_ms == conn.timeout_ms or controls_transaction?(sql)
     return body.call()
   end
 
   try set_statement_timeout(conn.handle, timeout_ms)
   done = body.call()
-  restored = set_statement_timeout(conn.handle, conn.timeout_ms)
-  case done
-    ok(_) ->
-      try restored
-      return done
-    error(_) -> return done
+  put_back_statement_timeout(conn)
+  return done
+end
+
+def controls_transaction?(sql: String) -> Bool
+  case PostgresSql.translate(sql)
+    error(_) -> return false
+    ok(translated) -> return TRANSACTION_VERBS.include?(translated.verb)
   end
 end
 
@@ -219,8 +228,18 @@ end
 
 # `set_config` takes the value as a parameter, which `SET` does not.
 def set_statement_timeout(handle: Handle, ms: Int) -> Result[Void]
-  try run_query(handle, "SELECT set_config('statement_timeout', ?, false)", [Value.Text(ms.to_s)])
+  try run_query(handle, SET_TIMEOUT_SQL, [Value.Text(ms.to_s)])
   return ok()
+end
+
+# The limit of the url, or, when the url sets none, whatever the server gives the session (a role or database setting,
+# or the `options` of the url): a NULL value resets the variable to that.
+def put_back_statement_timeout(conn: Connection) -> Void
+  if conn.timeout_ms > 0
+    set_statement_timeout(conn.handle, conn.timeout_ms)
+  else
+    run_query(conn.handle, SET_TIMEOUT_SQL, [Value.Null])
+  end
 end
 
 # A library that is missing is an error here, not a stop of the program at the first call.

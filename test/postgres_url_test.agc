@@ -41,6 +41,24 @@ def main() -> Void
       try Test.eq(conninfo_of("host=localhost"), "host=localhost")
       return Test.eq(conninfo_of(""), "")
     end,
+    Test.test("only the key timeout_ms is taken out: a longer key, a value or a quoted password that holds it stay") do
+      longer = target_of("my_timeout_ms=5 timeout_ms_x=6 host=h")
+      try Test.eq(longer.conninfo, "my_timeout_ms=5 timeout_ms_x=6 host=h")
+      try Test.eq(longer.timeout_ms, 0)
+      quoted = target_of("password='x timeout_ms=1' host=h")
+      try Test.eq(quoted.conninfo, "password='x timeout_ms=1' host=h")
+      try Test.eq(quoted.timeout_ms, 0)
+      escaped = target_of("password=x\\ timeout_ms=1 timeout_ms=40")
+      try Test.eq(escaped.conninfo, "password=x\\ timeout_ms=1")
+      try Test.eq(escaped.timeout_ms, 40)
+      url = target_of("postgres://u:timeout_ms%3D1@h/app?options=-c%20timeout_ms%3D1&mytimeout_ms=3")
+      try Test.eq(url.conninfo, "postgres://u:timeout_ms%3D1@h/app?options=-c%20timeout_ms%3D1&mytimeout_ms=3")
+      return Test.eq(url.timeout_ms, 0)
+    end,
+    Test.test("a repeated timeout_ms keeps the last value, as libpq does") do
+      try Test.eq(target_of("postgres://h/app?timeout_ms=1&timeout_ms=2").timeout_ms, 2)
+      return Test.eq(target_of("host=h timeout_ms=1 timeout_ms=2").timeout_ms, 2)
+    end,
     Test.test("a text that is not a conninfo string goes to libpq whole, which reports it") do
       try Test.eq(conninfo_of("host=h oops"), "host=h oops")
       return Test.eq(target_of("host=h oops").timeout_ms, 0)
@@ -50,6 +68,9 @@ def main() -> Void
       try Test.eq(PostgresUrl.parse("postgres://u:hunter2@h/app?timeout_ms=soon").message, message)
       try Test.eq(PostgresUrl.parse("postgres://u:hunter2@h/app?timeout_ms=").message, message)
       try Test.eq(PostgresUrl.parse("host=h password=hunter2 timeout_ms=-1").message, message)
+      # A `?` that belongs to the password ends the user info: the hint says how to write it.
+      hint = PostgresUrl.parse("postgres://u:p?timeout_ms=5@h/db").message
+      try Test.eq(hint.include?("%3F"), true)
       return Test.eq(PostgresUrl.parse("host=h timeout_ms=1000000000").message, message)
     end,
   ])

@@ -1,9 +1,11 @@
 # agentica-db
 
 One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc` with its url reader
-`sqlite_url.agc` and its lock rule `sqlite_lock.agc`, `postgres.agc` with its placeholder scanner `postgres_sql.agc` and
-its url reader `postgres_url.agc` (it takes `timeout_ms` out of the url before libpq sees it), `mysql.agc` with its
-statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all through the C FFI. No C code of ours. `orm.agc` is a typed layer over `Db` (plain structs in and out, always bound `?` parameters) with
+`sqlite_url.agc` and its lock rule `sqlite_lock.agc`, `postgres.agc` with its placeholder scanner `postgres_sql.agc`
+and its url reader `postgres_url.agc` (it takes `timeout_ms` out of the url before libpq sees it), `mysql.agc` with
+its statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all through the C FFI. No C code of ours.
+`milliseconds.agc` reads the `timeout_ms` and `busy_timeout` numbers of their url readers. `orm.agc` is a typed layer
+over `Db` (plain structs in and out, always bound `?` parameters) with
 `orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the sql of the query builder) and `orm/dialect.agc`
 (identifier names and quotes); it takes a `Db.Connection` and never touches an adapter. `examples/users.agc` is a
 runnable web-handler style example of the Orm; `specs/examples.feature` runs it and checks its output. `migrate.agc` is
@@ -72,8 +74,9 @@ the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.fea
   `[URL]` is the url of the server of the adapter in the scenario, PostgreSQL or MySQL (`[URL]&name=value` adds a url
   parameter), `[SERVER]` is it without its scheme, `[ADDRESS]` is its host and port only, `[SCRATCH]` is a folder
   under `tmp/`, `[SLOW]` is a statement of the adapter that runs for many seconds and `[WORK]` one that works for about
-  half a second and gives the row `n = 1` (`specs/timeouts.feature`). A feature that uses a marker says so in its description. A step has a budget of one million VM steps,
-  so a `Repeat` cell of more than about 40000 items stops the driver.
+  half a second and gives the row `n = 1` (`specs/timeouts.feature`). A feature that uses a marker says so in its
+  description. A step has a budget of one million VM steps, so a `Repeat` cell of more than about 40000 items stops
+  the driver.
 - Add a step only when no step can say it. Lines of 119 characters at most, except a step line that holds a long sql.
 - A statement that fails must be checked by the next `Then` (`it fails with ...`): the driver refuses any new request
   while the last failure is unchecked, so a failing setup step fails the scenario. The last step of a scenario is a

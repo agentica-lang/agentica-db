@@ -6,9 +6,8 @@
 ## left as it is, for libpq to read. A text that is not a conninfo string (a key without `=`) is given back whole with
 ## no timeout: libpq reports it. An error is `postgres error: <message>` and never repeats a part of the url.
 
-MAX_DIGITS = 9
-DIGIT_ZERO = 48
-DIGIT_NINE = 57
+import Milliseconds from "milliseconds"
+
 URL_PREFIXES = ["postgres://", "postgresql://"]
 PARAMETER = "timeout_ms"
 BLANKS = Set.new([" ", "\t", "\n", "\r"])
@@ -134,13 +133,17 @@ def unquote(value: String) -> String
   return value
 end
 
-# A non-empty run of ASCII digits, at most nine: far from any overflow in the arithmetic of a timeout.
+# An `@` or a `/` in the value means that the `?` was meant as a character of the user or the password.
 def read_milliseconds(text: String) -> Result[Int]
-  bytes = text.bytes.to_a
-  not_digits = bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end
-  if bytes.empty? or bytes.size > MAX_DIGITS or not_digits
-    return error("postgres error: the url #{PARAMETER} is not a number of milliseconds")
-  end
+  case Milliseconds.parse(text)
+    some(n) -> return ok(n)
+    none ->
+      if text.include?("@") or text.include?("/")
+        return error(
+          "postgres error: the url timeout_ms is not a number of milliseconds, write a ? of the password as %3F",
+        )
+      end
 
-  return text.to_i
+      return error("postgres error: the url #{PARAMETER} is not a number of milliseconds")
+  end
 end

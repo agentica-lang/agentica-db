@@ -10,10 +10,11 @@
 ## `ssl_ca` without `verify`) is an error. Without `ssl_mode` the client library decides. An error names the problem
 ## and never repeats any part of the url, since a url holds a password.
 
+import Milliseconds from "milliseconds"
+
 SCHEMES = ["mysql://", "mariadb://"]
 DEFAULT_PORT = 3306
 MAX_PORT = 65535
-MAX_MS_DIGITS = 9
 HEX_BASE = 16
 PERCENT = 37
 DIGIT_ZERO = 48
@@ -194,8 +195,7 @@ def digits(text: String) -> Result[Int]
 end
 
 # The parameters of the url: the connect timeout in seconds and the limit of a statement in milliseconds (0 when the
-# url sets none), the TLS mode and the file of
-# authorities.
+# url sets none), the TLS mode and the file of authorities.
 def read_query(query: String) -> Result[Options]
   options = Options(timeout: 0, timeout_ms: 0, tls: Tls.Default, ca: "")
   verify = false
@@ -214,12 +214,10 @@ def read_query(query: String) -> Result[Options]
 
       options = options.with(timeout: seconds.unwrap_or(0))
     elsif halves[0] == "timeout_ms"
-      millis = digits(halves[1])
-      if not millis.ok? or halves[1].length > MAX_MS_DIGITS
-        return error("mysql error: the url timeout_ms is not a number of milliseconds")
+      case Milliseconds.parse(halves[1])
+        some(millis) -> options = options.with(timeout_ms: millis)
+        none -> return error("mysql error: the url timeout_ms is not a number of milliseconds")
       end
-
-      options = options.with(timeout_ms: millis.unwrap_or(0))
     elsif halves[0] == "ssl_mode" and mode_seen
       return error("mysql error: the url sets ssl_mode twice")
     elsif halves[0] == "ssl_mode" and halves[1] == "required"

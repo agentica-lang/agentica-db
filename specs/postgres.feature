@@ -186,3 +186,34 @@ Feature: PostgreSQL
     Then the query "show statement_timeout" returns:
       | statement_timeout |
       | Text 1500ms       |
+
+  # A call with a timeout on a statement that controls a transaction runs under the limit of the session: a SET before
+  # BEGIN would be outside the transaction while the put-back is inside it, and nothing can precede the ROLLBACK of a
+  # failed transaction.
+  Scenario: A call with a timeout on BEGIN, COMMIT and ROLLBACK leaves the statement_timeout alone on postgres
+    Given a "postgres" database
+    When I open "[URL]&timeout_ms=1500"
+    And I execute "begin" with a timeout of 5000 ms
+    And I execute "select 1/0"
+    Then it fails with "postgres error 22012"
+    When I execute "rollback" with a timeout of 5000 ms
+    Then the connection is not in a transaction
+    And the query "show statement_timeout" returns:
+      | statement_timeout |
+      | Text 1500ms       |
+    When I execute "begin" with a timeout of 5000 ms
+    And I execute "commit" with a timeout of 5000 ms
+    Then the query "show statement_timeout" returns:
+      | statement_timeout |
+      | Text 1500ms       |
+
+  # The put-back of a call goes to what the server gives the session when the url has no timeout_ms (here the `options`
+  # of the url), not to 0.
+  Scenario: A call with a timeout puts back the statement_timeout the server gave the session on postgres
+    Given a "postgres" database
+    When I open "[URL]&options=-c%20statement_timeout%3D7000"
+    And I query "select 1 as v" with a timeout of 100 ms
+    And I query "select 1 as v" with a timeout of 0 ms
+    Then the query "show statement_timeout" returns:
+      | statement_timeout |
+      | Text 7s           |

@@ -28,7 +28,7 @@ SLOW_SQL = {
   ),
 }
 WORK_SQL = {
-  "sqlite": "with recursive c(x) as (select 1 union all select x + 1 from c limit 6000000) select min(x) as n from c",
+  "sqlite": "with recursive c(x) as (select 1 union all select x + 1 from c limit 2000000) select min(x) as n from c",
   "postgres": "select 1 as n from pg_sleep(0.6)",
   "mysql": "select 1 as n from dual where sleep(0.6) = 0",
 }

@@ -522,6 +522,12 @@ end
 # is not tried again (`upgrade?`).
 def step(conn: Connection, stmt: Stmt) -> Stepped
   started = Time.monotonic_ms()
+  # An interrupt that came between the prepare and the first step is lost (SQLite ignores one while no statement runs),
+  # so the deadline is read here.
+  if conn.deadline > 0 and started >= conn.deadline
+    return Stepped(code: SQLITE_INTERRUPT, waited: false)
+  end
+
   code = sqlite3_step(stmt)
   waited = false
   while lock_wait?(conn, code, started) and not upgrade?(conn, stmt)
@@ -637,6 +643,10 @@ end
 
 # The code is the one the failed call returned; the text is SQLite's own message.
 def failure(conn: Connection, code: Int) -> String
+  if code == SQLITE_INTERRUPT
+    return "sqlite error #{SQLITE_INTERRUPT}: interrupted"
+  end
+
   return "sqlite error #{code}: #{sqlite3_errmsg(conn.handle)}"
 end
 

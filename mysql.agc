@@ -10,13 +10,19 @@
 ##
 ## `timeout_ms` (a parameter of the url, and an argument of `query` and `execute`) bounds a statement on the server.
 ## The adapter reads the flavor of the server from its version at `open`. MySQL gets `max_execution_time`, which limits
-## only a SELECT: a statement that runs longer fails with `mysql error 3024`. MariaDB gets `max_statement_time`, in
-## seconds, which limits every statement: `mysql error 1969`. A call with its own limit sets the variable before the
-## statement and puts the limit of the connection back after it, in two more round trips; a call that asks for the
-## limit it has costs none. A url with `timeout_ms` also sets the client read and write timeouts, in whole seconds,
-## to that limit plus a margin, as a backstop for what the server does not time (an INSERT on MySQL, a lost network):
-## a statement that hits it fails with `mysql error 2013` (lost connection) and the connection is gone. The backstop
-## is fixed at `open`, so a call that asks for a limit longer than the one of the url is cut at the backstop.
+## only a SELECT: a statement that runs longer fails with `mysql error 3024`, except that MySQL 8.4 interrupts a
+## `SLEEP()` silently, with no error. A `DO` or an `INSERT` is not bounded on MySQL. MariaDB gets `max_statement_time`,
+## in seconds, which limits every statement: `mysql error 1969`.
+##
+## A call with its own limit sets the variable before the statement and puts the limit of the connection back after it
+## (the default of the server when the url sets none), in two more round trips; a call that asks for the limit it has
+## costs none.
+##
+## A url with `timeout_ms` also sets the client read and write timeouts, in whole seconds, to that limit plus 10
+## seconds, as a backstop for what the server does not time (a `DO` or an `INSERT` on MySQL, a lost network): a
+## statement that hits it fails with `mysql error 2013` (lost connection) and the connection is gone. The backstop is
+## fixed at `open`, so a call that asks for a limit longer than the one of the url, `NO_TIMEOUT` included, is cut at
+## the backstop.
 ##
 ## An engine failure is `mysql error <code>: <message>`, with the numeric code of the server (`1062` for a duplicate
 ## key) or of the client library (`2002` for a server that cannot be reached) and its message. A bad input is
@@ -477,22 +483,18 @@ def flavor_of(version: String) -> Flavor
 end
 
 # Runs `body` under the limit of the call. A limit other than the connection's is set before and put back after, also
-# when the body failed (a lost connection fails the put-back, and the body's own failure is the one given).
+# when the body failed. The put-back is not part of the result: the body's own result is what the caller asked for, and
+# the put-back fails only on a lost connection, which the next call reports.
 def limited[R](conn: Connection, timeout_ms: Int, body: Fn[Result[R]]) -> Result[R]
   if timeout_ms < 0 or timeout_ms == conn.timeout_ms
     return body.call()
   end
 
   try check_open(conn.handle)
-  try set_limit(conn, timeout_ms)
+  try set_limit(conn, limit_sql(conn.flavor, timeout_ms))
   done = body.call()
-  restored = set_limit(conn, conn.timeout_ms)
-  case done
-    ok(_) ->
-      try restored
-      return done
-    error(_) -> return done
-  end
+  put_back_limit(conn)
+  return done
 end
 
 def limit_session(conn: Connection) -> Result[Void]
@@ -500,12 +502,21 @@ def limit_session(conn: Connection) -> Result[Void]
     return ok()
   end
 
-  return set_limit(conn, conn.timeout_ms)
+  return set_limit(conn, limit_sql(conn.flavor, conn.timeout_ms))
 end
 
-def set_limit(conn: Connection, ms: Int) -> Result[Void]
-  try run_execute(conn.handle, limit_sql(conn.flavor, ms), [])
+def set_limit(conn: Connection, sql: String) -> Result[Void]
+  try run_execute(conn.handle, sql, [])
   return ok()
+end
+
+# The limit of the url, or, when the url sets none, the default of the server (its global value).
+def put_back_limit(conn: Connection) -> Void
+  if conn.timeout_ms > 0
+    set_limit(conn, limit_sql(conn.flavor, conn.timeout_ms))
+  else
+    set_limit(conn, default_limit_sql(conn.flavor))
+  end
 end
 
 # MySQL counts the limit in milliseconds and MariaDB in seconds, which may have a fraction: 2500 ms is 2.500.
@@ -516,6 +527,13 @@ def limit_sql(flavor: Flavor, ms: Int) -> String
       millis = (ms % MS_PER_SECOND).to_s
       padded = List.repeat("0", 3 - millis.length).join("") + millis
       return "SET SESSION max_statement_time = #{ms / MS_PER_SECOND}.#{padded}"
+  end
+end
+
+def default_limit_sql(flavor: Flavor) -> String
+  case flavor
+    Flavor.MySql -> return "SET SESSION max_execution_time = DEFAULT"
+    Flavor.MariaDb -> return "SET SESSION max_statement_time = DEFAULT"
   end
 end
 

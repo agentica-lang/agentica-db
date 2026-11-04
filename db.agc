@@ -31,7 +31,9 @@ TIMEOUT_PREFIXES = ["sqlite error 9:", "postgres error 57014:", "mysql error 302
 
 ## The `timeout_ms` of a call that takes the one of the connection.
 export CONNECTION_DEFAULT = -1
-## The `timeout_ms` of a call that has no limit.
+## The `timeout_ms` of a call that has no limit of its own. On MySQL and MariaDB a connection opened with a url
+## `timeout_ms` still cuts it at the client backstop (see `mysql.agc`); on PostgreSQL it lifts the limit of the url,
+## but not one that the server sets for the session when the url has none.
 export NO_TIMEOUT = 0
 
 ## An open connection, owned by the task that opened it. Close it with `close`, or the end of the task closes it (the
@@ -108,7 +110,9 @@ export def close(conn: Connection) -> Void
 end
 
 ## Runs a statement and gives its rows, in column order; a statement without a result gives none. `timeout_ms` is the
-## limit of this call: `CONNECTION_DEFAULT` (-1) takes the one of the connection, `NO_TIMEOUT` (0) has none.
+## limit of this call: `CONNECTION_DEFAULT` (-1) takes the one of the connection, `NO_TIMEOUT` (0) has none (read the
+## notes at `NO_TIMEOUT` and in the page of the database: MySQL limits only a SELECT, and a MariaDB or MySQL connection
+## with a url `timeout_ms` cuts a longer call at the client backstop).
 export def query(
   conn: Connection,
   sql: String,
@@ -146,7 +150,10 @@ export def in_transaction?(conn: Connection) -> Bool
   end
 end
 
-## Whether the connection works: it is open and the server answers. A closed or lost connection is not healthy.
+## Whether the connection works: it is open and the server answers (SQLite and MySQL: a query or a ping; PostgreSQL:
+## `SELECT 1` under the session's `statement_timeout`). It does not mean that a statement can run: a PostgreSQL
+## connection in a failed transaction is healthy but refuses statements until the ROLLBACK, so a pool rolls back (see
+## `in_transaction?`) before it reuses a connection. A closed or lost connection is not healthy.
 export def healthy?(conn: Connection) -> Bool
   case conn
     Connection.Sqlite(handle) -> return Sqlite.healthy?(handle)
