@@ -151,11 +151,13 @@ jobs:
           agentica check *.agc specs test
           agentica fmt --check *.agc specs test
 
-      # The SQLite scenarios, the users example (a scenario of examples.feature) and the unit tests of test/, which
-      # need no connection.
+      # The SQLite scenarios, the users example (a scenario of examples.feature), the unit tests of test/, which need
+      # no connection, and the features of the pool member, which use a fake resource.
       - name: Test
         shell: bash
         run: |
           agentica test --only "on sqlite"
           agentica test --only "users example"
           agentica test test
+          cd pool
+          agentica test

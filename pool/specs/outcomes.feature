@@ -34,11 +34,12 @@ Feature: Outcomes
     And the count "checkin_done" is 2
     And the count "made" is 1
 
-  Scenario: A body that runs longer than lease_ms is cancelled and its cell is replaced
+  Scenario: A body that runs longer than lease_ms is cancelled and its cell is replaced even if checkin keeps it
     Given a pool with:
-      | setting  | value |
-      | size     | 1     |
-      | lease_ms | 150   |
+      | setting    | value |
+      | size       | 1     |
+      | lease_ms   | 150   |
+      | keep_dirty | true  |
     When job "A" never returns
     And job "B" holds a resource for 10 ms
     And I wait for the jobs
@@ -53,7 +54,7 @@ Feature: Outcomes
     Then starting a pool with these settings fails with "init failed for resource 2":
       | setting       | value |
       | size          | 2     |
-      | init_fails_at | 2     |
+      | init_fails_from | 2     |
     And the count "terminated" reaches 1 within 2000 ms
 
   Scenario Outline: A setting out of range is refused (<setting>)
@@ -62,6 +63,37 @@ Feature: Outcomes
       | <setting> | <value> |
 
     Examples:
-      | setting     | value | error                                                   |
-      | size        | 0     | pool error: size must be at least 1                     |
-      | checkout_ms | 0     | pool error: checkout_ms and lease_ms must be at least 1 |
+      | setting      | value | error                                                   |
+      | size         | 0     | pool error: size must be at least 1                     |
+      | checkout_ms  | 0     | pool error: checkout_ms and lease_ms must be at least 1 |
+      | max_overflow | -1    | pool error: max_overflow, max_age_ms                    |
+      | max_age_ms   | 100   | pool error: max_age_ms and idle_ms need health_ms       |
+      | idle_ms      | 100   | pool error: max_age_ms and idle_ms need health_ms       |
+
+  Scenario: A pool that could not make a resource says so to the callers that wait, and asks init only now and then
+    Given a pool with:
+      | setting         | value |
+      | size            | 1     |
+      | checkout_ms     | 300   |
+      | init_fails_from | 2     |
+    When job "A" crashes
+    And job "B" holds a resource for 10 ms
+    And I wait for the jobs
+    Then job "B" gets "error pool error: checkout timed out after 300 ms (the last init failed: init failed"
+    And job "B" fails with a pool timeout
+    And the count "made" is 2
+
+  Scenario: A pool whose owner crashes fails the callers that wait and the ones that come after
+    Given a pool with:
+      | setting         | value |
+      | size            | 1     |
+      | lease_ms        | 200   |
+      | init_crashes_at | 2     |
+    When job "A" never returns
+    And job "B" holds a resource for 10 ms
+    And I wait for the jobs
+    Then job "B" gets "error pool error: owner task ended"
+    And job "A" gets "error pool error: lease timed out"
+    When job "C" holds a resource for 10 ms
+    And I wait for the jobs
+    Then job "C" gets "error pool error: owner task ended"

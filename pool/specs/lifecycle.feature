@@ -67,3 +67,15 @@ Feature: Lifecycle
     And I wait for the jobs
     Then job "A" gets "error pool error: closed"
     And the count "terminated" is 1
+
+  Scenario: Closing with no time to drain fails the running job and the ones in line
+    Given a pool with:
+      | setting | value |
+      | size    | 1     |
+    When job "A" holds a resource for 5000 ms
+    And job "B" holds a resource for 10 ms
+    And I close the pool, giving the jobs 0 ms to finish
+    And I wait for the jobs
+    Then job "A" gets "error pool error: closed"
+    And job "B" gets "error pool error: closed"
+    And the count "terminated" is 1

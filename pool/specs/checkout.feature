@@ -64,3 +64,50 @@ Feature: Checkout
     Then job "B" succeeds
     And the count "made" is 1
     And the count "checkin_done" is 2
+
+  Scenario: The pool lends up to max_overflow more resources in a spike and ends them when they are given back
+    Given a pool with:
+      | setting      | value |
+      | size         | 1     |
+      | max_overflow | 2     |
+    When job "A" holds a resource for 300 ms
+    And job "B" holds a resource for 300 ms
+    And job "C" holds a resource for 300 ms
+    And job "D" holds a resource for 300 ms
+    And I wait for the jobs
+    Then the count "peak" is 3
+    And the count "made" reaches 3 within 2000 ms
+    And the count "terminated" reaches 2 within 2000 ms
+    And job "D" succeeds
+
+  Scenario: A pool without a spike makes no more than its size
+    Given a pool with:
+      | setting      | value |
+      | size         | 2     |
+      | max_overflow | 2     |
+    When job "A" holds a resource for 50 ms
+    And I wait for the jobs
+    And job "B" holds a resource for 50 ms
+    And I wait for the jobs
+    Then the count "made" is 2
+    And the count "terminated" is 0
+
+  Scenario: A flood of callers while the owner is busy does not lose a resource
+    Given a pool with:
+      | setting      | value |
+      | size         | 2     |
+      | lazy         | true  |
+      | checkout_ms  | 10000 |
+      | max_waiting  | 5000  |
+      | slow_init_at | 2     |
+      | slow_init_ms | 800   |
+    When job "A" holds a resource for 1500 ms
+    And job "B" holds a resource for 10 ms
+    And 1300 callers each take a resource and give it back at once
+    And I wait for the jobs
+    And job "P1" probes the pool for 300 ms
+    And job "P2" probes the pool for 300 ms
+    And I wait for the jobs
+    Then the count "flood_failed" is 0
+    And the count "probe_peak" is 2
+    And the count "made" is 2

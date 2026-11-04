@@ -8,12 +8,12 @@
 export OK = "ok"
 
 ## A request. The ops are `start` and `start_fails` (table: the settings, a header and a name and value per row;
-## text: for `start_fails`, the start of the error), `job` (name, kind: `holds`, `crashes`, `fails` or `hangs`,
-## number: the milliseconds a `holds` job keeps its resource), `cancel_job` (name), `wait_jobs`, `sleep` (number),
-## `close` (number: the drain in milliseconds), and the expectations `expect_job` (name, text: the start of its
-## result), `expect_timeout` (name), `expect_order` (text: the names in the order they finished, joined by commas),
-## `expect_count` (name: the counter, number: its value, kind: `is` or `reaches`, wait: the milliseconds to wait
-## for it).
+## text: for `start_fails`, the start of the error), `job` (name, kind: `holds`, `probe`, `crashes`, `fails` or
+## `hangs`, number: the milliseconds a `holds` job keeps its resource), `flood` (number: the callers), `cancel_job`
+## (name), `wait_jobs`, `sleep` (number), `close` (number: the drain in milliseconds), and the expectations
+## `expect_job` (name, text: the start of its result), `expect_timeout` (name), `expect_order` (text: the names in
+## the order they finished, joined by commas), `expect_count` (name: the counter, number: its value, kind: `is` or
+## `reaches`, wait: the milliseconds to wait for it).
 export struct Request
   op: String
   name: String = ""

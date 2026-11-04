@@ -8,8 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `pool/`, a generic pool of resources and a package of its own (`import Pool from "pkg/pool/pool"`, installed alone
   with `subdir = "pool"`, no native library); the repository is now a workspace. `Pool.start`, `Pool.with`,
-  `Pool.close` with a drain, `Pool.timeout?`: callers wait in line, a body that crashes or runs past `lease_ms` never
-  keeps a resource, and idle resources are pinged and replaced by `max_age_ms` and `idle_ms`. See the Pool guide.
+  `Pool.close` with a drain, `Pool.timeout?`: callers wait in line, the resource of a body that crashes or runs past
+  `lease_ms` is checked in or ended and replaced, up to `max_overflow` more resources are made in a spike, and idle
+  resources are pinged and replaced by `max_age_ms` and `idle_ms`. See the Pool guide.
 - `Migrate` (`import Migrate from "pkg/db/migrate"`): ordered migrations, each a version and sql statements or a
   function over the connection, applied by `Migrate.up` in one transaction each and recorded in a `schema_migrations`
   table with a checksum. A second run applies nothing; a changed, missing or out-of-order migration is an error. It

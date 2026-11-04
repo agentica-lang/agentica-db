@@ -14,7 +14,7 @@ pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "COMMIT", s
 A `Pool.Spec[A, W]` holds the config `A` and the functions that make and end the resources `W`:
 
 - `init(config)` makes a resource. It runs in the owner task of the pool, which owns every resource.
-- `checkin(resource, outcome)` gets the resource back after each body, with the outcome `Done`, `Crashed` or `TimedOut`. An `error` ends the resource, and the pool makes another.
+- `checkin(resource, outcome)` gets the resource back after each body, with the outcome `Done`, `Crashed` or `TimedOut`. An `error` ends the resource, and the pool makes another. After `TimedOut` the pool ends the resource whatever `checkin` returns, since the cancelled body may still run for a moment; after `Crashed` the body is dead and `checkin` decides.
 - `ping(resource)` checks an idle resource at each health tick; an `error` ends it.
 - `terminate(resource)` ends it.
 
@@ -65,16 +65,17 @@ ended worker 2
 The other fields of the `Spec`, all in milliseconds unless noted, with their defaults:
 
 - `size` (10): how many resources. With `lazy: true` (false) they are made when a caller needs one.
+- `max_overflow` (0): in a spike the pool makes up to this many resources more, so `size + max_overflow` is the most that exist. An overflow resource is ended when it is given back and no other caller needs it, so the pool shrinks back to `size`.
 - `checkout_ms` (5000): how long a caller waits for a resource.
 - `lease_ms` (30000): how long a body may run. A body past it is cancelled and its caller gets an error.
-- `max_age_ms` (0) and `idle_ms` (0): a resource older than `max_age_ms`, or unused for `idle_ms`, is ended and, unless the pool is lazy, replaced. 0 turns the rule off.
+- `max_age_ms` (0) and `idle_ms` (0): a resource older than `max_age_ms` is ended and replaced; one unused for `idle_ms` is ended (`idle_ms` needs `lazy: true`, since an eager pool would make a new one at once). 0 turns the rule off. Both need `health_ms`, which applies them.
 - `max_waiting` (1000): how many callers may wait for a resource at once.
 - `health_ms` (5000): the interval of the health tick, which pings the idle resources and applies `max_age_ms` and `idle_ms`. 0 turns the tick off.
 
-The errors are `pool error: checkout timed out after N ms`, `pool error: lease timed out after N ms`, `pool error: queue full` and `pool error: closed`. `Pool.timeout?(message)` is true for the first two.
+The errors are `pool error: checkout timed out after N ms` (with the last error of `init` when the pool could not make a resource), `pool error: lease timed out after N ms`, `pool error: queue full`, `pool error: closed` and `pool error: owner task ended`. `Pool.timeout?(message)` is true for the first two. A caller that got an error never has its body run later. A failed `init` is tried again after a second, not for every job.
 
 `Pool.close(pool, drain_ms)` refuses new callers, lets the running bodies and the callers in line finish for up to `drain_ms`, fails the rest with `pool error: closed`, ends every resource and stops the pool.
 
 - Start the pool in a task that lives as long as it does, such as `main`: the owner task ends with the task that started it.
 - Cancelling a caller does not cancel its body; `lease_ms` bounds it.
-- `init` and `terminate` run in the owner task, so they should not crash or block for long. `checkin` and `ping` have 5 seconds each.
+- `init` and `terminate` run in the owner task, so they should not block for long, and a crash in one ends the pool (its callers get `pool error: owner task ended`). `checkin` and `ping` have 5 seconds each.

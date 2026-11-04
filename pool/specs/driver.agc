@@ -14,8 +14,8 @@ WAIT_JOBS_MS = 10_000
 POLL_MS = 20
 HANG_MS = 60_000
 SETTING_NAMES = [
-  "size", "checkout_ms", "lease_ms", "max_age_ms", "idle_ms", "max_waiting", "lazy", "health_ms", "keep_dirty",
-  "bad_ping_id", "init_fails_at",
+  "size", "max_overflow", "checkout_ms", "lease_ms", "max_age_ms", "idle_ms", "max_waiting", "lazy", "health_ms",
+  "keep_dirty", "bad_ping_id", "init_fails_from", "init_crashes_at", "slow_init_at", "slow_init_ms",
 ]
 
 # The resource of the pool.
@@ -29,7 +29,10 @@ struct Fake
   stats: ATS[String, Int]
   keep_dirty: Bool
   bad_ping_id: Int
-  init_fails_at: Int
+  init_fails_from: Int
+  init_crashes_at: Int
+  slow_init_at: Int
+  slow_init_ms: Int
 end
 
 struct Driver
@@ -57,7 +60,7 @@ end
 
 def main() -> Void
   stats: ATS[String, Int] = ATS.new()
-  finished: Channel[String] = Channel.new(1_000)
+  finished: Channel[String] = Channel.new(5_000)
   driver = Driver(stats: stats, finished: finished, pool: none, tasks: {}, results: {}, order: [])
   line = IO.gets
   while line.ok?
@@ -81,6 +84,7 @@ def act(driver: Driver, req: Request) -> Handled
     "start" -> return start(driver, req)
     "start_fails" -> return start_fails(driver, req)
     "job" -> return start_job(driver, req)
+    "flood" -> return flood(driver, req.number)
     "cancel_job" -> return cancel_job(driver, req.name)
     "wait_jobs" -> return wait_jobs(driver)
     "sleep" -> return slept(driver, req.number)
@@ -112,13 +116,17 @@ def spec_of(driver: Driver, table: List[List[String]]) -> Result[Pool.Spec[Fake,
     stats: driver.stats,
     keep_dirty: settings.get("keep_dirty", "false") == "true",
     bad_ping_id: try settings.get("bad_ping_id", "0").to_i,
-    init_fails_at: try settings.get("init_fails_at", "0").to_i,
+    init_fails_from: try settings.get("init_fails_from", "0").to_i,
+    init_crashes_at: try settings.get("init_crashes_at", "0").to_i,
+    slow_init_at: try settings.get("slow_init_at", "0").to_i,
+    slow_init_ms: try settings.get("slow_init_ms", "0").to_i,
   )
 
   base = Pool.Spec(config: fake, init: &make, checkin: &check_in, terminate: &end_it, ping: &ping)
   return ok(
     base.with(
       size: try settings.get("size", base.size.to_s).to_i,
+      max_overflow: try settings.get("max_overflow", "0").to_i,
       checkout_ms: try settings.get("checkout_ms", base.checkout_ms.to_s).to_i,
       lease_ms: try settings.get("lease_ms", base.lease_ms.to_s).to_i,
       max_age_ms: try settings.get("max_age_ms", "0").to_i,
@@ -182,6 +190,24 @@ def start_job(driver: Driver, req: Request) -> Handled
       task = Task.spawn(run_fn, args)
       Task.sleep(JOB_GAP_MS)
       return reply(driver.with(tasks: driver.tasks.put(req.name, task)), Protocol.OK)
+  end
+end
+
+# Starts `count` callers at once that take a resource and give it back; they have no name, and `flood_failed` counts
+# the ones that got an error.
+def flood(driver: Driver, count: Int) -> Handled
+  case driver.pool
+    none -> return reply(driver, "no pool is started")
+    some(pool) ->
+      run_fn: Fn[JobArgs, Void] = &run_job
+      tasks = driver.tasks
+      for i in 1..count
+        args = JobArgs(pool: pool, name: "", kind: "holds", ms: 0, stats: driver.stats, finished: driver.finished)
+        tasks = tasks.put("flood #{i}", Task.spawn(run_fn, args))
+      end
+
+      Task.sleep(JOB_GAP_MS)
+      return reply(driver.with(tasks: tasks), Protocol.OK)
   end
 end
 
@@ -286,7 +312,15 @@ end
 # The fake resource: a numbered cell that counts what the pool does with it.
 def make(fake: Fake) -> Result[Cell]
   id = fake.stats.add("made", 1)
-  if id == fake.init_fails_at
+  if id == fake.slow_init_at
+    Task.sleep(fake.slow_init_ms)
+  end
+
+  if id == fake.init_crashes_at
+    return ok(Cell(id: "not a number".to_i!, fake: fake))
+  end
+
+  if fake.init_fails_from > 0 and id >= fake.init_fails_from
     return error("init failed for resource #{id}")
   end
 
@@ -326,17 +360,31 @@ end
 
 def run_job(args: JobArgs) -> Void
   result = Pool.with(args.pool) do |cell| use(args, cell) end
+  if args.name.empty?
+    if not result.ok?
+      args.stats.add("flood_failed", 1)
+    end
+
+    return
+  end
+
   case result
     ok(id) -> args.finished.send("#{args.name} ok #{id}", 1_000)
     error(message) -> args.finished.send("#{args.name} error #{message}", 1_000)
   end
 end
 
-# The body of a job: it holds the cell, crashes, fails or hangs. `peak` is the most cells in use at once.
+# The body of a job: it holds the cell, crashes, fails or hangs. `peak` is the most cells in use at once; the `probe`
+# jobs count in `probe_peak` instead, so that a check can ignore the jobs that came before them.
 def use(args: JobArgs, cell: Cell) -> Result[Int]
-  active = args.stats.add("active", 1)
-  if active > args.stats.get("peak").unwrap_or(0)
-    args.stats.put("peak", active)
+  prefix = ""
+  if args.kind == "probe"
+    prefix = "probe_"
+  end
+
+  active = args.stats.add("#{prefix}active", 1)
+  if active > args.stats.get("#{prefix}peak").unwrap_or(0)
+    args.stats.put("#{prefix}peak", active)
   end
 
   case args.kind
@@ -350,6 +398,6 @@ def use(args: JobArgs, cell: Cell) -> Result[Int]
     _ -> Task.sleep(args.ms)
   end
 
-  args.stats.add("active", -1)
+  args.stats.add("#{prefix}active", -1)
   return ok(cell.id)
 end
