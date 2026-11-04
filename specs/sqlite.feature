@@ -202,7 +202,8 @@ Feature: SQLite
       | 300 |
 
   # In a rollback journal the writer gets its lock at once but its commit waits for the reader, which makes SQLite run
-  # the statement again: the rows of the first run must not be kept.
+  # the statement again: the rows of the first run must not be kept. The step checks that the task was still waiting
+  # when the reader committed.
   Scenario: A statement that writes and returns rows gives them once after it waited for a lock on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/returning.db?journal_mode=delete"
@@ -217,3 +218,34 @@ Feature: SQLite
     And the query "select count(*) as n from t" returns:
       | n     |
       | Int 2 |
+
+  # A read does not need to be run again: it waits for the lock and gives all its rows.
+  Scenario: A read that waits for a lock gives its rows on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/reading.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I execute "insert into t values (1), (2), (3)"
+    And another task on "sqlite:[SCRATCH]/reading.db?journal_mode=delete" holds the write lock for 300 ms while I query "select x from t order by x"
+    Then the result is:
+      | x     |
+      | Int 1 |
+      | Int 2 |
+      | Int 3 |
+
+  # A deferred transaction that has read holds a read lock. A write that another connection blocks cannot be waited
+  # for: that connection commits only after this one lets go of its read lock, so both would wait for the busy_timeout.
+  # SQLite does not wait here either, and the write fails at once. The other connection commits when this one ends
+  # its transaction. `Db.transaction` begins with BEGIN IMMEDIATE and never gets here.
+  # This needs SQLite 3.34 or later (`sqlite3_txn_state`): the adapter waits as before with an older library, and this
+  # scenario then fails. The stall exists only in a rollback journal (`journal_mode=delete`), which is why it uses one.
+  Scenario: A write in a transaction that has read fails at once and lets the other commit on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/deferred.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I execute "begin"
+    And I query "select count(*) as n from t"
+    And another task on "sqlite:[SCRATCH]/deferred.db?journal_mode=delete" commits "insert into t values (1)" while I execute "insert into t values (2)" once it waits
+    Then it fails with "sqlite error 5: database is locked"
+    And the query "select count(*) as n from t" returns:
+      | n     |
+      | Int 1 |
