@@ -1,7 +1,7 @@
 ## The rule of the SQLite adapter on which lock failures it waits for, apart from the connection so that a unit test
 ## can reach it. It reads extended error codes (`sqlite3_extended_errcode`).
 
-SQLITE_BUSY = 5
+export SQLITE_BUSY = 5
 # The extended codes that mean "wait and try again": a WAL that another connection is recovering, and a table of a
 # shared cache held by another connection. SQLITE_BUSY_SNAPSHOT (517) is not one of them: the snapshot of a read
 # transaction is stale for good, and only a rollback helps.

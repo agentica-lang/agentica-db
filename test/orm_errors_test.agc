@@ -29,8 +29,10 @@ def main() -> Void
     Test.test("any other text is a failure of the database, with its message as it is") do
       try Test.eq(kind_of("db error: unsupported database url scheme ftp"), "Database")
       try Test.eq(kind_of("orm error: users: the old shape"), "Database")
-      return Test.eq(Errors.message(Errors.classify("postgres error: the connection is closed")),
-                     "postgres error: the connection is closed")
+      return Test.eq(
+        Errors.message(Errors.classify("postgres error: the connection is closed")),
+        "postgres error: the connection is closed",
+      )
     end,
   ])
 end

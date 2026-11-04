@@ -1,20 +1,21 @@
 # agentica-db
 
-One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc` with its url
-reader `sqlite_url.agc` and its lock rule `sqlite_lock.agc`, `postgres.agc` with its placeholder scanner `postgres_sql.agc`, `mysql.agc` with its
-statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all through the C FFI. No C code of ours. `orm.agc` is a typed layer over `Db` (plain structs
-in and out, always bound `?` parameters) with `orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the
-sql of the query builder) and `orm/dialect.agc` (identifier names and quotes); it takes a `Db.Connection` and never
-touches an adapter. `examples/users.agc` is a runnable web-handler style example of the Orm; `specs/examples.feature`
-runs it and checks its output. `migrate.agc` is the migrations runner (`Migrate.up`), also over `Db`, with
-`specs/migrations.feature`.
+One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc` with its url reader
+`sqlite_url.agc` and its lock rule `sqlite_lock.agc`, `postgres.agc` with its placeholder scanner `postgres_sql.agc`,
+`mysql.agc` with its statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all through the C FFI. No C
+code of ours. `orm.agc` is a typed layer over `Db` (plain structs in and out, always bound `?` parameters) with
+`orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the sql of the query builder) and `orm/dialect.agc`
+(identifier names and quotes); it takes a `Db.Connection` and never touches an adapter. `examples/users.agc` is a
+runnable web-handler style example of the Orm; `specs/examples.feature` runs it and checks its output. `migrate.agc` is
+the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.feature`.
 
 ## Commands
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-- `make check` (`agentica check *.agc orm examples specs test`: every `.agc` file of the package), then
+- `make check` (`agentica check *.agc orm examples specs test`: every `.agc` file of the package),
+  `agentica fmt --check *.agc orm examples specs test` (CI runs it; `agentica fmt` on the same paths fixes it), then
   `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
   the unit tests of `test/`. SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains
   `TEXT`.
@@ -76,12 +77,13 @@ runs it and checks its output. `migrate.agc` is the migrations runner (`Migrate.
   while the last failure is unchecked, so a failing setup step fails the scenario. The last step of a scenario is a
   `Then`, since nothing comes after it to refuse.
 - Scenario names are unique: put a column of the Examples in the title of an outline with several rows.
-- `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would
-  say badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url readers
-  (`test/mysql_url_test.agc`, `test/sqlite_url_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`) and the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a
-  connection is a scenario. A behavior is proven once: a common scenario is an outline with one row per adapter that
-  the behavior applies to, not one per variant of the input, and a case a unit test proves is not repeated in a
-  feature, except the one integration row per adapter that shows the helper is wired in (a bad url, a NUL in the sql).
+- `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would say
+  badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url readers
+  (`test/mysql_url_test.agc`, `test/sqlite_url_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`) and
+  the identifier check of the Orm (`test/orm_dialect_test.agc`). Anything that opens a connection is a scenario. A
+  behavior is proven once: a common scenario is an outline with one row per adapter that the behavior applies to, not
+  one per variant of the input, and a case a unit test proves is not repeated in a feature, except the one integration
+  row per adapter that shows the helper is wired in (a bad url, a NUL in the sql).
 - Ruby forms first (`start_with?`, `each`, `Value.Text(...)`); style: `agentica-code-guidelines` of the Agentica
   repository. Lines are at most 119 characters.
 - Every user-visible change adds a line under `## [Unreleased]` of `CHANGELOG.md`.

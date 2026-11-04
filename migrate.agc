@@ -58,8 +58,11 @@ end
 ## Applies the migrations that are not recorded yet, in order, and gives their versions (empty when there was nothing
 ## to do). `table` is where the history is kept (letters, digits and `_`); two lists with two tables are two
 ## histories.
-export def up(conn: Db.Connection, migrations: List[Migration],
-              table: String = "schema_migrations") -> Result[List[Int]]
+export def up(
+  conn: Db.Connection,
+  migrations: List[Migration],
+  table: String = "schema_migrations",
+) -> Result[List[Int]]
   try check_table(table)
   try check_list(migrations)
   try prepare_history(conn, table)
@@ -69,8 +72,10 @@ export def up(conn: Db.Connection, migrations: List[Migration],
   pending = migrations.select do |migration| not applied.any? do |row| row.version == migration.version end end
   if pending.any? do |migration| migration.version < highest end
     old = pending.find do |migration| migration.version < highest end.unwrap!
-    return error("migrate error: migration #{label(old)} is older than the applied migration #{highest}, " +
-                 "so it would run out of order")
+    return error(
+      "migrate error: migration #{label(old)} is older than the applied migration #{highest}, " +
+      "so it would run out of order",
+    )
   end
 
   done: List[Int] = []
@@ -119,8 +124,10 @@ def check_list(migrations: List[Migration]) -> Result[Void]
     end
 
     if migration.version <= previous
-      return error("migrate error: migration #{label(migration)} must have a version above #{previous}: " +
-                   "versions are positive and ascend in the list")
+      return error(
+        "migrate error: migration #{label(migration)} must have a version above #{previous}: " +
+        "versions are positive and ascend in the list",
+      )
     end
 
     previous = migration.version
@@ -131,8 +138,13 @@ end
 
 # The engine errors of the two steps before the first migration carry the prefix too.
 def prepare_history(conn: Db.Connection, table: String) -> Result[Void]
-  created = Db.execute(conn, "create table if not exists #{table} (version bigint not null primary key, " +
-                             "name varchar(255) not null, checksum varchar(64) not null)", [])
+  created = Db.execute(
+    conn,
+    "create table if not exists #{table} (version bigint not null primary key, " +
+    "name varchar(255) not null, checksum varchar(64) not null)",
+    [],
+  )
+
   case created
     error(message) -> return error("migrate error: #{message}")
     ok(_) -> return ok()
@@ -186,8 +198,10 @@ def check_history(migrations: List[Migration], applied: List[Row]) -> Result[Voi
       error(_) -> return error("migrate error: migration #{row.version} (#{row.name}) is applied but not in the list")
       ok(migration) ->
         if migration.name != row.name
-          return error("migrate error: migration #{row.version} (#{migration.name}) was renamed after it was " +
-                       "applied, it was (#{row.name})")
+          return error(
+            "migrate error: migration #{row.version} (#{migration.name}) was renamed after it was " +
+            "applied, it was (#{row.name})",
+          )
         end
 
         if checksum(migration) != row.checksum
@@ -210,9 +224,12 @@ end
 def apply(conn: Db.Connection, migration: Migration, table: String) -> Result[Void]
   done = Db.transaction(conn) do |tx|
     try run(tx, migration)
-    try Db.execute(tx, "insert into #{table} (#{VERSION_COLUMNS}) values (?, ?, ?)",
-                   [Db.Value.Int(migration.version), Db.Value.Text(migration.name),
-                    Db.Value.Text(checksum(migration))])
+    try Db.execute(
+      tx,
+      "insert into #{table} (#{VERSION_COLUMNS}) values (?, ?, ?)",
+      [Db.Value.Int(migration.version), Db.Value.Text(migration.name), Db.Value.Text(checksum(migration))],
+    )
+
     ok()
   end
 

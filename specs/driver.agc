@@ -525,8 +525,7 @@ def partial_query(state: State, sql: String, params: List[Db.Value]) -> State
   return read_rows(state, partials(), sql, params, &partial_row)
 end
 
-def read_rows[T](state: State, schema: Orm.Schema[T], sql: String, params: List[Db.Value],
-                 row: Fn[T, Db.Row]) -> State
+def read_rows[T](state: State, schema: Orm.Schema[T], sql: String, params: List[Db.Value], row: Fn[T, Db.Row]) -> State
   return with_conn(state) do |conn|
     case Orm.query(conn, schema, sql, params)
       error(message) -> return failed(state, message)

@@ -91,8 +91,9 @@ def read_settings(query: String) -> Result[Settings]
     elsif one_of?(["journal_mode", "foreign_keys", "fts5"], name)
       return error("sqlite error: the url parameter #{name} has a value that is not allowed: #{value}")
     else
-      return error("sqlite error: unknown url parameter #{name}, expected journal_mode, foreign_keys, busy_timeout " +
-                   "or fts5")
+      return error(
+        "sqlite error: unknown url parameter #{name}, expected journal_mode, foreign_keys, busy_timeout " + "or fts5",
+      )
     end
   end
 
