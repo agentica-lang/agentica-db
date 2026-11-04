@@ -118,9 +118,10 @@ that moves a folder, move the `ref` (and the lock) to its merge commit.
   (`test/db_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`)
   and the identifier check of the Orm (`test/orm_dialect_test.agc`), and `test/migrations_layout_test.agc` (it opens no
   connection: it checks the list of `examples/migrations.agc` against its folder, as the guide teaches). Anything that
-  opens a connection is a scenario. A behavior is proven once: a common scenario is an outline with one row per adapter that the behavior applies to, not
-  one per variant of the input, and a case a unit test proves is not repeated in a feature, except the one integration
-  row per adapter that shows the helper is wired in (a bad url, a NUL in the sql).
+  opens a connection is a scenario. A behavior is proven once: a common scenario is an outline with one row per
+  adapter that the behavior applies to, not one per variant of the input, and a case a unit test proves is not
+  repeated in a feature, except the one integration row per adapter that shows the helper is wired in (a bad url, a
+  NUL in the sql).
 - Ruby forms first (`start_with?`, `each`, `Value.Text(...)`); style: `agentica-code-guidelines` of the Agentica
   repository. Lines are at most 119 characters.
 - Every user-visible change adds a line under `## [Unreleased]` of `CHANGELOG.md`.
