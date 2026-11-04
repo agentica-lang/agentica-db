@@ -3,10 +3,9 @@ name = "db"
 # db_pool.agc is a pool of connections on the generic pool (src/pool, a member of the workspace of the root
 # agentica.toml). In the repository the workspace reads it from its folder, so an edit there is seen at once; a project
 # outside the repository fetches the commit below, which must hold the pool at src/pool.
-# TODO: `ref` is the commit before the move to src/ (the pool was in pool/ there); move it to the merge commit of the
-# pull request that created src/ (and to a `pool-` tag once one exists).
+# `ref` is the merge commit of the move to src/; move it to a `pool-` tag once one exists.
 [dependencies]
-pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "476e15731eef2203b207095cf8a957d28615f1a4", subdir = "src/pool" }
+pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "be4d8097a645c088a56b2146c882ad0d8f3a409e", subdir = "src/pool" }
 
 # The system SQLite; `extern "sqlite3"` in sqlite/sqlite.agc opens the entry of the running system.
 [native.sqlite3]
