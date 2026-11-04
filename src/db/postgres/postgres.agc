@@ -253,9 +253,9 @@ end
 # or the `options` of the url): a NULL value resets the variable to that.
 def put_back_statement_timeout(conn: Connection) -> Void
   if conn.timeout_ms > 0
-    set_statement_timeout(conn.handle, conn.timeout_ms)
+    _ = set_statement_timeout(conn.handle, conn.timeout_ms)
   else
-    run_query(conn.handle, SET_TIMEOUT_SQL, [Value.Null])
+    _ = run_query(conn.handle, SET_TIMEOUT_SQL, [Value.Null])
   end
 end
 

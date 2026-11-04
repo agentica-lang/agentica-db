@@ -10,7 +10,7 @@ REPLY_MS = 60_000
 
 def main() -> Void
   BDD.run([
-    BDD.step("a pool with:") do |ctx, args| send(ctx, Request(op: "start", table: BDD.table(ctx))) end,
+    BDD.step("a pool with:") do |ctx, _args| send(ctx, Request(op: "start", table: BDD.table(ctx))) end,
     BDD.step("starting a pool with these settings fails with {string}:") do |ctx, args|
       send(ctx, Request(op: "start_fails", text: args[0], table: BDD.table(ctx)))
     end,
@@ -32,7 +32,7 @@ def main() -> Void
     BDD.step("the caller of job {string} is cancelled") do |ctx, args|
       send(ctx, Request(op: "cancel_job", name: args[0]))
     end,
-    BDD.step("I wait for the jobs") do |ctx, args| send(ctx, Request(op: "wait_jobs")) end,
+    BDD.step("I wait for the jobs") do |ctx, _args| send(ctx, Request(op: "wait_jobs")) end,
     BDD.step("I wait {int} ms") do |ctx, args| send(ctx, Request(op: "sleep", number: args[0].to_i!)) end,
     BDD.step("I close the pool, giving the jobs {int} ms to finish") do |ctx, args|
       send(ctx, Request(op: "close", number: args[0].to_i!))

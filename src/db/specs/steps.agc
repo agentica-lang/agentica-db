@@ -39,7 +39,7 @@ def main() -> Void
     BDD.step("I execute {string} in the pool") do |ctx, args|
       send(ctx, Request(op: "pool_execute", text: args[0], number: CONNECTION_DEFAULT))
     end,
-    BDD.step("I run these statements in one block of the pool:") do |ctx, args|
+    BDD.step("I run these statements in one block of the pool:") do |ctx, _args|
       send(ctx, Request(op: "pool_script", table: BDD.table(ctx)))
     end,
     plain_step("I run a block that crashes in the pool", "pool_crash"),
@@ -54,29 +54,29 @@ def main() -> Void
     plain_step("the connection is not in a transaction", "not_in_transaction"),
     plain_step("the connection is healthy", "healthy"),
     plain_step("the connection is not healthy", "not_healthy"),
-    BDD.step("I run these statements in a transaction:") do |ctx, args|
+    BDD.step("I run these statements in a transaction:") do |ctx, _args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx)))
     end,
     BDD.step("I run these statements in a transaction that fails with {string}:") do |ctx, args|
       send(ctx, Request(op: "transaction", text: args[0], table: BDD.table(ctx)))
     end,
-    BDD.step("I run these statements in a transaction that gives a count:") do |ctx, args|
+    BDD.step("I run these statements in a transaction that gives a count:") do |ctx, _args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), gives: true))
     end,
-    BDD.step("I run these statements in a transaction that starts a transaction inside it:") do |ctx, args|
+    BDD.step("I run these statements in a transaction that starts a transaction inside it:") do |ctx, _args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), nested: true))
     end,
     BDD.step("{int} tasks each run these statements in a transaction on {string}:") do |ctx, args|
       send(ctx, Request(op: "write_together", number: args[0].to_i!, text: args[1], table: BDD.table(ctx)))
     end,
-    BDD.step("I migrate with:") do |ctx, args| send(ctx, Request(op: "migrate", table: BDD.table(ctx))) end,
+    BDD.step("I migrate with:") do |ctx, _args| send(ctx, Request(op: "migrate", table: BDD.table(ctx))) end,
     BDD.step("I migrate the table {string} with:") do |ctx, args|
       send(ctx, Request(op: "migrate", text: args[0], table: BDD.table(ctx)))
     end,
     plain_step("I close the database", "close"),
     text_step("I make the file {string} read-only", "read_only"),
     text_step("I make the file {string} writable", "writable"),
-    BDD.step("a program whose native libraries are missing") do |ctx, args|
+    BDD.step("a program whose native libraries are missing") do |ctx, _args|
       BDD.given_program(ctx, "fixtures/nolib/open.agc")
     end,
     BDD.step("the program opens {string}") do |ctx, args| BDD.when_line(ctx, args[0]) end,
@@ -102,15 +102,19 @@ def main() -> Void
     end,
     text_step("I read the names with {string}", "orm_query_as"),
     text_step("I check the {string} schema", "orm_check"),
-    BDD.step("I insert the person:") do |ctx, args| send(ctx, Request(op: "orm_insert", table: BDD.table(ctx))) end,
-    BDD.step("I insert the partial person:") do |ctx, args|
+    BDD.step("I insert the person:") do |ctx, _args| send(ctx, Request(op: "orm_insert", table: BDD.table(ctx))) end,
+    BDD.step("I insert the partial person:") do |ctx, _args|
       send(ctx, Request(op: "orm_insert", table: BDD.table(ctx), partial: true))
     end,
-    BDD.step("I insert the person with its own key:") do |ctx, args|
+    BDD.step("I insert the person with its own key:") do |ctx, _args|
       send(ctx, Request(op: "orm_insert", text: "manual", table: BDD.table(ctx)))
     end,
-    BDD.step("I insert a marker with no note") do |ctx, args| send(ctx, Request(op: "orm_marker", text: "insert")) end,
-    BDD.step("I update a marker with no note") do |ctx, args| send(ctx, Request(op: "orm_marker", text: "update")) end,
+    BDD.step("I insert a marker with no note") do |ctx, _args|
+      send(ctx, Request(op: "orm_marker", text: "insert"))
+    end,
+    BDD.step("I update a marker with no note") do |ctx, _args|
+      send(ctx, Request(op: "orm_marker", text: "update"))
+    end,
     BDD.step("I delete the person with the key {string}") do |ctx, args|
       send(ctx, Request(op: "orm_delete", text: "people", cells: [args[0]]))
     end,
@@ -118,8 +122,8 @@ def main() -> Void
       send(ctx, Request(op: "orm_builder", text: args[0], table: BDD.table(ctx)))
     end,
     text_step("I find the person with the key {string}", "orm_find"),
-    BDD.step("I update the person:") do |ctx, args| send(ctx, Request(op: "orm_update", table: BDD.table(ctx))) end,
-    BDD.step("I update the partial person:") do |ctx, args|
+    BDD.step("I update the person:") do |ctx, _args| send(ctx, Request(op: "orm_update", table: BDD.table(ctx))) end,
+    BDD.step("I update the partial person:") do |ctx, _args|
       send(ctx, Request(op: "orm_update", table: BDD.table(ctx), partial: true))
     end,
     BDD.step("I patch the person {int} with {string}") do |ctx, args|
@@ -135,14 +139,14 @@ def main() -> Void
       asked = send(ctx, Request(op: "query", text: args[0]))
       send(asked, rows_request(asked))
     end,
-    BDD.step("each value reads back unchanged in a column of its type:") do |ctx, args|
+    BDD.step("each value reads back unchanged in a column of its type:") do |ctx, _args|
       send(ctx, Request(op: "round_trips", table: BDD.table(ctx)))
     end,
     text_step("the server reads the float {string} exactly", "float_oracle"),
     BDD.step("the result has {int} rows, the last being:") do |ctx, args|
       send(ctx, Request(op: "expect_last", number: args[0].to_i!, table: BDD.table(ctx)))
     end,
-    BDD.step("the result is:") do |ctx, args| send(ctx, rows_request(ctx)) end,
+    BDD.step("the result is:") do |ctx, _args| send(ctx, rows_request(ctx)) end,
     BDD.step("the changed row count is {int}") do |ctx, args|
       send(ctx, Request(op: "expect_count", number: args[0].to_i!))
     end,
@@ -167,7 +171,7 @@ end
 
 # A step that captures nothing.
 def plain_step(pattern: String, op: String) -> BDD.Step
-  return BDD.step(pattern) do |ctx, args| send(ctx, Request(op: op)) end
+  return BDD.step(pattern) do |ctx, _args| send(ctx, Request(op: op)) end
 end
 
 # The program of `fixtures/nolib` answers each url with one line.

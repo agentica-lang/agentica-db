@@ -103,7 +103,7 @@ def cond_piece(conn: Db.Connection, cond: Cond) -> Result[Piece]
     Cond.Eq(column, value) -> return ok(Piece(sql: "#{try Dialect.quote(conn, column)} = ?", params: [value]))
     Cond.In(_, values) if values.empty? -> return ok(Piece(sql: "1 = 0", params: []))
     Cond.In(column, values) ->
-      marks = values.map do |value| "?" end.join(", ")
+      marks = values.map do |_value| "?" end.join(", ")
       return ok(Piece(sql: "#{try Dialect.quote(conn, column)} in (#{marks})", params: values))
     Cond.Raw(sql, params) -> return ok(Piece(sql: "(#{sql})", params: params))
   end
