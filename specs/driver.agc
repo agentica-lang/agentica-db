@@ -189,6 +189,7 @@ def act(state: State, req: Request) -> Handled
     "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
     "write_together" -> return reply_ok(write_together(state, req))
     "execute_waiting" -> return execute_waiting(state, req)
+    "query_until_commit" -> return reply_ok(query_until_commit(state, req))
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -858,6 +859,26 @@ def execute_waiting(state: State, req: Request) -> Handled
       end
 
       return reply_ok(failed(state, message))
+  end
+end
+
+# The query runs in a task on a connection of its own while this connection, which holds a lock, commits after
+# `req.number` milliseconds: the query waits for the lock, then its rows or its failure are the outcome.
+def query_until_commit(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
+    task = Task.spawn(&fresh_query, job)
+    Task.sleep(req.number)
+    committed = Db.execute(conn, "COMMIT", [])
+    found = Task.await(task)
+    if not committed.ok?
+      return failed(state, committed.message)
+    end
+
+    case found
+      error(message) -> return failed(state, message)
+      ok(rows) -> return recorded(state, Outcome.Rows(rows))
+    end
   end
 end
 

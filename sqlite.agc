@@ -56,9 +56,15 @@ export struct Connection
   busy_timeout: Int
 end
 
+# The code of a step and whether it waited for a lock before: a statement that writes and was run again by SQLite
+# gives its rows from the start.
+struct Stepped
+  code: Int
+  waited: Bool
+end
+
 extern "sqlite3"
-  ## An open database.
-  export resource Handle, free: sqlite3_close_v2
+  resource Handle, free: sqlite3_close_v2
   resource Stmt, free: sqlite3_finalize
   compute def sqlite3_open_v2(filename: C.String, out db: Handle, flags: C.Int32, vfs: C.Pointer) -> C.Int32
   def sqlite3_extended_errcode(db: Handle) -> C.Int32
@@ -72,6 +78,7 @@ extern "sqlite3"
   compute def sqlite3_probe(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
                             out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
   compute def sqlite3_step(stmt: Stmt) -> C.Int32
+  def sqlite3_stmt_readonly(stmt: Stmt) -> C.Int32
   def sqlite3_bind_parameter_count(stmt: Stmt) -> C.Int32
   def sqlite3_bind_null(stmt: Stmt, index: C.Int32) -> C.Int32
   def sqlite3_bind_int64(stmt: Stmt, index: C.Int32, value: C.Int64) -> C.Int32
@@ -246,7 +253,7 @@ def prepare(conn: Connection, sql: String, params: List[Value]) -> Result[Stmt]
     try single_statement(conn, buf)
     started = Time.monotonic_ms()
     prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-    while retry?(conn, prepared.result, started)
+    while sleep_if_locked(conn, prepared.result, started)
       prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
     end
 
@@ -276,7 +283,7 @@ end
 def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
   started = Time.monotonic_ms()
   probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
-  while retry?(conn, probe.result, started)
+  while sleep_if_locked(conn, probe.result, started)
     probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
   end
 
@@ -295,7 +302,7 @@ def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
 
   more_started = Time.monotonic_ms()
   more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
-  while retry?(conn, more.result, more_started)
+  while sleep_if_locked(conn, more.result, more_started)
     more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
   end
 
@@ -383,7 +390,14 @@ end
 def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Result[List[Row]]
   rows: List[Row] = []
   while true
-    code = step(conn, stmt)
+    stepped = step(conn, stmt)
+    code = stepped.code
+    # SQLite rolls a write back and runs it again after a wait (a commit refused in a rollback journal), so the rows
+    # of the first run are dropped; a read goes on from where it stopped.
+    if stepped.waited and sqlite3_stmt_readonly(stmt) == 0
+      rows = []
+    end
+
     if code == SQLITE_DONE
       return ok(rows)
     end
@@ -400,22 +414,26 @@ def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Re
   return ok(rows)
 end
 
-# One step, tried again while the database is locked. SQLite allows it: a step that gave SQLITE_BUSY has changed
-# nothing and runs again from where it stopped, and a COMMIT that gave it leaves the transaction open.
-def step(conn: Connection, stmt: Stmt) -> Int
+# One step, tried again while the database is locked. SQLite documents a retry for a COMMIT, which stays open after
+# SQLITE_BUSY, and for a statement outside a transaction. Inside a deferred transaction that has read, a write that
+# is refused may never succeed: the wait then ends at `busy_timeout` with the same error. `Db.transaction` begins
+# with BEGIN IMMEDIATE, so its statements never get there.
+def step(conn: Connection, stmt: Stmt) -> Stepped
   started = Time.monotonic_ms()
   code = sqlite3_step(stmt)
-  while retry?(conn, code, started)
+  waited = false
+  while sleep_if_locked(conn, code, started)
+    waited = true
     code = sqlite3_step(stmt)
   end
 
-  return code
+  return Stepped(code: code, waited: waited)
 end
 
-# True after a short sleep when `code` says that another connection holds a lock and the wait that began at
-# `started` is not over. The task sleeps instead of SQLite: it parks, so its thread of the compute pool is free for
-# the connection that holds the lock.
-def retry?(conn: Connection, code: Int, started: Int) -> Bool
+# Sleeps a little and gives true when `code` says that another connection holds a lock and the wait that began at
+# `started` is not over, so the caller tries again; gives false at once otherwise. The task sleeps instead of SQLite:
+# it parks, so its thread of the compute pool is free for the connection that holds the lock.
+def sleep_if_locked(conn: Connection, code: Int, started: Int) -> Bool
   if not locked?(conn, code)
     return false
   end

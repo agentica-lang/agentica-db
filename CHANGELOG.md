@@ -19,18 +19,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Breaking:** a SQLite connection now opens with `journal_mode=wal` and `foreign_keys=on` (SQLite's own defaults
   were a rollback journal and foreign keys off). A file database stays in WAL mode once opened. Add
-  `?journal_mode=delete&foreign_keys=off` to the url for the old behavior. The busy timeout stays 5000 ms. A WAL that
-  a read-only database refuses is skipped when the url did not name a journal mode.
+  `?journal_mode=delete&foreign_keys=off` to the url for the old behavior. The default `busy_timeout` stays 5000 ms. A
+  WAL that a read-only database refuses is skipped when the url did not name a journal mode.
 - **Breaking:** a `?` in a SQLite path now starts the parameters, so `a?b.db`, `q.db?` and the Windows `\\?\C:\...`
   prefix are no longer file names (`sqlite:file:a%3fb.db` is). A parameter that is not known is an error.
 - CI now tests with Agentica 0.23.0 (pinned by sha256 on every OS). The package still needs Agentica 0.18.0 or later;
   `examples/users.agc` needs a newer one: it reads the `Bytes` body of `HttpRequest` and writes the `Bytes` body of
   `HttpResponse`, which came with the 0.19.0 series. The library itself uses no HTTP type.
 - A SQLite statement that finds the database locked by another connection (or a table of a shared cache) waits by
-  sleeping in its task and trying again, up to `busy_timeout`, and not inside SQLite: concurrent write transactions
-  succeed with `AGENTICA_SCHEDULERS=1` or `2`, where they failed with `database is locked`. `PRAGMA busy_timeout` shows
-  0. `Sqlite.open` gives a `Sqlite.Connection` (a record with the handle) in place of the `Sqlite.Handle`; `Db.open` is
-  unchanged.
+  sleeping in its task and trying again, up to `busy_timeout` (default 5000 ms), and not inside SQLite: concurrent
+  write transactions succeed with `AGENTICA_SCHEDULERS=1` or `2`, where they failed with `database is locked`.
+  SQLite's own busy timeout is now 0, so `PRAGMA busy_timeout` shows 0.
+- **Breaking:** `Sqlite.open` gives a `Sqlite.Connection` (a record with the handle and the busy timeout), and the
+  payload of `Db.Connection.Sqlite` is that type; `Sqlite.Handle` is no longer exported. `Db.open` is unchanged.
 
 ## [0.3.0] - 2026-10-30
 
