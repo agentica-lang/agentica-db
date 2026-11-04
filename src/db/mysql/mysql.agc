@@ -529,9 +529,9 @@ end
 # The limit of the url, or, when the url sets none, the default of the server (its global value).
 def put_back_limit(conn: Connection) -> Void
   if conn.timeout_ms > 0
-    set_limit(conn, limit_sql(conn.flavor, conn.timeout_ms))
+    _ = set_limit(conn, limit_sql(conn.flavor, conn.timeout_ms))
   else
-    set_limit(conn, default_limit_sql(conn.flavor))
+    _ = set_limit(conn, default_limit_sql(conn.flavor))
   end
 end
 

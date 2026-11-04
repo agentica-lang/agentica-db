@@ -301,7 +301,7 @@ end
 def open_at(state: State, adapter: String, url: String) -> State
   state.conns.each do |conn| Db.close(conn) end
   if url.include?(scratch_dir())
-    Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
+    _ = Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
   end
 
   case Db.open(url)
@@ -357,7 +357,7 @@ def pool_start(state: State, req: Request) -> State
   state.pools.each do |old| DbPool.close(old, POOL_DRAIN_MS) end
   url = expand(state, req.text)
   if url.include?(scratch_dir())
-    Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
+    _ = Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
   end
 
   stopped = State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
@@ -460,7 +460,7 @@ end
 # A block that crashes (`to_i!` of a text that is not a number halts the task of the block).
 def pool_crash(state: State) -> State
   return with_pool(state) do |pool|
-    found = DbPool.with(pool) do |conn| ok("not a number".to_i!) end
+    found = DbPool.with(pool) do |_conn| ok("not a number".to_i!) end
     case found
       error(message) -> return failed(state, message)
       ok(_) -> return recorded(state, Outcome.Done)
@@ -479,7 +479,7 @@ def pool_hold(state: State, ms: Int) -> State
 end
 
 def hold(job: Held) -> Result[Void]
-  return DbPool.with(job.pool) do |conn|
+  return DbPool.with(job.pool) do |_conn|
     Task.sleep(job.ms)
     ok()
   end
@@ -492,7 +492,7 @@ def pool_query_while_held(state: State, req: Request) -> State
     holder = Task.spawn(&hold, Held(pool: pool, ms: req.number))
     Task.sleep(HOLD_START_MS)
     asked = pool_query(state, req.with(number: Db.CONNECTION_DEFAULT))
-    Task.await(holder)
+    _ = Task.await(holder)
     return asked
   end
 end
@@ -544,7 +544,7 @@ def clean_scratch() -> Void
     set_access(State(conns: [], pools: [], adapter: "", last: Outcome.Nothing, checked: true), locked, true)
   end
 
-  Path.remove(scratch_dir(), IO_TIMEOUT_MS)
+  _ = Path.remove(scratch_dir(), IO_TIMEOUT_MS)
 end
 
 # Makes a file read-only, or writable again: `chmod` on Unix, `attrib` on Windows (where a read-only file cannot be
@@ -1043,7 +1043,7 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
   end
 
   if req.nested
-    try Db.transaction(tx) do |inner| ok() end
+    try Db.transaction(tx) do |_inner| ok() end
   end
 
   if not req.text.empty?
@@ -1192,7 +1192,7 @@ def write_while_blocked(state: State, req: Request) -> Handled
       started = Time.monotonic_ms()
       tried = Db.execute(state.conns[0], Cells.expand(req.cells[1]), [])
       waited = Time.monotonic_ms() - started
-      Db.execute(state.conns[0], "ROLLBACK", [])
+      _ = Db.execute(state.conns[0], "ROLLBACK", [])
       committed = Task.await(task)
       if not seen
         return Handled(state: state, reply: never_blocked())
@@ -1239,7 +1239,7 @@ def query_while_locked(state: State, req: Request) -> Handled
       started = Time.monotonic_ms()
       found = Db.query(state.conns[0], Cells.expand(req.cells[0]), [])
       waited = Time.monotonic_ms() - started
-      Task.await(task)
+      _ = Task.await(task)
       if not seen
         return Handled(state: state, reply: never_blocked())
       end
@@ -1413,7 +1413,7 @@ def round_trip(conn: Db.Connection, kind: String, value: Db.Value) -> String
 
   inserted = Db.execute(conn, "insert into rt (v) values (?)", [value])
   found = Db.query(conn, "select v from rt", [])
-  Db.execute(conn, "drop table rt", [])
+  _ = Db.execute(conn, "drop table rt", [])
   if not inserted.ok?
     return "the insert failed: #{inserted.message}"
   end

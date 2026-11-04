@@ -229,7 +229,7 @@ export def close[A, W](pool: Pool[A, W], drain_ms: Int) -> Void
   done: Channel[Bool] = Channel.new(1)
   closing = Closing(drain_ms: [drain_ms, 0].max.unwrap!, done: done)
   if send_stop(pool, closing)
-    done.recv(closing.drain_ms + CLOSE_GRACE_MS + CANCEL_GRACE_MS)
+    _ = done.recv(closing.drain_ms + CLOSE_GRACE_MS + CANCEL_GRACE_MS)
   end
 
   Task.cancel(pool.owner)
@@ -248,7 +248,7 @@ end
 # `jobs` makes the caller wait up to `checkout_ms`, as for a resource.
 def enqueue[A, W](pool: Pool[A, W], job: Job[W]) -> Result[Void]
   try pool.jobs.send(job, pool.spec.checkout_ms)
-  pool.control.send(Msg.Wake, 0)
+  _ = pool.control.send(Msg.Wake, 0)
   return ok()
 end
 
@@ -265,12 +265,12 @@ def answer[W, R](
   case offer
     Offer.Grant(worker) ->
       if claim.put_new(DECIDED, 1) and events.send(Event.Started, 0).ok?
-        events.send(Event.Finished(body.call(worker)), SEND_MS)
+        _ = events.send(Event.Finished(body.call(worker)), SEND_MS)
       end
 
       return ok()
     Offer.Deny(message) ->
-      events.send(Event.Finished(error(message)), 0)
+      _ = events.send(Event.Finished(error(message)), 0)
       return ok()
   end
 end
@@ -386,7 +386,7 @@ def abandon_start[W](chans: Chans[W], counts: ATS[String, Int], owner: Task[Void
   end
 
   counts.put_new(CLOSED, 1)
-  chans.ready.recv(CLOSE_GRACE_MS)
+  _ = chans.ready.recv(CLOSE_GRACE_MS)
   Task.cancel(owner)
   return "pool error: start timed out after #{START_MS} ms"
 end
@@ -442,11 +442,11 @@ def own[A, W](spec: Spec[A, W], counts: ATS[String, Int], chans: Chans[W]) -> Vo
   made = top_up(core, fresh(core))
   if not made.failure.empty? or core.counts.has_key?(CLOSED)
     end_all(core, made)
-    core.ready.send(error(start_error(made)), SEND_MS)
+    _ = core.ready.send(error(start_error(made)), SEND_MS)
     return
   end
 
-  core.ready.send(ok(), SEND_MS)
+  _ = core.ready.send(ok(), SEND_MS)
   state = made
   while not state.done
     state = step(core, state)
@@ -537,7 +537,7 @@ end
 # spike) and every one is taken. A slow `init` holds the owner, not the clock of the lease task.
 def admit[A, W](core: Core[A, W], state: Owned[W], job: Job[W]) -> Owned[W]
   if state.closing.some?
-    job.call(Offer.Deny(CLOSED_ERROR))
+    _ = job.call(Offer.Deny(CLOSED_ERROR))
     return state
   end
 
@@ -562,7 +562,7 @@ def take_back[A, W](core: Core[A, W], state: Owned[W], release: Release[W]) -> O
     return replace(core, ended, slot)
   end
 
-  core.idle.send(slot.with(idle_since_ms: now), 0)
+  _ = core.idle.send(slot.with(idle_since_ms: now), 0)
   return schedule_trim(core, ended)
 end
 
@@ -604,7 +604,7 @@ def trim[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
         if now - slot.idle_since_ms >= core.spec.overflow_idle_ms
           current = replace(core, current, slot)
         else
-          core.idle.send(slot, 0)
+          _ = core.idle.send(slot, 0)
         end
     end
   end
@@ -645,7 +645,7 @@ def add_worker[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
       id = core.counts.add(NEXT_ID, 1)
       now = Time.monotonic_ms()
       core.counts.add(LIVE, 1)
-      core.idle.send(Slot(id: id, worker: worker, born_ms: now, idle_since_ms: now), 0)
+      _ = core.idle.send(Slot(id: id, worker: worker, born_ms: now, idle_since_ms: now), 0)
       return state.with(workers: state.workers.put(id, worker), failure: "", retry_at_ms: 0)
   end
 end
@@ -729,7 +729,7 @@ def check_idle[A, W](core: Core[A, W]) -> Void
       error(_) -> return
       ok(slot) ->
         if seen.include?(slot.id)
-          core.idle.send(slot, 0)
+          _ = core.idle.send(slot, 0)
           return
         end
 
@@ -743,7 +743,7 @@ def inspect_idle[A, W](core: Core[A, W], slot: Slot[W]) -> Void
   if stale?(core.spec, slot, Time.monotonic_ms()) or not settled?(Task.spawn do core.spec.ping.call(slot.worker) end)
     notify(core, Msg.Drop(slot))
   else
-    core.idle.send(slot, 0)
+    _ = core.idle.send(slot, 0)
   end
 end
 
@@ -782,7 +782,7 @@ end
 # resource that is gone.
 # Then it tells `close` that it is done.
 def finish[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
-  state.jobs.values.each do |job| job.call(Offer.Deny(CLOSED_ERROR)) end
+  state.jobs.values.each do |job| _ = job.call(Offer.Deny(CLOSED_ERROR)) end
   core.idle.close
   while core.idle.recv(0).ok?
     next
@@ -812,7 +812,7 @@ end
 
 def acknowledge(closing: Optional[Closing]) -> Void
   case closing
-    some(asked) -> asked.done.send(true, SEND_MS)
+    some(asked) -> _ = asked.done.send(true, SEND_MS)
     none -> return
   end
 end
@@ -822,7 +822,7 @@ def refuse_queued[A, W](core: Core[A, W]) -> Void
   while true
     case core.jobs.recv(0)
       error(_) -> return
-      ok(job) -> job.call(Offer.Deny(CLOSED_ERROR))
+      ok(job) -> _ = job.call(Offer.Deny(CLOSED_ERROR))
     end
   end
 end
@@ -838,7 +838,7 @@ def lease[A, W](held: Lease[A, W]) -> Void
   core = held.core
   case take(core)
     error(message) ->
-      held.job.call(Offer.Deny(message))
+      _ = held.job.call(Offer.Deny(message))
       notify(core, Msg.GaveUp(held.job_id))
     ok(slot) ->
       outcome = run_body(held, slot)
@@ -907,10 +907,10 @@ def run_body[A, W](held: Lease[A, W], slot: Slot[W]) -> Outcome
     Await.TimedOut ->
       Task.cancel(runner)
       Task.sleep(CANCEL_GRACE_MS)
-      held.job.call(Offer.Deny("#{LEASE_TIMEOUT} after #{lease_ms} ms"))
+      _ = held.job.call(Offer.Deny("#{LEASE_TIMEOUT} after #{lease_ms} ms"))
       return Outcome.TimedOut
     Await.Done(error(message)) ->
-      held.job.call(Offer.Deny(message))
+      _ = held.job.call(Offer.Deny(message))
       return Outcome.Crashed
     Await.Done(_) -> return Outcome.Done
   end

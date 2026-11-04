@@ -283,7 +283,7 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
   end
 
   table = try quoted(conn, schema, schema.table)
-  marks = params.map do |param| "?" end.join(", ")
+  marks = params.map do |_param| "?" end.join(", ")
   sql = "insert into #{table} (#{names.join(", ")}) values (#{marks})"
   if schema.generated
     id = try generated_key(conn, schema, sql, params)

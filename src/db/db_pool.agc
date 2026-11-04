@@ -154,7 +154,7 @@ def check_in(conn: Db.Connection, outcome: P.Outcome) -> Result[Void]
       interrupt(conn)
       return error("db pool: the block ran past lease_ms")
     P.Outcome.Crashed ->
-      roll_back(conn)
+      _ = roll_back(conn)
       return error("db pool: the block crashed")
     P.Outcome.Done -> return reset(conn)
   end

@@ -244,7 +244,7 @@ def bounded[R](conn: Connection, timeout_ms: Int, body: Fn[Connection, Result[R]
   watchdog_task = Task.spawn(&watchdog, Watch(handle: conn.handle, ms: limit))
   done = body.call(conn.with(deadline: deadline))
   Task.cancel(watchdog_task)
-  Task.await(watchdog_task)
+  _ = Task.await(watchdog_task)
   return timed_out(done, limit, deadline)
 end
 
@@ -331,7 +331,7 @@ def fts5?(conn: Connection) -> Bool
     return false
   end
 
-  run_execute(conn, "DROP TABLE temp.agentica_fts5_probe", [])
+  _ = run_execute(conn, "DROP TABLE temp.agentica_fts5_probe", [])
   return true
 end
 

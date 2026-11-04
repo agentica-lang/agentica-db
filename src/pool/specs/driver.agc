@@ -376,8 +376,8 @@ def run_job(args: JobArgs) -> Void
   end
 
   case result
-    ok(id) -> args.finished.send("#{args.name} ok #{id}", 1_000)
-    error(message) -> args.finished.send("#{args.name} error #{message}", 1_000)
+    ok(id) -> _ = args.finished.send("#{args.name} ok #{id}", 1_000)
+    error(message) -> _ = args.finished.send("#{args.name} error #{message}", 1_000)
   end
 end
 
@@ -392,7 +392,7 @@ def loop_job(args: JobArgs) -> Void
     end
   end
 
-  args.finished.send("#{args.name} ok 0", 1_000)
+  _ = args.finished.send("#{args.name} ok 0", 1_000)
 end
 
 def nap(cell: Cell) -> Result[Int]
