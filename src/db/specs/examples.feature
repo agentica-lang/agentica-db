@@ -24,3 +24,15 @@ Feature: Examples
       GET /users?min_age=20&sort=name -> 200 [{"id":2,"name":"Bob","age":27}]
 
       """
+
+  Scenario: The migrations example applies one file per migration, and a second run applies nothing
+    Given the Agentica program "../examples/migrate_layout.agc"
+    Then the program exits with code 0 within 30000 milliseconds
+    And stdout is:
+      """
+      [1, 2, 3]
+      []
+      1
+      done
+
+      """

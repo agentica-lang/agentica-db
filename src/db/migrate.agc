@@ -1,7 +1,8 @@
 ## Ordered migrations of a database, over `Db`. A migration has a version (a positive Int), a name and an action: sql
 ## statements or a function over the connection. `up` applies the migrations that the database has not seen, in
 ## order, each one in its own transaction, and records it in a table (`schema_migrations`) with the checksum of its
-## sql. Running `up` again applies nothing.
+## sql. Running `up` again applies nothing. Keep each migration in its own file that exports `migration()`; see
+## `examples/migrations.agc`.
 ##
 ## `up` refuses to run, with `migrate error: <message>`, when the history does not fit the list: a version that is not
 ## ascending in the list, a migration that is applied but missing from the list, an applied migration whose sql or

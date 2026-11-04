@@ -55,6 +55,56 @@ done
 
 `up` gives the versions it applied, and an empty list when the database was already up to date. Call it at startup, before the server listens.
 
+## Lay out migrations
+
+Give each migration its own file, numbered so that the folder lists them in order, like Rails: `migrations/m0001_create_users.agc`, `migrations/m0002_users_name_index.agc`... Each file exports one `migration()`, and a `code` migration keeps its function in the same file.
+
+```agentica
+import Db from "pkg/db/db"
+import Migrate from "pkg/db/migrate"
+
+export def migration() -> Migrate.Migration
+  return Migrate.code(3, "first user", &first_user)
+end
+
+def first_user(tx: Db.Connection) -> Result[Void]
+  try Db.execute(tx, "insert into users (name) values (?)", [Db.Value.Text("ana")])
+  return ok()
+end
+```
+
+`migrations.agc` only imports the files and returns the list in order. An import path is relative to the importing file, so the files of the folder are imported as `migrations/m0001_create_users` from the file next to the folder.
+
+```ruby
+import Migrate from "pkg/db/migrate"
+import CreateUsers from "migrations/m0001_create_users"
+import UsersNameIndex from "migrations/m0002_users_name_index"
+import FirstUser from "migrations/m0003_first_user"
+
+export def all() -> List[Migrate.Migration]
+  return [CreateUsers.migration(), UsersNameIndex.migration(), FirstUser.migration()]
+end
+```
+
+`up` does not see the folder, so a file that is missing from the list is never applied. Add a test for it: the versions go from 1 to N with no gap, and N is the number of files in the folder (`Dir.list` is relative to the folder you run `agentica test` in).
+
+```ruby
+import Migrations from "../src/migrations"
+
+def main() -> Void
+  Test.run([
+    Test.test("every migration file is in the list, numbered 1 to N") do
+      versions = Migrations.all().map do |migration| migration.version end
+      try Test.eq(versions, (1..versions.length).to_a)
+      files = try Dir.list("src/migrations")
+      return Test.eq(files.length, versions.length)
+    end,
+  ])
+end
+```
+
+With timestamp versions (see "What `up` refuses") the versions are not 1 to N, so keep only the count check. A runnable copy of this layout is in `src/db/examples/` of the repository (`migrations.agc`, `migrations/` and `migrate_layout.agc`).
+
 ## What `up` does
 
 - It creates the history table when it is missing (`version`, `name` and `checksum`), then reads it.
