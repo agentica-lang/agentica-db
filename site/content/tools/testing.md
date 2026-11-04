@@ -1,7 +1,9 @@
 ---
 title: Testing
-weight: 14
+weight: 2
 description: Test your code against in-memory SQLite, and run the tests of agentica-db.
+aliases:
+  - /guide/testing/
 ---
 
 ## Your code

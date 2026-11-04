@@ -1,7 +1,9 @@
 ---
-title: "ORM: errors"
-weight: 12
+title: Errors
+weight: 5
 description: Tell the failures of the Orm apart with Orm.classify, and map them to statuses.
+aliases:
+  - /guide/orm-errors/
 ---
 
 An error is a text, since that is what a `Result` holds. A failure of the Orm is `orm error <code>: <table>: <message>`, and `Orm.classify(text)` gives its kind to `case` on, so a handler never matches message text.
@@ -71,7 +73,7 @@ done
 
 `Orm.kind(error)` gives the name of the kind as a text (`"Conflict"`), for logs and tests. `Orm.message(error)` gives the message for a log: `<table>: <message>` for a failure of the Orm, and the text of the database as it is for the others.
 
-A text that no rule knows, such as a `db error: ...`, is `Database`. A failure that the database itself reports (not an Orm failure) keeps the text of `Db`: see [connecting](/guide/connecting/) for its shapes.
+A text that no rule knows, such as a `db error: ...`, is `Database`. A failure that the database itself reports (not an Orm failure) keeps the text of `Db`: see [connecting](/basics/connecting/) for its shapes.
 
 The databases are recognized by their codes: SQLite error 19 with `UNIQUE` or `FOREIGN KEY` in its message, PostgreSQL `23505` and `23503`, and MySQL `1062`, `1451` and `1452`. A not null or a check violation is not a `Conflict`.
 

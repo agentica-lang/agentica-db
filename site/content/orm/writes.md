@@ -1,7 +1,9 @@
 ---
-title: "ORM: writes"
-weight: 11
+title: Writes
+weight: 4
 description: Insert, update, delete and patch one row, and update_all and delete_all for many.
+aliases:
+  - /guide/orm-writes/
 ---
 
 The writes take the connection first. They bind every value and run the name, type and key rules of `check` before any sql.

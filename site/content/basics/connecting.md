@@ -2,13 +2,15 @@
 title: Connecting
 weight: 1
 description: Open a connection from a url, the scheme of each database, and close it.
+aliases:
+  - /guide/connecting/
 ---
 
 `Db.open(url)` gives a `Result[Db.Connection]`. The scheme of the url picks the database.
 
 | Url | Database |
 |---|---|
-| `sqlite:PATH` or `sqlite:PATH?journal_mode=delete` | the SQLite file at `PATH`, with its [settings](/guide/sqlite/#settings) |
+| `sqlite:PATH` or `sqlite:PATH?journal_mode=delete` | the SQLite file at `PATH`, with its [settings](/databases/sqlite/#settings) |
 | `sqlite::memory:` | a private in-memory SQLite database |
 | `postgres://user:pass@host:5432/app` or `postgresql://...` | PostgreSQL (a libpq url) |
 | `mysql://user:pass@host:3306/app` or `mariadb://...` | MySQL or MariaDB |
@@ -40,7 +42,7 @@ When you know the database, call its function. They take the same arguments as `
 | `Db.open_postgres(url)` | `Result[Connection]`, a libpq url or a conninfo string such as `host=localhost dbname=app` |
 | `Db.open_mysql(url)` | `Result[Connection]`, a `mysql://` or `mariadb://` url |
 
-The pages of [SQLite](/guide/sqlite/), [PostgreSQL](/guide/postgresql/) and [MySQL](/guide/mysql/) have the url parameters of each.
+The pages of [SQLite](/databases/sqlite/), [PostgreSQL](/databases/postgresql/) and [MySQL](/databases/mysql/) have the url parameters of each.
 
 ## Checking a connection
 

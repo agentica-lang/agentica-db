@@ -47,11 +47,12 @@ end
 ## Documentation
 
 - [Getting started][getting-started]: install and the system libraries.
-- [Connecting][connecting], [queries][queries], [values][values] and [transactions][transactions].
-- [SQLite][sqlite], [PostgreSQL][postgresql] and [MySQL and MariaDB][mysql].
+- Basics: [connecting][connecting], [queries][queries], [values][values] and [transactions][transactions].
 - The ORM: [schema][orm-schema], [reads][orm-reads], [query builder][orm-builder], [writes][orm-writes] and
   [errors][orm-errors].
-- [Migrations][migrations] and [testing][testing].
+- Production: [timeouts][timeouts] and the [generic pool][generic-pool].
+- Tools: [migrations][migrations] and [testing][testing].
+- The databases: [SQLite][sqlite], [PostgreSQL][postgresql] and [MySQL and MariaDB][mysql].
 - [`examples/users.agc`](examples/users.agc): a users API on the ORM that runs against in-memory SQLite.
 - [CHANGELOG](CHANGELOG.md).
 
@@ -68,17 +69,19 @@ The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
 License: Apache-2.0.
 
 [getting-started]: https://agentica-lang.github.io/agentica-db/getting-started/
-[connecting]: https://agentica-lang.github.io/agentica-db/guide/connecting/
-[queries]: https://agentica-lang.github.io/agentica-db/guide/queries/
-[values]: https://agentica-lang.github.io/agentica-db/guide/values/
-[transactions]: https://agentica-lang.github.io/agentica-db/guide/transactions/
-[sqlite]: https://agentica-lang.github.io/agentica-db/guide/sqlite/
-[postgresql]: https://agentica-lang.github.io/agentica-db/guide/postgresql/
-[mysql]: https://agentica-lang.github.io/agentica-db/guide/mysql/
-[orm-schema]: https://agentica-lang.github.io/agentica-db/guide/orm-schema/
-[orm-reads]: https://agentica-lang.github.io/agentica-db/guide/orm-reads/
-[orm-builder]: https://agentica-lang.github.io/agentica-db/guide/orm-builder/
-[orm-writes]: https://agentica-lang.github.io/agentica-db/guide/orm-writes/
-[orm-errors]: https://agentica-lang.github.io/agentica-db/guide/orm-errors/
-[migrations]: https://agentica-lang.github.io/agentica-db/guide/migrations/
-[testing]: https://agentica-lang.github.io/agentica-db/guide/testing/
+[connecting]: https://agentica-lang.github.io/agentica-db/basics/connecting/
+[queries]: https://agentica-lang.github.io/agentica-db/basics/queries/
+[values]: https://agentica-lang.github.io/agentica-db/basics/values/
+[transactions]: https://agentica-lang.github.io/agentica-db/basics/transactions/
+[sqlite]: https://agentica-lang.github.io/agentica-db/databases/sqlite/
+[postgresql]: https://agentica-lang.github.io/agentica-db/databases/postgresql/
+[mysql]: https://agentica-lang.github.io/agentica-db/databases/mysql/
+[orm-schema]: https://agentica-lang.github.io/agentica-db/orm/schema/
+[orm-reads]: https://agentica-lang.github.io/agentica-db/orm/reads/
+[orm-builder]: https://agentica-lang.github.io/agentica-db/orm/builder/
+[orm-writes]: https://agentica-lang.github.io/agentica-db/orm/writes/
+[orm-errors]: https://agentica-lang.github.io/agentica-db/orm/errors/
+[timeouts]: https://agentica-lang.github.io/agentica-db/production/timeouts/
+[generic-pool]: https://agentica-lang.github.io/agentica-db/production/generic-pool/
+[migrations]: https://agentica-lang.github.io/agentica-db/tools/migrations/
+[testing]: https://agentica-lang.github.io/agentica-db/tools/testing/
