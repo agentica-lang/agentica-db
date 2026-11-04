@@ -11,11 +11,15 @@ In your `agentica.toml`:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.3.0" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "TAG", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.3.0`. Both (and `agentica install`
-for a manifest you edited) write `agentica.lock` and `deps/db/`.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG --subdir src/db`. Both (and
+`agentica install` for a manifest you edited) write `agentica.lock` and `deps/db/`.
+
+The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`. `TAG` is a release
+after 0.3.0 (or `ref = "COMMIT"` for a commit of `main`); 0.3.0 and earlier have the package at the root of the
+repository, so with those tags leave `subdir` out. The imports (`pkg/db/db`, `pkg/db/orm`) are the same in both.
 
 ## Example
 
@@ -53,14 +57,14 @@ end
 - Production: [timeouts][timeouts] and the [generic pool][generic-pool].
 - Tools: [migrations][migrations] and [testing][testing].
 - The databases: [SQLite][sqlite], [PostgreSQL][postgresql] and [MySQL and MariaDB][mysql].
-- [`examples/users.agc`](examples/users.agc): a users API on the ORM that runs against in-memory SQLite.
+- [`src/db/examples/users.agc`](src/db/examples/users.agc): a users API on the ORM that runs against in-memory SQLite.
 - [CHANGELOG](CHANGELOG.md).
 
 ## Development
 
 ```sh
 make check
-agentica test
+cd src/db && agentica test
 ```
 
 The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and

@@ -1,0 +1,35 @@
+name = "db"
+
+# db_pool.agc is a pool of connections on the generic pool (src/pool, a member of the workspace of the root
+# agentica.toml). In the repository the workspace reads it from its folder, so an edit there is seen at once; a project
+# outside the repository fetches the commit below, which must hold the pool at src/pool.
+# TODO: `ref` is the commit before the move to src/ (the pool was in pool/ there); move it to the merge commit of the
+# pull request that created src/ (and to a `pool-` tag once one exists).
+[dependencies]
+pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "476e15731eef2203b207095cf8a957d28615f1a4", subdir = "src/pool" }
+
+# The system SQLite; `extern "sqlite3"` in sqlite/sqlite.agc opens the entry of the running system.
+[native.sqlite3]
+linux = { system = "libsqlite3.so.0" }
+macos = { system = "libsqlite3.dylib" }
+windows = { system = "winsqlite3.dll" }
+
+# The system libpq (PostgreSQL client); `extern "pq"` in postgres/postgres.agc opens the entry of the running system. A
+# macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH only: with Homebrew's libpq, run with
+# DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib".
+[native.pq]
+linux = { system = "libpq.so.5" }
+macos = { system = "libpq.5.dylib" }
+windows = { system = "libpq.dll" }
+
+# The system MariaDB Connector/C (`libmariadb.so.3`), which speaks to MySQL and MariaDB servers; `extern "mariadb"`
+# in mysql/mysql.agc opens the entry of the running system. A macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH
+# only: with Homebrew's mariadb-connector-c, run with DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib".
+[native.mariadb]
+linux = { system = "libmariadb.so.3" }
+macos = { system = "libmariadb.3.dylib" }
+windows = { system = "libmariadb.dll" }
+
+# Every bare `end` is followed by an empty line (AGENTS.md).
+[style]
+blank_line_after_end = true

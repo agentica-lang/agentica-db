@@ -10,10 +10,12 @@ Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.3.0" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "TAG", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.3.0`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG --subdir src/db`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
+
+The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`. `TAG` is a release after 0.3.0, or use `ref = "COMMIT"` for a commit of `main`. The releases up to 0.3.0 have the package at the root of the repository: with those tags leave `subdir` out. The imports are the same in both.
 
 Import the modules with `pkg/db/...`. `Db` is enough for most programs, and `Orm` is the typed layer.
 

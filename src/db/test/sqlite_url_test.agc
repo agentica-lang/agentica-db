@@ -1,4 +1,4 @@
-import SqliteUrl from "../sqlite_url"
+import SqliteUrl from "../sqlite/url"
 
 def target_of(text: String) -> SqliteUrl.Target
   return SqliteUrl.parse(text).unwrap!

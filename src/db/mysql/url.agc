@@ -10,7 +10,7 @@
 ## `ssl_ca` without `verify`) is an error. Without `ssl_mode` the client library decides. An error names the problem
 ## and never repeats any part of the url, since a url holds a password.
 
-import Milliseconds from "milliseconds"
+import Milliseconds from "../support/milliseconds"
 
 SCHEMES = ["mysql://", "mariadb://"]
 DEFAULT_PORT = 3306

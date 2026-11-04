@@ -5,7 +5,7 @@
 ## the markers `[NUL]`, `[TAB]`, `[LF]`, `[VT]`, `[FF]`, `[CR]` and `[SP]`: a table cell cannot hold those characters,
 ## and it drops the spaces at its end.
 
-import {Row, Value} from "../value"
+import {Row, Value} from "../support/value"
 
 SHOW_LIMIT = 60
 MARKERS = {"[NUL]": 0, "[TAB]": 9, "[LF]": 10, "[VT]": 11, "[FF]": 12, "[CR]": 13, "[SP]": 32}

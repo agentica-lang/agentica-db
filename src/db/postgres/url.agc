@@ -6,7 +6,7 @@
 ## left as it is, for libpq to read. A text that is not a conninfo string (a key without `=`) is given back whole with
 ## no timeout: libpq reports it. An error is `postgres error: <message>` and never repeats a part of the url.
 
-import Milliseconds from "milliseconds"
+import Milliseconds from "../support/milliseconds"
 
 URL_PREFIXES = ["postgres://", "postgresql://"]
 PARAMETER = "timeout_ms"

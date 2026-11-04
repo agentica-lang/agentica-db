@@ -72,28 +72,28 @@ jobs:
         run: |
           agentica --version
           make check
-          agentica fmt --check *.agc orm examples specs test
-          (cd pool && agentica fmt --check *.agc specs test)
+          (cd src/db && agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test)
+          (cd src/pool && agentica fmt --check *.agc specs test)
           make site-samples
 
       # The sqlite job of macOS and Windows runs the scenarios named "on sqlite" (an outline has "on <adapter>"), so a
       # scenario with none of those names, which only the server-less runs would miss, is a failure here.
       - name: Scenario names
         run: |
-          bad=$(grep -HnE '^\s*Scenario' specs/*.feature | grep -vE '^specs/(postgres|mysql)\.feature' \
+          bad=$(grep -HnE '^\s*Scenario' src/db/specs/*.feature | grep -vE '^src/db/specs/(postgres|mysql)\.feature' \
             | grep -vE 'on (<adapter>|sqlite|postgres|mysql)|The users example' || true)
           [ -z "$bad" ] || { echo "$bad"; echo "name each scenario 'on <adapter>' or 'on sqlite'"; exit 1; }
 
-      # The features of specs/ and the unit tests of test/. The variables point the postgres and mysql scenarios at the
-      # service containers; without them they fail. The mysql host is an address: `localhost` means the local socket
-      # to the client library.
+      # The features of src/db/specs/ and the unit tests of src/db/test/. The variables point the postgres and mysql
+      # scenarios at the service containers; without them they fail. The mysql host is an address: `localhost` means
+      # the local socket to the client library.
       - name: Test
         env:
           AGENTICA_DB_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
           AGENTICA_DB_MYSQL_URL: mysql://root:pw@127.0.0.1:3306/mysql
         run: |
-          agentica test
-          (cd pool && agentica test)
+          (cd src/db && agentica test)
+          (cd src/pool && agentica test)
 
   # The SQLite scenarios on macOS and Windows. A service container runs on Linux only, so the PostgreSQL and MySQL
   # scenarios stay in the job above; here `--only "on sqlite"` keeps the SQLite ones (every one has that in its name).
@@ -145,19 +145,21 @@ jobs:
         shell: bash
         run: |
           agentica --version
-          agentica check *.agc orm examples specs test
-          agentica fmt --check *.agc orm examples specs test
-          cd pool
+          cd src/db
+          agentica check *.agc sqlite postgres mysql support orm examples specs test
+          agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test
+          cd ../pool
           agentica check *.agc specs test
           agentica fmt --check *.agc specs test
 
-      # The SQLite scenarios, the users example (a scenario of examples.feature), the unit tests of test/, which need
-      # no connection, and the features of the pool member, which use a fake resource.
+      # The SQLite scenarios, the users example (a scenario of examples.feature), the unit tests of src/db/test/, which
+      # need no connection, and the features of the pool package, which use a fake resource.
       - name: Test
         shell: bash
         run: |
+          cd src/db
           agentica test --only "on sqlite"
           agentica test --only "users example"
           agentica test test
-          cd pool
+          cd ../pool
           agentica test

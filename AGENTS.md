@@ -1,36 +1,51 @@
 # agentica-db
 
-One database API for Agentica (`db.agc`, `value.agc`) and one adapter per database (`sqlite.agc` with its url reader
-`sqlite_url.agc` and its lock rule `sqlite_lock.agc`, `postgres.agc` with its placeholder scanner `postgres_sql.agc`
-and its url reader `postgres_url.agc` (it takes `timeout_ms` out of the url before libpq sees it), `mysql.agc` with
-its statement scanner `mysql_sql.agc` and its url reader `mysql_url.agc`), all through the C FFI. No C code of ours.
-`milliseconds.agc` reads the `timeout_ms` and `busy_timeout` numbers of their url readers. `orm.agc` is a typed layer
-over `Db` (plain structs in and out, always bound `?` parameters) with
-`orm/codec.agc` (row to Json for `JSON.codec`), `orm/build.agc` (the sql of the query builder) and `orm/dialect.agc`
-(identifier names and quotes); it takes a `Db.Connection` and never touches an adapter. `examples/users.agc` is a
-runnable web-handler style example of the Orm; `specs/examples.feature` runs it and checks its output. `migrate.agc` is
-the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.feature`.
-`db_pool.agc` is `DbPool`, a pool of `Db` connections on the generic pool of `pool/` (`pkg/pool/pool`, declared in
-`[dependencies]`); `specs/pooling.feature` drives it through the `pool_*` ops of `specs/driver.agc`.
+One database API for Agentica and one adapter per database, all through the C FFI. No C code of ours. The repository
+is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
 
-The repository is a workspace (`[workspace]` in `agentica.toml`): `pool/` is a member, a generic pool of resources
-(`pool/pool.agc`, `import Pool from "pkg/pool/pool"`) with its own `agentica.toml`, no native library, no import of
-`db`, and its own `specs/` and `test/`. A package of the repository that uses it
-declares `subdir = "pool"` like any user, and the workspace reads it from its folder.
+```text
+src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the dependency on pool; agentica.lock)
+  db.agc       Db: the one API, dispatches on Connection
+  db_pool.agc  DbPool, a pool of Db connections on the generic pool (pkg/pool/pool, in [dependencies]);
+               specs/pooling.feature drives it through the pool_* ops of specs/driver.agc
+  orm.agc      a typed layer over Db (plain structs in and out, always bound ? parameters); it takes a
+               Db.Connection and never touches an adapter
+  migrate.agc  the migrations runner (Migrate.up), also over Db
+  sqlite/      sqlite.agc, url.agc (the parameters of the url), lock.agc (the lock rule)
+  postgres/    postgres.agc, sql.agc (the placeholder scanner), url.agc (it takes timeout_ms out of the url
+               before libpq sees it)
+  mysql/       mysql.agc, sql.agc (the statement scanner), url.agc
+  orm/         build.agc (the sql of the query builder), codec.agc (row to Json for JSON.codec), dialect.agc
+               (identifier names and quotes), errors.agc
+  support/     value.agc (Value, Row; db.agc re-exports them), milliseconds.agc (the timeout_ms and
+               busy_timeout numbers of the url readers)
+  examples/    users.agc, a runnable web-handler style example of the Orm; specs/examples.feature runs it
+  specs/ test/ the features and the unit tests of the package
+src/pool/      package "pool": a generic pool of resources (pool.agc, import Pool from "pkg/pool/pool"), no
+               native library, no import of db, its own agentica.toml, specs/ and test/
+site/ tools/   the documentation site (Hugo) and the check of its samples
+```
+
+A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `src/db/db.agc`:
+the dependency says `subdir = "src/db"` (`subdir = "src/pool"` for the pool). Moving a file other than the modules
+at the root of `src/db` (`db`, `db_pool`, `orm`, `migrate`) does not change the imports of users; moving one of
+those four does. The package of this repository that uses the pool declares `subdir = "src/pool"` like any user,
+and the workspace reads it from its folder. Its `ref` is a commit that holds the pool at `src/pool`: after the
+pull request that moves a folder, move the `ref` (and the lock) to its merge commit.
 
 ## Commands
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-- `make check` (`agentica check *.agc orm examples specs test`: every `.agc` file of the package),
-  `agentica fmt --check *.agc orm examples specs test` (CI runs it; `agentica fmt` on the same paths fixes it), then
-  `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
-  the unit tests of `test/`. SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains
-  `TEXT`.
-- The pool member has the same three commands in its folder (`cd pool`: `agentica check *.agc specs test`,
+- Run these in `src/db` (the package folder; `agentica test` finds `specs/steps.agc` by itself). `make check` (from
+  the root) runs `agentica check *.agc sqlite postgres mysql support orm examples specs test` there, which is every
+  `.agc` file of the package. `agentica fmt --check` on the same paths (CI runs it; `agentica fmt` fixes it), then
+  `agentica test`: the features of `specs/` and the unit tests of `test/`. SQLite needs no server. `--only TEXT`
+  keeps the scenarios and tests whose name contains `TEXT`.
+- The pool package has the same three commands in `src/pool` (`agentica check *.agc specs test`,
   `agentica fmt --check *.agc specs test`, `agentica test`); `make check` runs the check. Its features use a fake
-  resource (`pool/specs/driver.agc`), so they need no server.
+  resource (`src/pool/specs/driver.agc`), so they need no server.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
   a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
   and in CI: there is no skipped scenario. Without a server run only the SQLite ones:
@@ -68,14 +83,15 @@ declares `subdir = "pool"` like any user, and the workspace reads it from its fo
   bad input `<adapter> error: <message>`; the module's own `db error: <message>`. A bad input is an error, not a
   halt.
 - An adapter exports its own `BEGIN_SQL`; `transaction` in `db.agc` uses it.
-- Tests are BDD-first: behavior is a Gherkin scenario in `specs/*.feature`, run by `agentica test`, not a test file.
-  The contract every adapter must meet is in the common features (`opening`, `values`, `queries`, `errors`,
-  `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct `Person` of `specs/driver.agc`,
-  with an `Optional` age, or `Partial`, the same with a `JsonField` age), each scenario an outline over an `adapter`
-  column (`sqlite`, `postgres`, `mysql`); what only one adapter promises is in `sqlite.feature`, `postgres.feature` or
-  `mysql.feature`. The sql of a common scenario runs on all three: `create temporary table`, `varchar(50)` where a
-  column is unique, no `cast(? as integer)`, a CTE and not a temporary table where a statement reads one table twice. A
-  new behavior is a scenario first. A value written must read back unchanged.
+- Tests are BDD-first (the paths below are in `src/db`): behavior is a Gherkin scenario in `specs/*.feature`, run by
+  `agentica test`, not a test file. The contract every adapter must meet is in the common features (`opening`,
+  `values`, `queries`, `errors`, `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct
+  `Person` of `specs/driver.agc`, with an `Optional` age, or `Partial`, the same with a `JsonField` age), each scenario
+  an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one adapter promises is in
+  `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on all three:
+  `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and not a temporary
+  table where a statement reads one table twice. A new behavior is a scenario first. A value written must read back
+  unchanged.
 - The steps are in `specs/steps.agc`, few and generic (`a "sqlite" database`, `I execute "sql" with:` and a table of
   typed params, `the query "sql" returns:` and a table, `it fails with "prefix"`). They drive `Db` through
   `specs/driver.agc`, a program under test that holds the connection (a step program cannot keep a connection between
