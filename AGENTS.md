@@ -28,8 +28,8 @@ site/ tools/   the documentation site (Hugo) and the check of its samples
 
 A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `src/db/db.agc`:
 the dependency says `subdir = "src/db"` (`subdir = "src/pool"` for the pool). Moving a file other than the modules
-at the root of `src/db` (`db`, `db_pool`, `orm`, `migrate`) does not change the imports of users; moving one of
-those four does. The package of this repository that uses the pool declares `subdir = "src/pool"` like any user,
+at the root of `src/db` (`db`, `db_pool`, `orm`, `migrate`) does not change the documented imports of users;
+moving one of those four does. The package of this repository that uses the pool declares `subdir = "src/pool"` like any user,
 and the workspace reads it from its folder. Its `ref` is a commit that holds the pool at `src/pool`: after the
 pull request that moves a folder, move the `ref` (and the lock) to its merge commit.
 
@@ -38,7 +38,8 @@ pull request that moves a folder, move the `ref` (and the lock) to its merge com
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-- Run these in `src/db` (the package folder; `agentica test` finds `specs/steps.agc` by itself). `make check` (from
+- Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and
+  `agentica fmt --check src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by itself). `make check` (from
   the root) runs `agentica check *.agc sqlite postgres mysql support orm examples specs test` there, which is every
   `.agc` file of the package. `agentica fmt --check` on the same paths (CI runs it; `agentica fmt` fixes it), then
   `agentica test`: the features of `specs/` and the unit tests of `test/`. SQLite needs no server. `--only TEXT`
@@ -73,7 +74,7 @@ pull request that moves a folder, move the `ref` (and the lock) to its merge com
   `open`, `close`, `query`, `execute` (both take a last `timeout_ms`, -1 for the connection's), `in_transaction?`,
   `connected?` and `healthy?` (SQLite also has `interrupt`, for the pool only). `db.agc` dispatches on `Connection`;
   `transaction` stays in `db.agc`.
-  `db.agc` also re-exports `Value` and `Row` of `value.agc` (`export V.Value`), so a user imports `Db` only. The
+  `db.agc` also re-exports `Value` and `Row` of `support/value.agc` (`export V.Value`), so a user imports `Db` only. The
   connection of each adapter is a native resource (`sqlite3_close_v2`, `PQfinish`, `mysql_close`): the end of the task
   or of `main` closes it, and `Native.closed?` turns a use after `close` into an error (SQLite keeps the runtime
   error). `open` calls `Native.load` before touching the library, so a missing library is an `error`.
@@ -120,6 +121,8 @@ pull request that moves a folder, move the `ref` (and the lock) to its merge com
 - Ruby forms first (`start_with?`, `each`, `Value.Text(...)`); style: `agentica-code-guidelines` of the Agentica
   repository. Lines are at most 119 characters.
 - Every user-visible change adds a line under `## [Unreleased]` of `CHANGELOG.md`.
+- At a release, replace the `TAG` placeholder of the install lines (README.md, site/content/_index.md,
+  site/content/getting-started.md) with the new tag.
 - A line that is only `end` is followed by an empty line, except before another `end`, `else`, `elsif`, a closing `)`
   or `]`, or the end of the file (`[style] blank_line_after_end` in `agentica.toml` makes `agentica check` enforce
   it).
