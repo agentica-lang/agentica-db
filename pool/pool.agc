@@ -252,10 +252,10 @@ def enqueue[A, W](pool: Pool[A, W], job: Job[W]) -> Result[Void]
   return ok()
 end
 
-# Runs inside the job. The body and the caller's checkout timeout settle who goes first with `claim`, in one
-# atomic step
-# (`put_new`): a body that gets it has started and its caller waits for the result; a caller that gets it gave up, and
-# the body does not run. The runner always ends with `ok`, so an error of the runner is the VM's: a crash or a cancel.
+# Runs inside the job. The body and the caller's checkout timeout settle who goes first with `claim`, in one atomic
+# step (`put_new`): a body that gets it has started and its caller waits for the result; a caller that gets it gave up,
+# and the body does not run. The body does not run either when `Started` cannot be sent, as the caller closed `events`.
+# The runner always ends with `ok`, so an error of the runner is the VM's: a crash or a cancel.
 def answer[W, R](
   events: Channel[Event[R]],
   claim: ATS[String, Int],
@@ -264,8 +264,7 @@ def answer[W, R](
 ) -> Result[Void]
   case offer
     Offer.Grant(worker) ->
-      if claim.put_new(DECIDED, 1)
-        events.send(Event.Started, 0)
+      if claim.put_new(DECIDED, 1) and events.send(Event.Started, 0).ok?
         events.send(Event.Finished(body.call(worker)), SEND_MS)
       end
 
@@ -313,9 +312,8 @@ def await_start[A, W, R](pool: Pool[A, W], events: Channel[Event[R]], claim: ATS
     end
   end
 
-  # The deadline came. A body that claimed the start in the last slice runs, so its result is awaited and the
-  # caller does
-  # not hear "timed out" for work that happened; else the caller claims it, and the body never runs.
+  # The deadline came. A body that claimed the start in the last slice runs, so its result is awaited and the caller
+  # does not hear "timed out" for work that happened; else the caller claims it, and the body never runs.
   if not claim.put_new(DECIDED, 1)
     return await_finish(pool, events)
   end
