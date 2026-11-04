@@ -4,10 +4,12 @@ DART_SASS ?= $(HOME)/.local/opt/dart-sass
 
 .PHONY: check site site-serve site-sass site-samples
 
-# Runs `agentica check` on every .agc file of the package and of its orm/, examples/, specs/ and test/ folders (CI
-# on macOS and Windows, which has no make, runs the same command). Needs agentica on PATH.
+# Runs `agentica check` on every .agc file of the package and of its orm/, examples/, specs/ and test/ folders, and
+# of the pool member in pool/ (CI on macOS and Windows, which has no make, runs the same commands). Needs agentica on
+# PATH.
 check:
 	agentica check *.agc orm examples specs test
+	cd pool && agentica check *.agc specs test
 
 site site-serve site-sass: export PATH := $(DART_SASS):$(PATH)
 

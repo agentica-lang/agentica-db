@@ -11,6 +11,11 @@ over `Db` (plain structs in and out, always bound `?` parameters) with
 runnable web-handler style example of the Orm; `specs/examples.feature` runs it and checks its output. `migrate.agc` is
 the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.feature`.
 
+The repository is a workspace (`[workspace]` in `agentica.toml`): `pool/` is a member, a generic pool of resources
+(`pool/pool.agc`, `import Pool from "pkg/pool/pool"`) with its own `agentica.toml`, no native library, no import of
+`db`, and its own `specs/` and `test/`. A package of the repository that uses it
+declares `subdir = "pool"` like any user, and the workspace reads it from its folder.
+
 ## Commands
 
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
@@ -21,6 +26,9 @@ the migrations runner (`Migrate.up`), also over `Db`, with `specs/migrations.fea
   `agentica test`: the features of `specs/` (it finds `specs/steps.agc` by itself) and
   the unit tests of `test/`. SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains
   `TEXT`.
+- The pool member has the same three commands in its folder (`cd pool`: `agentica check *.agc specs test`,
+  `agentica fmt --check *.agc specs test`, `agentica test`); `make check` runs the check. Its features use a fake
+  resource (`pool/specs/driver.agc`), so they need no server.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
   a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
   and in CI: there is no skipped scenario. Without a server run only the SQLite ones:

@@ -1,0 +1,5 @@
+name = "pool"
+
+# Every bare `end` is followed by an empty line (AGENTS.md of the repository).
+[style]
+blank_line_after_end = true
