@@ -9,7 +9,7 @@
 ## URI. A text that starts with `file:` is a SQLite URI, and its `?` belongs to
 ## SQLite: it is returned whole as the path, with the default settings. An error is `sqlite error: <message>`.
 
-import Milliseconds from "milliseconds"
+import Milliseconds from "../support/milliseconds"
 
 JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
 URI_PREFIX = "file:"

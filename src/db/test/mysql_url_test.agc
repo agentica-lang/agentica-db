@@ -1,4 +1,4 @@
-import MysqlUrl from "../mysql_url"
+import MysqlUrl from "../mysql/url"
 
 def target_of(url: String) -> MysqlUrl.Target
   return MysqlUrl.parse(url).unwrap!

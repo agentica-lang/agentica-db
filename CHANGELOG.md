@@ -6,8 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `pool/`, a generic pool of resources and a package of its own (`import Pool from "pkg/pool/pool"`, installed alone
-  with `subdir = "pool"`, no native library); the repository is now a workspace. `Pool.start`, `Pool.with`,
+- `src/pool/`, a generic pool of resources and a package of its own (`import Pool from "pkg/pool/pool"`, installed
+  alone with `subdir = "src/pool"`, no native library); the repository is now a workspace. `Pool.start`, `Pool.with`,
   `Pool.close` with a drain, `Pool.timeout?`: callers wait in line, the resource of a body that crashes or runs past
   `lease_ms` is checked in or ended and replaced, up to `max_overflow` more resources are made in a spike (ended after `overflow_idle_ms` of idleness), and idle
   resources are pinged and replaced by `max_age_ms` and `idle_ms`. See the Pool guide.
@@ -35,6 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** the packages moved to `src/db` and `src/pool`, and the root of the repository is only a workspace.
+  A project that depends on `db` must name the folder: `db = { git = "https://github.com/agentica-lang/agentica-db",
+  tag = "TAG", subdir = "src/db" }` (or `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG
+  --subdir src/db`), with `TAG` a release after 0.3.0 (0.3.0 and earlier keep the package at the root and take no
+  `subdir`). The imports do not change (`pkg/db/db`, `pkg/db/db_pool`, `pkg/db/orm`, `pkg/db/migrate`), nor does
+  the API. Inside `src/db`, the adapters moved to the folders `sqlite/`, `postgres/` and `mysql/` and `value.agc`
+  and `milliseconds.agc` to `support/`; a project that imported those files directly (`pkg/db/sqlite`,
+  `pkg/db/value`) must use the new paths.
 - **Breaking:** `Postgres.Handle` and `Mysql.Handle` in `Db.Connection` are now the records `Postgres.Connection` and
   `Mysql.Connection` (the handle with the timeout of the connection and, for MySQL, the flavor of the server). Code that
   only passes the `Db.Connection` around is not affected.

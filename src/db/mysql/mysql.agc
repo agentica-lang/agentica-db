@@ -34,9 +34,9 @@
 ## x86-64). `Native.size_of`, `Native.get_struct` and `Native.put_struct` read and write them in the arrays that the
 ## library takes by pointer. `unsigned long` is a `C.Long`, which is 32 bits on Windows.
 
-import MysqlSql from "mysql_sql"
-import MysqlUrl from "mysql_url"
-import {Row, Value} from "value"
+import MysqlSql from "sql"
+import MysqlUrl from "url"
+import {Row, Value} from "../support/value"
 
 ## The statement that starts a transaction.
 export BEGIN_SQL = "START TRANSACTION"

@@ -1,39 +1,6 @@
-name = "db"
-
-# The repository is a workspace: pool/ is a package of its own (a generic resource pool, no native library) that a
-# project installs alone with `subdir = "pool"`. The members of the workspace are read from their folders by the
-# packages of this repository, so an edit there is seen by the next build.
+# The root of the repository only names the workspace; the packages are in src/. A package that is installed from
+# this repository declares its folder with `subdir` (`subdir = "src/db"`, `subdir = "src/pool"`), and the members below
+# are read from their folders by the packages of this repository, so an edit there is seen by the next build.
 [workspace]
 repository = "https://github.com/agentica-lang/agentica-db"
-members = ["pool"]
-
-# db_pool.agc is a pool of connections on the generic pool. The workspace reads it from pool/, so an edit there is seen
-# at once; outside the repository the commit below is fetched, so move it to a `pool-` tag once one exists.
-[dependencies]
-pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "476e15731eef2203b207095cf8a957d28615f1a4", subdir = "pool" }
-
-# The system SQLite; `extern "sqlite3"` in sqlite.agc opens the entry of the running system.
-[native.sqlite3]
-linux = { system = "libsqlite3.so.0" }
-macos = { system = "libsqlite3.dylib" }
-windows = { system = "winsqlite3.dll" }
-
-# The system libpq (PostgreSQL client); `extern "pq"` in postgres.agc opens the entry of the running system. A
-# macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH only: with Homebrew's libpq, run with
-# DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib".
-[native.pq]
-linux = { system = "libpq.so.5" }
-macos = { system = "libpq.5.dylib" }
-windows = { system = "libpq.dll" }
-
-# The system MariaDB Connector/C (`libmariadb.so.3`), which speaks to MySQL and MariaDB servers; `extern "mariadb"`
-# in mysql.agc opens the entry of the running system. A macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH
-# only: with Homebrew's mariadb-connector-c, run with DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib".
-[native.mariadb]
-linux = { system = "libmariadb.so.3" }
-macos = { system = "libmariadb.3.dylib" }
-windows = { system = "libmariadb.dll" }
-
-# Every bare `end` is followed by an empty line (AGENTS.md).
-[style]
-blank_line_after_end = true
+members = ["src/db", "src/pool"]

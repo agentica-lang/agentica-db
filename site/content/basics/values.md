@@ -17,7 +17,7 @@ aliases:
 | `Db.Value.Blob(Bytes)` | bytes |
 | `Db.Value.Bool(Bool)` | true or false |
 
-`Db` re-exports `Value` and `Row` of `value.agc`, so `import Db from "pkg/db/db"` is enough.
+`Db` re-exports `Value` and `Row` of `support/value.agc`, so `import Db from "pkg/db/db"` is enough.
 
 ```agentica
 import Db from "pkg/db/db"

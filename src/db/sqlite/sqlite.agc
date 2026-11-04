@@ -4,7 +4,7 @@
 ## closes it (a transaction still open is rolled back). Using a closed connection is a runtime error
 ## (`RUNTIME-NATIVE-CLOSED`).
 ##
-## `open` sets up the connection for a web app. The parameters after a `?` change it (`sqlite_url.agc` reads them):
+## `open` sets up the connection for a web app. The parameters after a `?` change it (`sqlite/url.agc` reads them):
 ## `journal_mode` (default `wal`), `foreign_keys` (default `on`), `busy_timeout` (milliseconds, default 5000) and
 ## `fts5=required` (the open fails when this SQLite has no FTS5). `sqlite:app.db?journal_mode=delete&foreign_keys=off`
 ## is SQLite's own behavior. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is, with its own
@@ -28,9 +28,9 @@
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
-import SqliteLock from "sqlite_lock"
-import SqliteUrl from "sqlite_url"
-import {Row, Value} from "value"
+import SqliteLock from "lock"
+import SqliteUrl from "url"
+import {Row, Value} from "../support/value"
 
 ## The statement that starts a transaction: IMMEDIATE takes the write lock at once, so a busy database fails at
 ## BEGIN, not in the middle of the body.

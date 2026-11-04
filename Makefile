@@ -2,14 +2,17 @@
 
 DART_SASS ?= $(HOME)/.local/opt/dart-sass
 
+# The paths of src/db that hold .agc files: the modules at its root and the folders.
+DB_PATHS = *.agc sqlite postgres mysql support orm examples specs test
+
 .PHONY: check site site-serve site-sass site-samples
 
-# Runs `agentica check` on every .agc file of the package and of its orm/, examples/, specs/ and test/ folders, and
-# of the pool member in pool/ (CI on macOS and Windows, which has no make, runs the same commands). Needs agentica on
-# PATH.
+# Runs `agentica check` on every .agc file of the db package (src/db: its modules, the folders of the adapters, orm/,
+# support/, examples/, specs/ and test/) and of the pool package in src/pool (CI on macOS and Windows, which has no
+# make, runs the same commands). Needs agentica on PATH.
 check:
-	agentica check *.agc orm examples specs test
-	cd pool && agentica check *.agc specs test
+	cd src/db && agentica check $(DB_PATHS)
+	cd src/pool && agentica check *.agc specs test
 
 site site-serve site-sass: export PATH := $(DART_SASS):$(PATH)
 

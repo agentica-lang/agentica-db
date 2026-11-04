@@ -4,7 +4,8 @@
 # A block is a whole program, and must not start a server when it has an output block. A fence that starts with
 # `agentica` but has other words, and an output block that no agentica block precedes, are failures too.
 # The packages are imported as `pkg/db/...` and `pkg/pool/...`, which this script sets up in a temporary project from
-# the files of this checkout: a manifest, a lock with the hash that the build verifies, and deps/db/ and deps/pool/.
+# the files of this checkout (the folders src/db and src/pool, the `subdir` of each package): a manifest, a lock with
+# the hash that the build verifies, and deps/db/ and deps/pool/.
 # Needs `agentica` on PATH. Usage: tools/check-site-samples.sh [CONTENT_DIR]
 set -euo pipefail
 
@@ -15,12 +16,13 @@ trap 'rm -rf "$work"' EXIT
 
 command -v agentica >/dev/null || { echo "check-site-samples: agentica is not on PATH" >&2; exit 2; }
 
-# The files of the package: the library modules, not the specs, examples or tests.
+# The files of the package (src/db): the library modules, not the specs, examples or tests.
+db_root="$root/src/db"
 mkdir -p "$work/deps/db"
-cp "$root/agentica.toml" "$root"/*.agc "$work/deps/db/"
-for folder in "$root"/*/; do
+cp "$db_root/agentica.toml" "$db_root"/*.agc "$work/deps/db/"
+for folder in "$db_root"/*/; do
   case "$(basename "$folder")" in
-    specs|test|examples|deps|build|site|tools|tmp|pool) continue ;;
+    specs|test|examples|deps|build|tmp) continue ;;
   esac
   cp -r "$folder" "$work/deps/db/$(basename "$folder")"
 done
@@ -36,9 +38,9 @@ hash="$(
   done | sha256sum | cut -d' ' -f1
 )"
 
-# The pool package is the pool/ folder, with no native library, so its manifest is not part of the hash.
+# The pool package is the src/pool folder, with no native library, so its manifest is not part of the hash.
 mkdir -p "$work/deps/pool"
-cp "$root/pool/agentica.toml" "$root"/pool/*.agc "$work/deps/pool/"
+cp "$root/src/pool/agentica.toml" "$root"/src/pool/*.agc "$work/deps/pool/"
 pool_hash="$(
   cd "$work/deps/pool"
   find . -name '*.agc' | sed 's|^\./||' | LC_ALL=C sort | while read -r file; do
@@ -47,16 +49,16 @@ pool_hash="$(
   done | sha256sum | cut -d' ' -f1
 )"
 commit="0000000000000000000000000000000000000000"
-# The db package declares the pool at a commit (agentica.toml), and one name stands for one source in a build: the
-# project and the lock must name that same commit for it.
-pool_commit="$(sed -n 's/^pool = .*ref = "\([0-9a-f]*\)".*/\1/p' "$root/agentica.toml")"
-[ -n "$pool_commit" ] || { echo "check-site-samples: no pool ref in $root/agentica.toml" >&2; exit 2; }
+# The db package declares the pool at a commit (src/db/agentica.toml), and one name stands for one source in a build:
+# the project and the lock must name that same commit for it.
+pool_commit="$(sed -n 's/^pool = .*ref = "\([0-9a-f]*\)".*/\1/p' "$db_root/agentica.toml")"
+[ -n "$pool_commit" ] || { echo "check-site-samples: no pool ref in $db_root/agentica.toml" >&2; exit 2; }
 cat > "$work/agentica.toml" <<TOML
 name = "site_samples"
 
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit" }
-pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "$pool_commit", subdir = "pool" }
+db = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit", subdir = "src/db" }
+pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "$pool_commit", subdir = "src/pool" }
 TOML
 cat > "$work/agentica.lock" <<LOCK
 version = 1
@@ -64,6 +66,7 @@ version = 1
 [[package]]
 name = "db"
 git = "https://github.com/agentica-lang/agentica-db"
+subdir = "src/db"
 ref = "$commit"
 commit = "$commit"
 hash = "sha256:$hash"
@@ -71,7 +74,7 @@ hash = "sha256:$hash"
 [[package]]
 name = "pool"
 git = "https://github.com/agentica-lang/agentica-db"
-subdir = "pool"
+subdir = "src/pool"
 ref = "$pool_commit"
 commit = "$pool_commit"
 hash = "sha256:$pool_hash"

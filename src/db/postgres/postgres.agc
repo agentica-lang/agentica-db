@@ -20,9 +20,9 @@
 ## (`23505` for a unique violation) and its primary message. A failure without a SQLSTATE (the connection is lost,
 ## `open` fails) and a bad input are `postgres error: <message>`.
 
-import PostgresSql from "postgres_sql"
-import PostgresUrl from "postgres_url"
-import {Row, Value} from "value"
+import PostgresSql from "sql"
+import PostgresUrl from "url"
+import {Row, Value} from "../support/value"
 
 ## The statement that starts a transaction.
 export BEGIN_SQL = "BEGIN"

@@ -3,6 +3,6 @@ version = 1
 [[package]]
 name = "pool"
 git = "https://github.com/agentica-lang/agentica-db"
-subdir = "pool"
+subdir = "src/pool"
 ref = "476e15731eef2203b207095cf8a957d28615f1a4"
 workspace = true

@@ -1,4 +1,4 @@
-import PostgresSql from "../postgres_sql"
+import PostgresSql from "../postgres/sql"
 
 MORE_THAN_ONE = "postgres error: the sql has more than one statement"
 NO_STATEMENT = "postgres error: the sql has no statement"

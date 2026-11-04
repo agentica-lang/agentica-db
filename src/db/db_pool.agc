@@ -22,7 +22,7 @@
 
 import Db from "db"
 import P from "pkg/pool/pool"
-import Sqlite from "sqlite"
+import Sqlite from "sqlite/sqlite"
 
 SQLITE_PREFIX = "sqlite:"
 SQLITE_URI_PREFIX = "sqlite:file:"

@@ -13,10 +13,10 @@ Add it to the `agentica.toml` of your project:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.3.0" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "TAG", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.3.0`. [Getting started](/getting-started/) has the details.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG --subdir src/db`. [Getting started](/getting-started/) has the details.
 
 A first program, on a private in-memory SQLite database:
 

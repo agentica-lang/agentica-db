@@ -1,4 +1,4 @@
-import PostgresUrl from "../postgres_url"
+import PostgresUrl from "../postgres/url"
 
 def target_of(text: String) -> PostgresUrl.Target
   return PostgresUrl.parse(text).unwrap!

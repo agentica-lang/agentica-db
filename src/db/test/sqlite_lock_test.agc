@@ -1,4 +1,4 @@
-import SqliteLock from "../sqlite_lock"
+import SqliteLock from "../sqlite/lock"
 
 def main() -> Void
   Test.run([

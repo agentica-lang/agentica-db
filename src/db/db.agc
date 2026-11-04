@@ -11,12 +11,12 @@
 ## an argument of `query` and `execute`. A statement that runs longer fails, and `timeout?` knows its message. The
 ## connection works after it.
 ##
-## One import is enough: `Db.Value` and `Db.Row` are the types of `value.agc`.
+## One import is enough: `Db.Value` and `Db.Row` are the types of `support/value.agc`.
 
-import Mysql from "mysql"
-import Postgres from "postgres"
-import Sqlite from "sqlite"
-import V from "value"
+import Mysql from "mysql/mysql"
+import Postgres from "postgres/postgres"
+import Sqlite from "sqlite/sqlite"
+import V from "support/value"
 
 export V.Row
 export V.Value
@@ -32,8 +32,8 @@ TIMEOUT_PREFIXES = ["sqlite error 9:", "postgres error 57014:", "mysql error 302
 ## The `timeout_ms` of a call that takes the one of the connection.
 export CONNECTION_DEFAULT = -1
 ## The `timeout_ms` of a call that has no limit of its own. On MySQL and MariaDB a connection opened with a url
-## `timeout_ms` still cuts it at the client backstop (see `mysql.agc`). On every database it lifts the limit of the
-## url, but not one that the server sets for the session when the url has none.
+## `timeout_ms` still cuts it at the client backstop (see `mysql/mysql.agc`). On every database it lifts the limit of
+## the url, but not one that the server sets for the session when the url has none.
 export NO_TIMEOUT = 0
 
 ## An open connection, owned by the task that opened it. Close it with `close`, or the end of the task closes it (the
@@ -79,7 +79,7 @@ end
 
 ## Opens a SQLite database file, or `:memory:`. Parameters after a `?` set `journal_mode` (default `wal`),
 ## `foreign_keys` (default `on`), `busy_timeout` in milliseconds (default 5000), `timeout_ms` (default none) and
-## `fts5=required` (see `sqlite.agc`).
+## `fts5=required` (see `sqlite/sqlite.agc`).
 export def open_sqlite(path: String) -> Result[Connection]
   handle = try Sqlite.open(path)
   return ok(Connection.Sqlite(handle))
@@ -94,7 +94,7 @@ export def open_postgres(url: String) -> Result[Connection]
 end
 
 ## Opens a MySQL or MariaDB database from a `mysql://user:password@host:3306/database` url (also `mariadb://`).
-## `timeout_ms` is a parameter of the url (see `mysql.agc`).
+## `timeout_ms` is a parameter of the url (see `mysql/mysql.agc`).
 export def open_mysql(url: String) -> Result[Connection]
   handle = try Mysql.open(url)
   return ok(Connection.Mysql(handle))
