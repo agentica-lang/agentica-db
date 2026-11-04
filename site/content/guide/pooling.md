@@ -1,6 +1,6 @@
 ---
 title: Pooling
-weight: 14
+weight: 16
 description: DbPool lends connections to a request one at a time, rolls back what a request leaves open, and replaces a connection that fails.
 ---
 

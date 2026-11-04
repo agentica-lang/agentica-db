@@ -36,7 +36,7 @@ end
 ```
 
 - [Getting started](/getting-started/) installs the package and shows the system libraries it needs.
-- The [guide](/guide/) has a page for each part: connecting, queries, values, transactions, the three databases, the ORM, pooling and testing.
+- The [guide](/guide/) has a page for each part: connecting, queries, values, transactions, the three databases, the ORM and testing.
 - The source and the changelog are [on GitHub](https://github.com/agentica-lang/agentica-db).
 
 Not yet: preloading of related rows.

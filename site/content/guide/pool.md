@@ -1,6 +1,6 @@
 ---
 title: Pool
-weight: 16
+weight: 15
 description: A generic pool of resources, its own package in the pool/ folder of this repository.
 ---
 
