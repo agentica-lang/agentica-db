@@ -1,7 +1,7 @@
 ## The SQLite adapter, through the system libsqlite3.
 ##
-## `open` gives a `Handle`, which the task that opened it owns: close it with `close`, or the end of the task
-## closes it (a transaction still open is rolled back). Using a closed handle is a runtime error
+## `open` gives a `Connection`, which the task that opened it owns: close it with `close`, or the end of the task
+## closes it (a transaction still open is rolled back). Using a closed connection is a runtime error
 ## (`RUNTIME-NATIVE-CLOSED`).
 ##
 ## `open` sets up the connection for a web app. The parameters after a `?` change it (`sqlite_url.agc` reads them):
@@ -10,6 +10,12 @@
 ## is SQLite's own behavior. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is, with its own
 ## `?` parameters (`file:app.db?mode=ro`); the defaults still apply to it. A default `wal` that a read-only database
 ## refuses is skipped (for a `file:` name, one that SQLite will not set is skipped too); an explicit one is an error.
+##
+## A statement that finds a lock held by another connection (SQLITE_BUSY, or SQLITE_LOCKED for a table of a shared
+## cache) is tried again after a short sleep until `busy_timeout` is over, then fails with that error; 0 fails at once.
+## The wait is made here and not by SQLite (SQLite's busy timeout stays 0): a `compute def` call that sleeps in
+## SQLite's busy handler holds one of the threads of the compute pool, which has one per scheduler, so the writers that
+## wait would keep the writer that holds the lock from finishing.
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
@@ -30,17 +36,38 @@ SQLITE_BLOB = 4
 # every build, whatever its default.
 OPEN_FLAGS = 70
 SQLITE_READONLY = 8
+SQLITE_BUSY = 5
+SQLITE_LOCKED = 6
+# The extended codes that mean "wait and try again": a WAL that another connection is recovering, and a table of a
+# shared cache held by another connection. SQLITE_BUSY_SNAPSHOT (517) is not one of them: the snapshot of a read
+# transaction is stale for good, and only a rollback helps.
+SQLITE_BUSY_RECOVERY = 261
+SQLITE_LOCKED_SHAREDCACHE = 262
+# The sleep between two tries starts at 1 ms, grows with the time already waited and stops at 25 ms.
+MAX_PAUSE_MS = 25
 # The length argument that means "up to the NUL" for the sql.
 NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
 TRANSIENT_DESTRUCTOR = -1
 
+## An open database and the time its statements wait for a lock.
+export struct Connection
+  handle: Handle
+  busy_timeout: Int
+end
+
+# The code of a step and whether it waited for a lock before: a statement that writes and was run again by SQLite
+# gives its rows from the start.
+struct Stepped
+  code: Int
+  waited: Bool
+end
+
 extern "sqlite3"
-  ## An open database.
-  export resource Handle, free: sqlite3_close_v2
+  resource Handle, free: sqlite3_close_v2
   resource Stmt, free: sqlite3_finalize
   compute def sqlite3_open_v2(filename: C.String, out db: Handle, flags: C.Int32, vfs: C.Pointer) -> C.Int32
-  def sqlite3_busy_timeout(db: Handle, ms: C.Int32) -> C.Int32
+  def sqlite3_extended_errcode(db: Handle) -> C.Int32
   def sqlite3_errmsg(db: Handle) -> C.String
   def sqlite3_errstr(code: C.Int32) -> C.String
   def sqlite3_changes(db: Handle) -> C.Int32
@@ -51,6 +78,7 @@ extern "sqlite3"
   compute def sqlite3_probe(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
                             out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
   compute def sqlite3_step(stmt: Stmt) -> C.Int32
+  def sqlite3_stmt_readonly(stmt: Stmt) -> C.Int32
   def sqlite3_bind_parameter_count(stmt: Stmt) -> C.Int32
   def sqlite3_bind_null(stmt: Stmt, index: C.Int32) -> C.Int32
   def sqlite3_bind_int64(stmt: Stmt, index: C.Int32, value: C.Int64) -> C.Int32
@@ -71,7 +99,7 @@ end
 ## Opens a database file, or `:memory:`; the file is created when it does not exist. A `?` ends the path and starts
 ## the settings (see the top of this file); a path that holds a `?` (as does the Windows `\\?\` prefix) cannot be
 ## opened by name, except as a `file:` URI.
-export def open(path: String) -> Result[Handle]
+export def open(path: String) -> Result[Connection]
   if has_nul?(path)
     return error("sqlite error: the path contains a NUL character")
   end
@@ -85,24 +113,25 @@ export def open(path: String) -> Result[Handle]
     return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
 
-  configured = configure(opened.db, target.settings)
+  conn = Connection(handle: opened.db, busy_timeout: target.settings.busy_timeout)
+  configured = configure(conn, target.settings)
   case configured
-    ok(_) -> return ok(opened.db)
+    ok(_) -> return ok(conn)
     error(message) ->
       Native.close(opened.db)
       return error(message)
   end
 end
 
-## Closes the handle; closing it again does nothing. Closing the last connection of a WAL database checkpoints
+## Closes the connection; closing it again does nothing. Closing the last connection of a WAL database checkpoints
 ## it, which can take a while: this call blocks the task meanwhile.
-export def close(conn: Handle) -> Void
-  Native.close(conn)
+export def close(conn: Connection) -> Void
+  Native.close(conn.handle)
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
 ## Two columns with one name are an error: alias them.
-export def query(conn: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
+export def query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
   stmt = try prepare(conn, sql, params)
   names = column_names(stmt)
   if names.uniq.size != names.size
@@ -116,9 +145,9 @@ export def query(conn: Handle, sql: String, params: List[Value]) -> Result[List[
 end
 
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
-export def execute(conn: Handle, sql: String, params: List[Value]) -> Result[Int]
+export def execute(conn: Connection, sql: String, params: List[Value]) -> Result[Int]
   stmt = try prepare(conn, sql, params)
-  before = sqlite3_total_changes(conn)
+  before = sqlite3_total_changes(conn.handle)
   # A statement that returns rows is run for its effect: its rows are stepped over, not read.
   ran = collect(conn, stmt, [], false)
   Native.close(stmt)
@@ -126,9 +155,7 @@ export def execute(conn: Handle, sql: String, params: List[Value]) -> Result[Int
   return ok(changes_since(conn, before))
 end
 
-# The busy timeout goes first: changing the journal mode needs a lock that another connection may hold.
-def configure(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
-  sqlite3_busy_timeout(conn, settings.busy_timeout)
+def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
   if settings.fts5 and not fts5?(conn)
     return error("sqlite error: this SQLite was built without FTS5 (fts5=required)")
   end
@@ -153,7 +180,7 @@ end
 # read-only file or `mode=ro`), and a `file:` URI, whose own parameters (`immutable=1`, `nolock=1`, `vfs=unix-none`)
 # can rule WAL out. A plain path that cannot take WAL (a file system without shared memory) is an error, since a web
 # app would rather stop at startup than run in another mode. An explicit journal_mode is always an error.
-def set_journal_mode(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
+def set_journal_mode(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
   mode = settings.journal_mode
   asked = query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
   case asked
@@ -182,7 +209,7 @@ def set_journal_mode(conn: Handle, settings: SqliteUrl.Settings) -> Result[Void]
 end
 
 # Tries to create an FTS5 table in the temp schema, which no file keeps.
-def fts5?(conn: Handle) -> Bool
+def fts5?(conn: Connection) -> Bool
   made = execute(conn, "CREATE VIRTUAL TABLE temp.agentica_fts5_probe USING fts5(x)", [])
   if not made.ok?
     return false
@@ -205,17 +232,17 @@ def repeated_name(names: List[String]) -> String
   return names.find do |name| counts[name] > 1 end.unwrap_or("")
 end
 
-def changes_since(conn: Handle, before: Int) -> Int
+def changes_since(conn: Connection, before: Int) -> Int
   # sqlite3_changes keeps the count of the last row-changing statement, so a statement that changed nothing
   # (a CREATE TABLE after an INSERT) must not report it.
-  if sqlite3_total_changes(conn) == before
+  if sqlite3_total_changes(conn.handle) == before
     return 0
   end
 
-  return sqlite3_changes(conn)
+  return sqlite3_changes(conn.handle)
 end
 
-def prepare(conn: Handle, sql: String, params: List[Value]) -> Result[Stmt]
+def prepare(conn: Connection, sql: String, params: List[Value]) -> Result[Stmt]
   if has_nul?(sql)
     return error("sqlite error: the sql contains a NUL character")
   end
@@ -224,7 +251,12 @@ def prepare(conn: Handle, sql: String, params: List[Value]) -> Result[Stmt]
   # lives only during the call.
   made: Result[Stmt] = Native.from_string(sql) do |buf|
     try single_statement(conn, buf)
-    prepared = sqlite3_prepare_v2(conn, buf, NUL_TERMINATED)
+    started = Time.monotonic_ms()
+    prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+    while sleep_if_locked(conn, prepared.result, started)
+      prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+    end
+
     if prepared.result != SQLITE_OK
       return error(failure(conn, prepared.result))
     end
@@ -248,8 +280,13 @@ end
 # A probe is finalized by hand right after its call. The call is a compute def: if the task is cancelled during
 # the parse, the C call still finishes but its result is dropped, so that one probe statement is never finalized
 # (an out C.Pointer is not freed on cancel, unlike an out resource). It is freed when the connection closes.
-def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
-  probe = sqlite3_probe(conn, buf, NUL_TERMINATED)
+def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
+  started = Time.monotonic_ms()
+  probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
+  while sleep_if_locked(conn, probe.result, started)
+    probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
+  end
+
   if probe.result != SQLITE_OK
     return error(failure(conn, probe.result))
   end
@@ -263,7 +300,12 @@ def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
     return ok()
   end
 
-  more = sqlite3_probe(conn, probe.tail, NUL_TERMINATED)
+  more_started = Time.monotonic_ms()
+  more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
+  while sleep_if_locked(conn, more.result, more_started)
+    more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
+  end
+
   # Text after the first statement that is only comments gives a NULL statement: still one statement.
   if more.result == SQLITE_OK and Native.null?(more.stmt)
     return ok()
@@ -276,7 +318,7 @@ def single_statement(conn: Handle, buf: C.Pointer) -> Result[Void]
   return error("sqlite error: the sql has more than one statement")
 end
 
-def bind_all(conn: Handle, stmt: Stmt, params: List[Value]) -> Result[Void]
+def bind_all(conn: Connection, stmt: Stmt, params: List[Value]) -> Result[Void]
   wanted = sqlite3_bind_parameter_count(stmt)
   if wanted != params.size
     return error("sqlite error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
@@ -345,10 +387,17 @@ def bool_int(flag: Bool) -> Int
 end
 
 # The shared step loop: every row read with the given column names, or none when `keep` is false.
-def collect(conn: Handle, stmt: Stmt, names: List[String], keep: Bool) -> Result[List[Row]]
+def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Result[List[Row]]
   rows: List[Row] = []
   while true
-    code = sqlite3_step(stmt)
+    stepped = step(conn, stmt)
+    code = stepped.code
+    # SQLite rolls a write back and runs it again after a wait (a commit refused in a rollback journal), so the rows
+    # of the first run are dropped; a read goes on from where it stopped.
+    if stepped.waited and sqlite3_stmt_readonly(stmt) == 0
+      rows = []
+    end
+
     if code == SQLITE_DONE
       return ok(rows)
     end
@@ -363,6 +412,59 @@ def collect(conn: Handle, stmt: Stmt, names: List[String], keep: Bool) -> Result
   end
 
   return ok(rows)
+end
+
+# One step, tried again while the database is locked. SQLite documents a retry for a COMMIT, which stays open after
+# SQLITE_BUSY, and for a statement outside a transaction. Inside a deferred transaction that has read, a write that
+# is refused may never succeed: the wait then ends at `busy_timeout` with the same error. `Db.transaction` begins
+# with BEGIN IMMEDIATE, so its statements never get there.
+def step(conn: Connection, stmt: Stmt) -> Stepped
+  started = Time.monotonic_ms()
+  code = sqlite3_step(stmt)
+  waited = false
+  while sleep_if_locked(conn, code, started)
+    waited = true
+    code = sqlite3_step(stmt)
+  end
+
+  return Stepped(code: code, waited: waited)
+end
+
+# Sleeps a little and gives true when `code` says that another connection holds a lock and the wait that began at
+# `started` is not over, so the caller tries again; gives false at once otherwise. The task sleeps instead of SQLite:
+# it parks, so its thread of the compute pool is free for the connection that holds the lock.
+def sleep_if_locked(conn: Connection, code: Int, started: Int) -> Bool
+  if not locked?(conn, code)
+    return false
+  end
+
+  waited = Time.monotonic_ms() - started
+  left = conn.busy_timeout - waited
+  if left <= 0
+    return false
+  end
+
+  pause = waited / 4 + 1
+  if pause > MAX_PAUSE_MS
+    pause = MAX_PAUSE_MS
+  end
+
+  if pause > left
+    pause = left
+  end
+
+  Task.sleep(pause)
+  return true
+end
+
+# The extended code tells a lock that will be let go from one that will not (the cases in the constants above).
+def locked?(conn: Connection, code: Int) -> Bool
+  if code != SQLITE_BUSY and code != SQLITE_LOCKED
+    return false
+  end
+
+  extended = sqlite3_extended_errcode(conn.handle)
+  return extended == SQLITE_BUSY or extended == SQLITE_BUSY_RECOVERY or extended == SQLITE_LOCKED_SHAREDCACHE
 end
 
 def column_names(stmt: Stmt) -> List[String]
@@ -405,8 +507,8 @@ def read_value(stmt: Stmt, col: Int) -> Value
 end
 
 # The code is the one the failed call returned; the text is SQLite's own message.
-def failure(conn: Handle, code: Int) -> String
-  return "sqlite error #{code}: #{sqlite3_errmsg(conn)}"
+def failure(conn: Connection, code: Int) -> String
+  return "sqlite error #{code}: #{sqlite3_errmsg(conn.handle)}"
 end
 
 # A NUL ends a C.String early, and the VM stops the program at the call (RUNTIME-INVALID-CHARACTER).

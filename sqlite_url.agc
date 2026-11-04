@@ -99,7 +99,8 @@ def read_settings(query: String) -> Result[Settings]
   return ok(settings)
 end
 
-# A non-empty run of ASCII digits, short enough for the C int of sqlite3_busy_timeout.
+# A non-empty run of ASCII digits, at most nine (about 11 days): a wait of that many milliseconds is far from any
+# overflow in the clock arithmetic of the retry loop.
 def read_milliseconds(text: String) -> Result[Int]
   bytes = text.bytes.to_a
   not_digits = bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end

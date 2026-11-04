@@ -116,6 +116,12 @@ struct Leave
   adapter: String
 end
 
+# The statements that a task runs in a transaction, on a connection that it opens at the url.
+struct Writer
+  url: String
+  rows: List[List[String]]
+end
+
 # A statement run in a task on a connection of its own.
 struct Fresh
   url: String
@@ -181,6 +187,9 @@ def act(state: State, req: Request) -> Handled
     "migrate" -> return reply_ok(migrate(state, req))
     "read_only" -> return reply_ok(set_access(state, expand(state, req.text), false))
     "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
+    "write_together" -> return reply_ok(write_together(state, req))
+    "execute_waiting" -> return execute_waiting(state, req)
+    "query_until_commit" -> return reply_ok(query_until_commit(state, req))
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -795,6 +804,89 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
   end
 
   return ok(last)
+end
+
+def write_in_task(job: Writer) -> Result[Void]
+  conn = try Db.open(job.url)
+  done = Db.transaction(conn) do |tx| run_rows(tx, job.rows) end
+  Db.close(conn)
+  return done
+end
+
+def run_rows(tx: Db.Connection, rows: List[List[String]]) -> Result[Void]
+  for row in rows
+    try Db.execute(tx, Cells.expand(row[0]), [])
+  end
+
+  return ok()
+end
+
+# Every task starts before the first is awaited, so they all want the write lock together. The outcome is the first
+# failure, if any.
+def write_together(state: State, req: Request) -> State
+  job = Writer(url: expand(state, req.text), rows: req.table.drop(1))
+  tasks: List[Task[Result[Void]]] = []
+  for _ in 0...req.number
+    tasks = tasks.push(Task.spawn(&write_in_task, job))
+  end
+
+  failures: List[String] = []
+  for task in tasks
+    done = Task.await(task)
+    if not done.ok?
+      failures = failures.push(done.message)
+    end
+  end
+
+  if failures.empty?
+    return recorded(state, Outcome.Done)
+  end
+
+  return failed(state, failures[0])
+end
+
+# The statement runs in a task on a connection of its own at the url, which fails: the failure is recorded for the next
+# step, and the wait that came before it must last `req.number` milliseconds at least.
+def execute_waiting(state: State, req: Request) -> Handled
+  started = Time.monotonic_ms()
+  job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
+  case Task.await(Task.spawn(&fresh_execute, job))
+    ok(_) -> return Handled(state: state, reply: "the statement did not fail")
+    error(message) ->
+      waited = Time.monotonic_ms() - started
+      if waited < req.number
+        return Handled(state: state, reply: "it failed after #{waited} ms, less than #{req.number} ms: #{message}")
+      end
+
+      return reply_ok(failed(state, message))
+  end
+end
+
+# The query runs in a task on a connection of its own while this connection, which holds a lock, commits after
+# `req.number` milliseconds: the query waits for the lock, then its rows or its failure are the outcome.
+def query_until_commit(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
+    task = Task.spawn(&fresh_query, job)
+    Task.sleep(req.number)
+    committed = Db.execute(conn, "COMMIT", [])
+    found = Task.await(task)
+    if not committed.ok?
+      return failed(state, committed.message)
+    end
+
+    case found
+      error(message) -> return failed(state, message)
+      ok(rows) -> return recorded(state, Outcome.Rows(rows))
+    end
+  end
+end
+
+def fresh_execute(job: Fresh) -> Result[Int]
+  conn = try Db.open(job.url)
+  done = Db.execute(conn, job.sql, [])
+  Db.close(conn)
+  return done
 end
 
 # A runtime error in the task ends only the task, and its await gives it as an error.

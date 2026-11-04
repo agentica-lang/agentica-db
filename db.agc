@@ -26,7 +26,7 @@ MAX_SCHEME = 16
 ## end of `main` closes one still open). Open it in the task that keeps it (usually `main`), or hand it over with
 ## `Task.spawn_owning(&f, conn)`.
 export enum Connection
-  Sqlite(Sqlite.Handle)
+  Sqlite(Sqlite.Connection)
   Postgres(Postgres.Handle)
   Mysql(Mysql.Handle)
 end
