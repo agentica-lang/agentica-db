@@ -12,6 +12,9 @@ export OK = "ok"
 ## text: the failure message of the body, empty for ok, nested: start a transaction inside it, gives: the body
 ## gives back the rows changed by its last statement, and the transaction gives that count), `close`, `migrate`
 ## (text: the history table or empty, table: header and the version, name and sql of each migration),
+## `write_together` (number: the tasks, text: a database url, table: statements; each task opens the url and runs the
+## statements in a transaction), `execute_waiting` (text: a database url, cells: the sql, number: the least time in
+## milliseconds that the failure of the statement of a task with its own connection takes),
 ## `read_only` and `writable` (text: a file), `execute_in_task`, `query_in_new_task` (text: sql), `keep_running`
 ## (text: sql, number: the longest gap in milliseconds), `leave_open` (text: connection name, number: milliseconds the
 ## server may take to drop it),

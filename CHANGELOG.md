@@ -26,6 +26,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI now tests with Agentica 0.23.0 (pinned by sha256 on every OS). The package still needs Agentica 0.18.0 or later;
   `examples/users.agc` needs a newer one: it reads the `Bytes` body of `HttpRequest` and writes the `Bytes` body of
   `HttpResponse`, which came with the 0.19.0 series. The library itself uses no HTTP type.
+- A SQLite statement that finds the database locked by another connection (or a table of a shared cache) waits by
+  sleeping in its task and trying again, up to `busy_timeout`, and not inside SQLite: concurrent write transactions
+  succeed with `AGENTICA_SCHEDULERS=1` or `2`, where they failed with `database is locked`. `PRAGMA busy_timeout` shows
+  0. `Sqlite.open` gives a `Sqlite.Connection` (a record with the handle) in place of the `Sqlite.Handle`; `Db.open` is
+  unchanged.
 
 ## [0.3.0] - 2026-10-30
 

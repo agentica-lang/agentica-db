@@ -74,7 +74,7 @@ Feature: SQLite
     When I execute "drop table t"
     Then the changed row count is 0
 
-  Scenario: A file database opens in WAL mode with foreign keys on and a 5 second busy timeout on sqlite
+  Scenario: A file database opens in WAL mode with foreign keys on on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/web.db"
     Then the query "select 1 as ok" returns:
@@ -86,22 +86,16 @@ Feature: SQLite
     And the query "pragma foreign_keys" returns:
       | foreign_keys |
       | Int 1        |
-    And the query "pragma busy_timeout" returns:
-      | timeout  |
-      | Int 5000 |
 
   Scenario: The url parameters give SQLite's own behavior back on sqlite
     Given a "sqlite" database
-    When I open "sqlite:[SCRATCH]/plain.db?journal_mode=delete&foreign_keys=off&busy_timeout=250"
+    When I open "sqlite:[SCRATCH]/plain.db?journal_mode=delete&foreign_keys=off"
     Then the query "pragma journal_mode" returns:
       | journal_mode |
       | Text delete  |
     And the query "pragma foreign_keys" returns:
       | foreign_keys |
       | Int 0        |
-    And the query "pragma busy_timeout" returns:
-      | timeout |
-      | Int 250 |
 
   Scenario: A foreign key is checked by default on sqlite
     Given a "sqlite" database
@@ -164,3 +158,45 @@ Feature: SQLite
     Then the query "select body from notes where notes match 'runs'" returns:
       | body                 |
       | Text Running quickly |
+
+  # The wait for a lock is made by the adapter, which sleeps between tries, and not by SQLite, whose busy handler
+  # would sleep on a thread of the compute pool: the pool has one thread per scheduler, so with few schedulers the
+  # waiting writers filled it and the one that held the lock could not finish. AGENTICA_SCHEDULERS is read by the
+  # program that the scenario starts, so its step comes first. In a shared cache the lock is a table lock
+  # (SQLITE_LOCKED), which the adapter waits for in the same way; the memory database lives while the connection of
+  # the scenario is open.
+  Scenario Outline: Tasks that write in transactions at once all succeed, <name>, <schedulers> scheduler(s) on sqlite
+    Given the environment variable "AGENTICA_SCHEDULERS" is "<schedulers>"
+    And a "sqlite" database
+    When I open "sqlite:<database>"
+    And I execute "create table notes (id integer primary key, writer integer not null)"
+    And 6 tasks each run these statements in a transaction on "sqlite:<database>":
+      | sql                                   |
+      | insert into notes (writer) values (1) |
+      | insert into notes (writer) values (2) |
+      | insert into notes (writer) values (3) |
+    Then it succeeds
+    And the query "select count(*) as n from notes" returns:
+      | n      |
+      | Int 18 |
+
+    Examples:
+      | name         | schedulers | database                             |
+      | file         | 1          | [SCRATCH]/writers.db                 |
+      | file         | 2          | [SCRATCH]/writers.db                 |
+      | shared cache | 1          | file:shared?mode=memory&cache=shared |
+
+  # A lock held by a connection that does not let go: the writer tries again until its busy_timeout is over, then
+  # fails with `database is locked`. A timeout of 0 does not wait.
+  Scenario Outline: A writer that cannot get a held lock fails after its busy_timeout of <ms> ms on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/a.db"
+    And I execute "create table t (x integer)"
+    And I execute "begin immediate"
+    And another task on "sqlite:[SCRATCH]/a.db?busy_timeout=<ms>" executes "insert into t values (1)" and waits <ms> ms
+    Then it fails with "sqlite error 5: database is locked"
+
+    Examples:
+      | ms  |
+      | 0   |
+      | 300 |

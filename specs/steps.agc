@@ -31,6 +31,9 @@ def main() -> Void
     BDD.step("I run these statements in a transaction that starts a transaction inside it:") do |ctx, args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), nested: true))
     end,
+    BDD.step("{int} tasks each run these statements in a transaction on {string}:") do |ctx, args|
+      send(ctx, Request(op: "write_together", number: args[0].to_i!, text: args[1], table: BDD.table(ctx)))
+    end,
     BDD.step("I migrate with:") do |ctx, args| send(ctx, Request(op: "migrate", table: BDD.table(ctx))) end,
     BDD.step("I migrate the table {string} with:") do |ctx, args|
       send(ctx, Request(op: "migrate", text: args[0], table: BDD.table(ctx)))
@@ -44,6 +47,9 @@ def main() -> Void
     BDD.step("the program opens {string}") do |ctx, args| BDD.when_line(ctx, args[0]) end,
     BDD.step("the program answers a line starting with {string}", &answers_with),
     text_step("another task executes {string}", "execute_in_task"),
+    BDD.step("another task on {string} executes {string} and waits {int} ms") do |ctx, args|
+      send(ctx, Request(op: "execute_waiting", text: args[0], cells: [args[1]], number: args[2].to_i!))
+    end,
     text_step("another task opens its own connection and queries {string}", "query_in_new_task"),
     text_step("I read people with {string}", "orm_query"),
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
