@@ -9,8 +9,9 @@
 ## 57014: canceling statement due to statement timeout`, and the connection works after it. A call with its own limit
 ## sets it before the statement and puts the limit of the connection back after it (the server's own when the url sets
 ## none), in two more round trips; a call that asks for the limit it has costs none, and so does a statement that
-## begins or ends a transaction, which runs under the limit of the session. A `timeout_ms` of 0 (`NO_TIMEOUT`) lifts
-## the limit of the url, but not one that the server sets on its own when the url has none.
+## begins or ends a transaction or is a SET, which runs under the limit of the session. A `timeout_ms` of 0
+## (`NO_TIMEOUT`) lifts the limit of the url, but not one that the server sets on its own when the url has none. A
+## `SET statement_timeout` you run yourself is undone by the put-back of the next call that has its own limit.
 ##
 ## An engine failure is `postgres error <sqlstate>: <message>`, with the five character SQLSTATE of the server
 ## (`23505` for a unique violation) and its primary message. A failure without a SQLSTATE (the connection is lost,
@@ -50,8 +51,9 @@ HEX_BASE = 16
 PQTRANS_INTRANS = 2
 PQTRANS_INERROR = 3
 PQTRANS_UNKNOWN = 4
-# The verbs of the statements that begin, end or step inside a transaction.
-TRANSACTION_VERBS = Set.new(["begin", "start", "commit", "end", "rollback", "abort", "savepoint", "release"])
+# The verbs of the statements that begin, end or step inside a transaction, and `set` (`SET TRANSACTION` fails after
+# any other statement of the transaction, 25001).
+TRANSACTION_VERBS = Set.new(["begin", "start", "commit", "end", "rollback", "abort", "savepoint", "release", "set"])
 SET_TIMEOUT_SQL = "SELECT set_config('statement_timeout', ?, false)"
 ABORTED_COMMIT_SQLSTATE = "25P02"
 ACTIVE_TRANSACTION_SQLSTATE = "25001"
@@ -192,8 +194,10 @@ end
 # Runs `body` under the limit of the call. A limit other than the session's is set before and put back after, also
 # when the body failed. A statement that controls a transaction runs under the limit of the session: a SET before a
 # BEGIN would stay out of the transaction while its put-back went in, and a ROLLBACK of an aborted transaction cannot
-# be preceded by any other statement. The put-back is not part of the result: it fails only on a lost connection (the
-# next call says so) or in a transaction that the body's failure aborted, and the rollback undoes the SET too.
+# be preceded by any other statement. The put-back is not part of the result. It runs under the short limit of the
+# call, so it can fail like any statement: on a lost connection (the next call says so), in a transaction that the
+# body's failure aborted (the rollback undoes the SET too), or on a timeout of its own; the connection then keeps the
+# limit of the call until the next put-back.
 def limited[R](conn: Connection, timeout_ms: Int, sql: String, body: Fn[Result[R]]) -> Result[R]
   if timeout_ms < 0 or timeout_ms == conn.timeout_ms or controls_transaction?(sql)
     return body.call()

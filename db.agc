@@ -32,8 +32,8 @@ TIMEOUT_PREFIXES = ["sqlite error 9:", "postgres error 57014:", "mysql error 302
 ## The `timeout_ms` of a call that takes the one of the connection.
 export CONNECTION_DEFAULT = -1
 ## The `timeout_ms` of a call that has no limit of its own. On MySQL and MariaDB a connection opened with a url
-## `timeout_ms` still cuts it at the client backstop (see `mysql.agc`); on PostgreSQL it lifts the limit of the url,
-## but not one that the server sets for the session when the url has none.
+## `timeout_ms` still cuts it at the client backstop (see `mysql.agc`). On every database it lifts the limit of the
+## url, but not one that the server sets for the session when the url has none.
 export NO_TIMEOUT = 0
 
 ## An open connection, owned by the task that opened it. Close it with `close`, or the end of the task closes it (the

@@ -10,9 +10,9 @@
 ##
 ## `timeout_ms` (a parameter of the url, and an argument of `query` and `execute`) bounds a statement on the server.
 ## The adapter reads the flavor of the server from its version at `open`. MySQL gets `max_execution_time`, which limits
-## only a SELECT: a statement that runs longer fails with `mysql error 3024`, except that MySQL 8.4 interrupts a
-## `SLEEP()` silently, with no error. A `DO` or an `INSERT` is not bounded on MySQL. MariaDB gets `max_statement_time`,
-## in seconds, which limits every statement: `mysql error 1969`.
+## only a SELECT: a statement that runs longer fails with `mysql error 3024`. A `DO` or an `INSERT` is not bounded on
+## MySQL. MariaDB gets `max_statement_time`, in seconds, which limits every statement: `mysql error 1969`. An
+## interrupted `SLEEP()` ends early without an error: `select sleep(5)` on MySQL 8.4, `DO SLEEP(20)` on MariaDB.
 ##
 ## A call with its own limit sets the variable before the statement and puts the limit of the connection back after it
 ## (the default of the server when the url sets none), in two more round trips; a call that asks for the limit it has
@@ -484,7 +484,8 @@ end
 
 # Runs `body` under the limit of the call. A limit other than the connection's is set before and put back after, also
 # when the body failed. The put-back is not part of the result: the body's own result is what the caller asked for, and
-# the put-back fails only on a lost connection, which the next call reports.
+# the put-back runs under the short limit of the call, so it can fail like any statement (a lost connection, which the
+# next call reports, or a timeout of its own), and the connection then keeps the limit of the call until the next one.
 def limited[R](conn: Connection, timeout_ms: Int, body: Fn[Result[R]]) -> Result[R]
   if timeout_ms < 0 or timeout_ms == conn.timeout_ms
     return body.call()

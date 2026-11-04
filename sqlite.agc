@@ -491,6 +491,14 @@ end
 
 # The shared step loop: every row read with the given column names, or none when `keep` is false.
 def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Result[List[Row]]
+  # An interrupt that came between the prepare and the first step is lost (SQLite ignores one while no statement
+  # runs), so the deadline is read here. Later steps are left to the interrupt: a statement that SQLite stopped is
+  # rolled back by SQLite, which a return from here would skip (a write with RETURNING does its work in the
+  # first step).
+  if conn.deadline > 0 and Time.monotonic_ms() >= conn.deadline
+    return error(failure(conn, SQLITE_INTERRUPT))
+  end
+
   rows: List[Row] = []
   while true
     stepped = step(conn, stmt)
@@ -522,12 +530,6 @@ end
 # is not tried again (`upgrade?`).
 def step(conn: Connection, stmt: Stmt) -> Stepped
   started = Time.monotonic_ms()
-  # An interrupt that came between the prepare and the first step is lost (SQLite ignores one while no statement runs),
-  # so the deadline is read here.
-  if conn.deadline > 0 and started >= conn.deadline
-    return Stepped(code: SQLITE_INTERRUPT, waited: false)
-  end
-
   code = sqlite3_step(stmt)
   waited = false
   while lock_wait?(conn, code, started) and not upgrade?(conn, stmt)

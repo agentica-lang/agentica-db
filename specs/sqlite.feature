@@ -272,3 +272,23 @@ Feature: SQLite
     And I execute "create table t (x integer)"
     And another task on "sqlite:[SCRATCH]/deadline.db?journal_mode=delete" holds the write lock for 1500 ms while I query "select x from t"
     Then it fails with a timeout
+
+  # SQLite does all the work of a write with RETURNING in the first step, and rolls it back when it is interrupted
+  # while the rows are read; the adapter must not return early on a later step and leave the write behind.
+  Scenario: A write with RETURNING that times out is rolled back, in autocommit and in a transaction on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?timeout_ms=400"
+    And I execute "create table t (x integer)"
+    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 300000) select x from c returning x"
+    Then it fails with a timeout
+    And the connection is not in a transaction
+    And the query "select count(*) as n from t" returns:
+      | n     |
+      | Int 0 |
+    When I execute "begin"
+    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 300000) select x from c returning x"
+    Then it fails with a timeout
+    And the connection is not in a transaction
+    And the query "select count(*) as n from t" returns:
+      | n     |
+      | Int 0 |
