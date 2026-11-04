@@ -111,3 +111,33 @@ Feature: Checkout
     Then the count "flood_failed" is 0
     And the count "probe_peak" is 2
     And the count "made" is 2
+
+  Scenario: A steady load over size does not make and end an overflow resource for every request
+    Given a pool with:
+      | setting          | value |
+      | size             | 1     |
+      | max_overflow     | 1     |
+      | overflow_idle_ms | 3000  |
+    When job "A" keeps taking a resource for 1000 ms
+    And job "B" keeps taking a resource for 1000 ms
+    And I wait for the jobs
+    Then the count "made" is 2
+    And the count "terminated" is 0
+    And the count "loop_failed" is 0
+    And the count "terminated" reaches 1 within 6000 ms
+
+  Scenario: A resource made for a caller that gave up is ended once the spike is over
+    Given a pool with:
+      | setting          | value |
+      | size             | 1     |
+      | max_overflow     | 1     |
+      | overflow_idle_ms | 100   |
+      | checkout_ms      | 100   |
+      | slow_init_at     | 2     |
+      | slow_init_ms     | 400   |
+    When job "A" holds a resource for 800 ms
+    And job "B" holds a resource for 10 ms
+    And I wait for the jobs
+    Then job "B" fails with a pool timeout
+    And the count "made" is 2
+    And the count "terminated" reaches 1 within 3000 ms

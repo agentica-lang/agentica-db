@@ -16,7 +16,9 @@ CONTROL_SIZE = 16_384
 START_MS = 60_000
 HOOK_MS = 5_000
 SEND_MS = 5_000
-POLL_MS = 200
+POLL_MS = 500
+CHECKOUT_SLACK_MS = 500
+MAX_RESOURCES = 1_048_576
 REPLY_GRACE_MS = 5_000
 CLOSE_GRACE_MS = 2_000
 CANCEL_GRACE_MS = 20
@@ -29,6 +31,8 @@ WAITING = "waiting"
 NEXT_ID = "next_id"
 NEXT_JOB = "next_job"
 CLOSED = "closed"
+# A key of the counters per failed `init`: the text after the prefix is its error. Only the last one is kept.
+INIT_ERROR = "init failed: "
 
 CLOSED_ERROR = "pool error: closed"
 OWNER_ENDED_ERROR = "pool error: owner task ended"
@@ -53,10 +57,11 @@ end
 ## `checkin` decides.
 ##
 ## `size` resources are kept. In a spike the pool makes up to `max_overflow` more (so `size + max_overflow` is the
-## most that exist) and ends one of them as soon as it is given back and no other caller needs it, so the pool shrinks
-## back to `size`. A `lazy` pool makes its resources when callers need them. `max_age_ms` and `idle_ms` need
-## `health_ms` (the health tick is what applies them) and 0 turns each off; `idle_ms` needs a lazy pool, since an
-## eager pool would make a new resource at once.
+## most that exist). When a spike is over, an overflow resource that nobody needs stays for `overflow_idle_ms` and is
+## ended if it is still idle then (0 ends it as soon as it is given back), so the pool shrinks back to `size` and a
+## steady load a little over `size` does not make and end a resource for every request. A `lazy` pool makes its
+## resources when callers need them. `max_age_ms` and `idle_ms` need `health_ms` (the health tick is what applies
+## them) and 0 turns each off; `idle_ms` needs a lazy pool, since an eager pool would make a new resource at once.
 export struct Spec[A, W]
   config: A
   init: Fn[A, Result[W]]
@@ -65,6 +70,7 @@ export struct Spec[A, W]
   ping: Fn[W, Result[Void]]
   size: Int = 10
   max_overflow: Int = 0
+  overflow_idle_ms: Int = 1_000
   checkout_ms: Int = 5_000
   lease_ms: Int = 30_000
   max_age_ms: Int = 0
@@ -91,6 +97,12 @@ type Job[W] = Fn[Offer[W], Result[Void]]
 enum Offer[W]
   Grant(W)
   Deny(String)
+end
+
+# What a caller hears from its job: the body started, then its result (or an error without a start).
+enum Event[R]
+  Started
+  Finished(Result[R])
 end
 
 # What the callers and the lease tasks tell the owner. They go through `control`, which jobs cannot fill: a job
@@ -127,10 +139,9 @@ struct Chans[W]
   control: Channel[Msg[W]]
   idle: Channel[Slot[W]]
   ready: Channel[Result[Void]]
-  notes: Channel[String]
 end
 
-# What every task of the pool shares. `notes` holds the last error of `init`, if the last `init` failed.
+# What every task of the pool shares.
 struct Core[A, W]
   spec: Spec[A, W]
   counts: ATS[String, Int]
@@ -138,7 +149,6 @@ struct Core[A, W]
   control: Channel[Msg[W]]
   idle: Channel[Slot[W]]
   ready: Channel[Result[Void]]
-  notes: Channel[String]
 end
 
 struct Lease[A, W]
@@ -148,13 +158,15 @@ struct Lease[A, W]
 end
 
 # The owner's state: the resources it holds, by slot id, and the jobs and lease tasks that have not ended. `failure`
-# is why the last `init` failed, and `retry_at_ms` is when to try again (0: no failure waits).
+# is why the last `init` failed, and `retry_at_ms` is when to try again (0: no failure waits). `trim_at_ms` is when to
+# end the overflow resources that are idle and not needed (0: none waits).
 struct Owned[W]
   workers: Map[Int, W]
   jobs: Map[Int, Job[W]]
   leases: Map[Int, Task[Void]]
   failure: String
   retry_at_ms: Int
+  trim_at_ms: Int
   health: Optional[Task[Void]]
   next_tick_ms: Int
   closing: Optional[Closing]
@@ -170,18 +182,12 @@ export def start[A, W](spec: Spec[A, W]) -> Result[Pool[A, W]]
   control: Channel[Msg[W]] = Channel.new(CONTROL_SIZE)
   idle: Channel[Slot[W]] = Channel.new(spec.size + spec.max_overflow)
   ready: Channel[Result[Void]] = Channel.new(1)
-  notes: Channel[String] = Channel.new(1)
-  chans = Chans(jobs: jobs, control: control, idle: idle, ready: ready, notes: notes)
+  chans = Chans(jobs: jobs, control: control, idle: idle, ready: ready)
   counts: ATS[String, Int] = ATS.new()
   owner = spawn_owner(chans) do |owned| own(spec, counts, owned) end
   started = chans.ready.recv(START_MS)
   if not started.ok?
-    Task.cancel(owner)
-    if chans.ready.closed?
-      return error("pool error: owner task ended during the start")
-    end
-
-    return error("pool error: start timed out after #{START_MS} ms")
+    return error(abandon_start(chans, counts, owner))
   end
 
   try try started
@@ -190,22 +196,22 @@ end
 
 ## Runs the body with a resource of the pool and gives its result. The body runs in a task of the pool, so a crash
 ## in it is an `error` here, and the resource is checked in with the outcome. Other errors: `pool error: checkout
-## timed out after N ms` (with the last error of `init`, if the pool could not make a resource),
-## `pool error: lease timed out after N ms` (the body ran longer than `lease_ms`), `pool error: queue full`
-## (`max_waiting` callers wait already), `pool error: closed` and `pool error: owner task ended`. A caller that gave
-## up on a job (an error above) never has its body run later.
+## timed out after N ms` (the caller waited that long for a resource, with the last error of `init` if the pool could
+## not make one, even when the owner is busy in a slow `init`), `pool error: lease timed out after N ms` (the body
+## ran longer than `lease_ms`), `pool error: queue full` (`max_waiting` callers wait already), `pool error: closed`
+## and `pool error: owner task ended`. A caller that got an error never has its body run later.
 export def with[A, W, R](pool: Pool[A, W], body: Fn[W, Result[R]]) -> Result[R]
   if pool.counts.has_key?(CLOSED)
     return error(CLOSED_ERROR)
   end
 
-  reply: Channel[Result[R]] = Channel.new(1)
-  sent = enqueue(pool) do |offer| answer(reply, body, offer) end
+  events: Channel[Event[R]] = Channel.new(2)
+  sent = enqueue(pool) do |offer| answer(events, body, offer) end
   if not sent.ok?
     return error(refusal(pool))
   end
 
-  return await_reply(pool, reply)
+  return await_start(pool, events)
 end
 
 ## Refuses new jobs, lets the running ones and the ones in line finish for up to `drain_ms`, fails the rest with
@@ -217,7 +223,7 @@ export def close[A, W](pool: Pool[A, W], drain_ms: Int) -> Void
 
   done: Channel[Bool] = Channel.new(1)
   closing = Closing(drain_ms: [drain_ms, 0].max.unwrap!, done: done)
-  if pool.control.send(Msg.Stop(closing), CLOSE_GRACE_MS).ok?
+  if send_stop(pool, closing)
     done.recv(closing.drain_ms + CLOSE_GRACE_MS + CANCEL_GRACE_MS)
   end
 
@@ -241,18 +247,19 @@ def enqueue[A, W](pool: Pool[A, W], job: Job[W]) -> Result[Void]
   return ok()
 end
 
-# Runs inside the job. A caller that gave up has closed `reply`: its body must not run. The runner always ends with
+# Runs inside the job. A caller that gave up has closed `events`: its body must not run. The runner always ends with
 # `ok`, so an error of the runner is the VM's: a crash or a cancel.
-def answer[W, R](reply: Channel[Result[R]], body: Fn[W, Result[R]], offer: Offer[W]) -> Result[Void]
+def answer[W, R](events: Channel[Event[R]], body: Fn[W, Result[R]], offer: Offer[W]) -> Result[Void]
   case offer
     Offer.Grant(worker) ->
-      if not reply.closed?
-        reply.send(body.call(worker), SEND_MS)
+      if not events.closed?
+        events.send(Event.Started, 0)
+        events.send(Event.Finished(body.call(worker)), SEND_MS)
       end
 
       return ok()
     Offer.Deny(message) ->
-      reply.send(error(message), 0)
+      events.send(Event.Finished(error(message)), 0)
       return ok()
   end
 end
@@ -274,32 +281,90 @@ def closed_reason[A, W](pool: Pool[A, W]) -> String
   return OWNER_ENDED_ERROR
 end
 
-# Waits for the result in slices, so that the end of the owner (a crash, or a close) is noticed at once.
-def await_reply[A, W, R](pool: Pool[A, W], reply: Channel[Result[R]]) -> Result[R]
-  wait_ms = pool.spec.checkout_ms + pool.spec.lease_ms + REPLY_GRACE_MS
-  deadline = Time.monotonic_ms() + wait_ms
+# Waits for the body to start for as long as `checkout_ms` (and a little more, so that the lease task's own error,
+# which says why, comes first when the owner is alive), in slices, so that the end of the owner (a crash, or a close)
+# is noticed. A caller that gives up closes `events`, so its body never runs.
+def await_start[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result[R]
+  deadline = Time.monotonic_ms() + pool.spec.checkout_ms + CHECKOUT_SLACK_MS
   while Time.monotonic_ms() < deadline
-    case reply.recv(POLL_MS)
-      ok(result) -> return result
+    case events.recv((deadline - Time.monotonic_ms()).clamp(1, POLL_MS))
+      ok(event) ->
+        case event
+          Event.Started -> return await_finish(pool, events)
+          Event.Finished(result) -> return result
+        end
+
       error(_) ->
         if pool.jobs.closed?
-          return last_reply(pool, reply)
+          return last_event(pool, events)
         end
     end
   end
 
-  reply.close
-  return error("pool error: no reply after #{wait_ms} ms")
+  events.close
+  return error("#{CHECKOUT_TIMEOUT} after #{pool.spec.checkout_ms} ms#{init_error(pool.counts)}")
+end
+
+# Waits for the result of the body that started: `lease_ms`, and a moment for the lease task to answer.
+def await_finish[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result[R]
+  wait_ms = pool.spec.lease_ms + REPLY_GRACE_MS
+  deadline = Time.monotonic_ms() + wait_ms
+  while Time.monotonic_ms() < deadline
+    case events.recv((deadline - Time.monotonic_ms()).clamp(1, POLL_MS))
+      ok(event) ->
+        case event
+          Event.Started -> next
+          Event.Finished(result) -> return result
+        end
+
+      error(_) ->
+        if pool.jobs.closed?
+          return last_event(pool, events)
+        end
+    end
+  end
+
+  events.close
+  return error("#{LEASE_TIMEOUT} after #{wait_ms} ms")
 end
 
 # The owner ended: a close denies the jobs just after it closes `jobs`, so give that a moment.
-def last_reply[A, W, R](pool: Pool[A, W], reply: Channel[Result[R]]) -> Result[R]
-  case reply.recv(CLOSE_GRACE_MS)
-    ok(result) -> return result
+def last_event[A, W, R](pool: Pool[A, W], events: Channel[Event[R]]) -> Result[R]
+  case events.recv(CLOSE_GRACE_MS)
+    ok(event) ->
+      case event
+        Event.Started -> return last_event(pool, events)
+        Event.Finished(result) -> return result
+      end
+
     error(_) ->
-      reply.close
+      events.close
       return error(closed_reason(pool))
   end
+end
+
+# The Stop of `close` is never dropped: it waits for room in `control` until the owner is gone.
+def send_stop[A, W](pool: Pool[A, W], closing: Closing) -> Bool
+  while not pool.control.closed?
+    if pool.control.send(Msg.Stop(closing), SEND_MS).ok?
+      return true
+    end
+  end
+
+  return false
+end
+
+# The start did not finish in time: the owner is asked to end the resources it made and stop (it does at its next
+# step), and is cancelled if it does not.
+def abandon_start[W](chans: Chans[W], counts: ATS[String, Int], owner: Task[Void]) -> String
+  if chans.ready.closed?
+    return "pool error: owner task ended during the start"
+  end
+
+  counts.put_new(CLOSED, 1)
+  chans.ready.recv(CLOSE_GRACE_MS)
+  Task.cancel(owner)
+  return "pool error: start timed out after #{START_MS} ms"
 end
 
 def check_spec[A, W](spec: Spec[A, W]) -> Result[Void]
@@ -307,12 +372,25 @@ def check_spec[A, W](spec: Spec[A, W]) -> Result[Void]
     return error("pool error: size must be at least 1, got #{spec.size}")
   end
 
+  if spec.size + spec.max_overflow > MAX_RESOURCES
+    return error("pool error: size + max_overflow cannot be more than #{MAX_RESOURCES}")
+  end
+
   if spec.checkout_ms < 1 or spec.lease_ms < 1
     return error("pool error: checkout_ms and lease_ms must be at least 1")
   end
 
-  if spec.max_overflow < 0 or spec.max_age_ms < 0 or spec.idle_ms < 0 or spec.max_waiting < 0 or spec.health_ms < 0
-    return error("pool error: max_overflow, max_age_ms, idle_ms, max_waiting and health_ms cannot be negative")
+  if (
+    spec.max_overflow < 0 or
+    spec.overflow_idle_ms < 0 or
+    spec.max_age_ms < 0 or
+    spec.idle_ms < 0 or
+    spec.max_waiting < 0 or
+    spec.health_ms < 0
+  )
+    return error(
+      "pool error: max_overflow, overflow_idle_ms, max_age_ms, idle_ms, max_waiting and health_ms cannot be negative",
+    )
   end
 
   if (spec.max_age_ms > 0 or spec.idle_ms > 0) and spec.health_ms == 0
@@ -335,13 +413,12 @@ def own[A, W](spec: Spec[A, W], counts: ATS[String, Int], chans: Chans[W]) -> Vo
     control: chans.control,
     idle: chans.idle,
     ready: chans.ready,
-    notes: chans.notes,
   )
 
   made = top_up(core, fresh(core))
-  if not made.failure.empty?
+  if not made.failure.empty? or core.counts.has_key?(CLOSED)
     end_all(core, made)
-    core.ready.send(error(made.failure), SEND_MS)
+    core.ready.send(error(start_error(made)), SEND_MS)
     return
   end
 
@@ -352,6 +429,14 @@ def own[A, W](spec: Spec[A, W], counts: ATS[String, Int], chans: Chans[W]) -> Vo
   end
 end
 
+def start_error[W](made: Owned[W]) -> String
+  if made.failure.empty?
+    return "pool error: start abandoned"
+  end
+
+  return made.failure
+end
+
 def fresh[A, W](core: Core[A, W]) -> Owned[W]
   return Owned(
     workers: {},
@@ -359,6 +444,7 @@ def fresh[A, W](core: Core[A, W]) -> Owned[W]
     leases: {},
     failure: "",
     retry_at_ms: 0,
+    trim_at_ms: 0,
     health: none,
     next_tick_ms: Time.monotonic_ms() + core.spec.health_ms,
     closing: none,
@@ -378,11 +464,19 @@ end
 
 def wait_ms[A, W](core: Core[A, W], state: Owned[W]) -> Int
   now = Time.monotonic_ms()
-  until = state.next_tick_ms
+  until = now + MAX_WAIT_MS
   if state.closing.some?
     until = state.deadline_ms
-  elsif state.retry_at_ms > 0 and live(core) < wanted(core, state)
+  elsif core.spec.health_ms > 0
+    until = state.next_tick_ms
+  end
+
+  if state.retry_at_ms > 0 and live(core) < wanted(core, state) and state.retry_at_ms < until
     until = state.retry_at_ms
+  end
+
+  if state.trim_at_ms > 0 and state.trim_at_ms < until
+    until = state.trim_at_ms
   end
 
   return (until - now).clamp(1, MAX_WAIT_MS)
@@ -393,7 +487,7 @@ def handle[A, W](core: Core[A, W], state: Owned[W], msg: Msg[W]) -> Owned[W]
     Msg.Wake -> return state
     Msg.Back(release) -> return take_back(core, state, release)
     Msg.Drop(slot) -> return replace(core, state, slot)
-    Msg.GaveUp(job_id) -> return trim(core, forget(state, job_id))
+    Msg.GaveUp(job_id) -> return schedule_trim(core, forget(state, job_id))
     Msg.Stop(closing) -> return state.with(closing: some(closing), deadline_ms: Time.monotonic_ms() + closing.drain_ms)
   end
 end
@@ -414,8 +508,8 @@ def take_jobs[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
   return current
 end
 
-# A new job: make a resource first when the pool is lazy (or in a spike) and every one is taken, then start its lease
-# task.
+# A new job: start its lease task, which times out on its own, then make a resource if the pool is lazy (or in a
+# spike) and every one is taken. A slow `init` holds the owner, not the clock of the lease task.
 def admit[A, W](core: Core[A, W], state: Owned[W], job: Job[W]) -> Owned[W]
   if state.closing.some?
     job.call(Offer.Deny(CLOSED_ERROR))
@@ -423,24 +517,28 @@ def admit[A, W](core: Core[A, W], state: Owned[W], job: Job[W]) -> Owned[W]
   end
 
   job_id = core.counts.add(NEXT_JOB, 1)
-  grown = top_up(core, state.with(jobs: state.jobs.put(job_id, job)))
   lease_fn: Fn[Lease[A, W], Void] = &lease
   task = Task.spawn(lease_fn, Lease(core: core, job_id: job_id, job: job))
-  return grown.with(leases: grown.leases.put(job_id, task))
+  waiting = state.with(jobs: state.jobs.put(job_id, job), leases: state.leases.put(job_id, task))
+  return top_up(core, waiting)
 end
 
-# A lease task ended: the resource goes back to the line, or is ended and replaced. A resource that the spike made
-# is ended when no other job needs it.
+# A lease task ended: the resource goes back to the line, or is ended and replaced. A resource beyond `size` that no
+# job needs goes back to the line too, and is ended later if it is still idle (`overflow_idle_ms`).
 def take_back[A, W](core: Core[A, W], state: Owned[W], release: Release[W]) -> Owned[W]
   slot = release.slot
   ended = forget(state, release.job_id)
   now = Time.monotonic_ms()
-  if release.keep and state.workers.key?(slot.id) and not aged?(core.spec, slot, now) and not surplus?(core, ended)
-    core.idle.send(slot.with(idle_since_ms: now), 0)
-    return ended
+  if not release.keep or not state.workers.key?(slot.id) or aged?(core.spec, slot, now)
+    return replace(core, ended, slot)
   end
 
-  return replace(core, ended, slot)
+  if surplus?(core, ended) and core.spec.overflow_idle_ms == 0
+    return replace(core, ended, slot)
+  end
+
+  core.idle.send(slot.with(idle_since_ms: now), 0)
+  return schedule_trim(core, ended)
 end
 
 # Ends a resource and makes another in its place if the pool wants one.
@@ -454,17 +552,43 @@ def replace[A, W](core: Core[A, W], state: Owned[W], slot: Slot[W]) -> Owned[W]
   return top_up(core, state.with(workers: state.workers.delete(slot.id)))
 end
 
-# Ends the idle resources that no job needs and that are beyond `size`: the spike is over.
+# Plans to end the idle overflow resources `overflow_idle_ms` from now, unless a plan waits already.
+def schedule_trim[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
+  if not surplus?(core, state) or state.trim_at_ms > 0
+    return state
+  end
+
+  if core.spec.overflow_idle_ms == 0
+    return trim(core, state)
+  end
+
+  return state.with(trim_at_ms: Time.monotonic_ms() + core.spec.overflow_idle_ms)
+end
+
+# Ends the idle resources beyond what the jobs need and `size` that have been idle for `overflow_idle_ms`. A resource
+# that the health check holds is not in `idle`; the plan is made again, so it is looked at when it is back.
 def trim[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
-  current = state
-  while surplus?(core, current)
+  current = state.with(trim_at_ms: 0)
+  now = Time.monotonic_ms()
+  left = live(core)
+  while left > 0 and surplus?(core, current)
+    left -= 1
     case core.idle.recv(0)
-      error(_) -> return current
-      ok(slot) -> current = replace(core, current, slot)
+      error(_) -> left = 0
+      ok(slot) ->
+        if now - slot.idle_since_ms >= core.spec.overflow_idle_ms
+          current = replace(core, current, slot)
+        else
+          core.idle.send(slot, 0)
+        end
     end
   end
 
-  return current
+  if core.spec.overflow_idle_ms == 0
+    return current
+  end
+
+  return schedule_trim(core, current)
 end
 
 def surplus?[A, W](core: Core[A, W], state: Owned[W]) -> Bool
@@ -488,11 +612,11 @@ end
 def add_worker[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
   case core.spec.init.call(core.spec.config)
     error(message) ->
-      core.notes.recv(0)
-      core.notes.send(message, 0)
+      forget_init_error(core.counts)
+      core.counts.put_new("#{INIT_ERROR}#{message}", 1)
       return state.with(failure: message, retry_at_ms: Time.monotonic_ms() + INIT_RETRY_MS)
     ok(worker) ->
-      core.notes.recv(0)
+      forget_init_error(core.counts)
       id = core.counts.add(NEXT_ID, 1)
       now = Time.monotonic_ms()
       core.counts.add(LIVE, 1)
@@ -504,7 +628,7 @@ end
 # An eager pool keeps `size` resources, a lazy one the resources it has made, and both grow with the jobs that have
 # not ended up to `size + max_overflow`.
 def wanted[A, W](core: Core[A, W], state: Owned[W]) -> Int
-  if state.closing.some?
+  if state.closing.some? or core.counts.has_key?(CLOSED)
     return live(core)
   end
 
@@ -533,11 +657,19 @@ def after[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
   end
 
   topped = top_up(core, state)
-  if core.spec.health_ms == 0 or now < topped.next_tick_ms
-    return topped
+  if topped.trim_at_ms > 0 and now >= topped.trim_at_ms
+    return after_trim(core, trim(core, topped), now)
   end
 
-  return health_tick(core, topped, now)
+  return after_trim(core, topped, now)
+end
+
+def after_trim[A, W](core: Core[A, W], state: Owned[W], now: Int) -> Owned[W]
+  if core.spec.health_ms == 0 or now < state.next_tick_ms
+    return state
+  end
+
+  return health_tick(core, state, now)
 end
 
 def health_tick[A, W](core: Core[A, W], state: Owned[W], now: Int) -> Owned[W]
@@ -700,7 +832,7 @@ def wait_for[A, W](core: Core[A, W]) -> Result[Slot[W]]
   case got
     ok(slot) -> return ok(slot)
     error(_) if core.idle.closed? -> return error(closed_message(core))
-    error(_) -> return error("#{CHECKOUT_TIMEOUT} after #{core.spec.checkout_ms} ms#{init_error(core)}")
+    error(_) -> return error("#{CHECKOUT_TIMEOUT} after #{core.spec.checkout_ms} ms#{init_error(core.counts)}")
   end
 end
 
@@ -713,12 +845,21 @@ def closed_message[A, W](core: Core[A, W]) -> String
 end
 
 # The error of the last `init`, when it failed, for the caller that waited in vain.
-def init_error[A, W](core: Core[A, W]) -> String
-  case core.notes.recv(0)
-    error(_) -> return ""
-    ok(message) ->
-      core.notes.send(message, 0)
-      return " (the last init failed: #{message})"
+def init_error(counts: ATS[String, Int]) -> String
+  for key in counts.keys
+    if key.start_with?(INIT_ERROR)
+      return " (the last init failed: #{key.slice(INIT_ERROR.size, key.size - INIT_ERROR.size)})"
+    end
+  end
+
+  return ""
+end
+
+def forget_init_error(counts: ATS[String, Int]) -> Void
+  for key in counts.keys
+    if key.start_with?(INIT_ERROR)
+      counts.delete(key)
+    end
   end
 end
 

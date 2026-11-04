@@ -13,9 +13,11 @@ JOB_GAP_MS = 40
 WAIT_JOBS_MS = 10_000
 POLL_MS = 20
 HANG_MS = 60_000
+LOOP_NAP_MS = 5
 SETTING_NAMES = [
-  "size", "max_overflow", "checkout_ms", "lease_ms", "max_age_ms", "idle_ms", "max_waiting", "lazy", "health_ms",
-  "keep_dirty", "bad_ping_id", "init_fails_from", "init_crashes_at", "slow_init_at", "slow_init_ms",
+  "size", "max_overflow", "overflow_idle_ms", "checkout_ms", "lease_ms", "max_age_ms", "idle_ms", "max_waiting",
+  "lazy", "health_ms", "keep_dirty", "bad_ping_id", "init_fails_from", "init_crashes_at", "slow_init_at",
+  "slow_init_ms",
 ]
 
 # The resource of the pool.
@@ -127,6 +129,7 @@ def spec_of(driver: Driver, table: List[List[String]]) -> Result[Pool.Spec[Fake,
     base.with(
       size: try settings.get("size", base.size.to_s).to_i,
       max_overflow: try settings.get("max_overflow", "0").to_i,
+      overflow_idle_ms: try settings.get("overflow_idle_ms", base.overflow_idle_ms.to_s).to_i,
       checkout_ms: try settings.get("checkout_ms", base.checkout_ms.to_s).to_i,
       lease_ms: try settings.get("lease_ms", base.lease_ms.to_s).to_i,
       max_age_ms: try settings.get("max_age_ms", "0").to_i,
@@ -359,6 +362,10 @@ def ping(cell: Cell) -> Result[Void]
 end
 
 def run_job(args: JobArgs) -> Void
+  if args.kind == "loops"
+    return loop_job(args)
+  end
+
   result = Pool.with(args.pool) do |cell| use(args, cell) end
   if args.name.empty?
     if not result.ok?
@@ -374,6 +381,25 @@ def run_job(args: JobArgs) -> Void
   end
 end
 
+# A caller that takes a resource again and again for `ms` milliseconds, as a busy server does. `loop_failed` counts
+# the errors.
+def loop_job(args: JobArgs) -> Void
+  deadline = Time.monotonic_ms() + args.ms
+  while Time.monotonic_ms() < deadline
+    result = Pool.with(args.pool) do |cell| nap(cell) end
+    if not result.ok?
+      args.stats.add("loop_failed", 1)
+    end
+  end
+
+  args.finished.send("#{args.name} ok 0", 1_000)
+end
+
+def nap(cell: Cell) -> Result[Int]
+  Task.sleep(LOOP_NAP_MS)
+  return ok(cell.id)
+end
+
 # The body of a job: it holds the cell, crashes, fails or hangs. `peak` is the most cells in use at once; the `probe`
 # jobs count in `probe_peak` instead, so that a check can ignore the jobs that came before them.
 def use(args: JobArgs, cell: Cell) -> Result[Int]
@@ -382,6 +408,7 @@ def use(args: JobArgs, cell: Cell) -> Result[Int]
     prefix = "probe_"
   end
 
+  args.stats.add("body_ran", 1)
   active = args.stats.add("#{prefix}active", 1)
   if active > args.stats.get("#{prefix}peak").unwrap_or(0)
     args.stats.put("#{prefix}peak", active)

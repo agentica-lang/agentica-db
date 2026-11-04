@@ -65,14 +65,15 @@ ended worker 2
 The other fields of the `Spec`, all in milliseconds unless noted, with their defaults:
 
 - `size` (10): how many resources. With `lazy: true` (false) they are made when a caller needs one.
-- `max_overflow` (0): in a spike the pool makes up to this many resources more, so `size + max_overflow` is the most that exist. An overflow resource is ended when it is given back and no other caller needs it, so the pool shrinks back to `size`.
+- `max_overflow` (0): in a spike the pool makes up to this many resources more, so `size + max_overflow` is the most that exist (at most 1048576 in all).
+- `overflow_idle_ms` (1000): an overflow resource that no caller needs stays this long and is ended if it is still idle then, so the pool shrinks back to `size`, and a steady load a little over `size` does not make and end a resource for every request. 0 ends it as soon as it is given back.
 - `checkout_ms` (5000): how long a caller waits for a resource.
 - `lease_ms` (30000): how long a body may run. A body past it is cancelled and its caller gets an error.
 - `max_age_ms` (0) and `idle_ms` (0): a resource older than `max_age_ms` is ended and replaced; one unused for `idle_ms` is ended (`idle_ms` needs `lazy: true`, since an eager pool would make a new one at once). 0 turns the rule off. Both need `health_ms`, which applies them.
 - `max_waiting` (1000): how many callers may wait for a resource at once.
 - `health_ms` (5000): the interval of the health tick, which pings the idle resources and applies `max_age_ms` and `idle_ms`. 0 turns the tick off.
 
-The errors are `pool error: checkout timed out after N ms` (with the last error of `init` when the pool could not make a resource), `pool error: lease timed out after N ms`, `pool error: queue full`, `pool error: closed` and `pool error: owner task ended`. `Pool.timeout?(message)` is true for the first two. A caller that got an error never has its body run later. A failed `init` is tried again after a second, not for every job.
+The errors are `pool error: checkout timed out after N ms` (with the last error of `init` when the pool could not make a resource), `pool error: lease timed out after N ms`, `pool error: queue full`, `pool error: closed` and `pool error: owner task ended`. `Pool.timeout?(message)` is true for the first two. A caller that got an error never has its body run later, and a caller waits for a resource no longer than `checkout_ms` (and half a second more), also while the owner is busy in a slow `init`. A failed `init` is tried again after a second, not for every job, and the callers that time out meanwhile see its error.
 
 `Pool.close(pool, drain_ms)` refuses new callers, lets the running bodies and the callers in line finish for up to `drain_ms`, fails the rest with `pool error: closed`, ends every resource and stops the pool.
 

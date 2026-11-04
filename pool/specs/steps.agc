@@ -23,6 +23,9 @@ def main() -> Void
     BDD.step("{int} callers each take a resource and give it back at once") do |ctx, args|
       send(ctx, Request(op: "flood", number: args[0].to_i!))
     end,
+    BDD.step("job {string} keeps taking a resource for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "job", name: args[0], kind: "loops", number: args[1].to_i!))
+    end,
     job_step("job {string} crashes", "crashes"),
     job_step("job {string} returns an error", "fails"),
     job_step("job {string} never returns", "hangs"),
