@@ -53,6 +53,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   were a rollback journal and foreign keys off). A file database stays in WAL mode once opened. Add
   `?journal_mode=delete&foreign_keys=off` to the url for the old behavior. The default `busy_timeout` stays 5000 ms. A
   WAL that a read-only database refuses is skipped when the url did not name a journal mode.
+- **Breaking (default change):** a SQLite connection now also opens with the pragmas of Rails 8: `synchronous=normal`
+  when the database is in WAL mode (SQLite's own `full` in any other mode), `mmap_size=134217728`, `cache_size=2000`
+  (pages) and `journal_size_limit=67108864`. `synchronous=normal` in WAL does not sync the WAL file at each commit, so
+  a power loss or an OS crash (not a crash of the process) can lose the last commits, but never corrupts the database.
+  Add `?synchronous=full` to the url for the old durability, and `?mmap_size=0&cache_size=-2000&journal_size_limit=-1`
+  for SQLite's own values of the others. The new url parameters are `synchronous` (`off`, `normal`, `full`, `extra`),
+  `mmap_size`, `cache_size` and `journal_size_limit`; a bad value is a `sqlite error: ...`. `Db.transaction` already
+  began with `BEGIN IMMEDIATE`, which is unchanged.
 - **Breaking:** a `?` in a SQLite path now starts the parameters, so `a?b.db`, `q.db?` and the Windows `\\?\C:\...`
   prefix are no longer file names (`sqlite:file:a%3fb.db` is). A parameter that is not known is an error.
 - CI now tests with Agentica 0.24.1 (pinned by sha256 on every OS), four test files at once. The package still needs

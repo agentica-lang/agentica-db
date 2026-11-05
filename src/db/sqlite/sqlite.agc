@@ -5,7 +5,9 @@
 ## (`RUNTIME-NATIVE-CLOSED`).
 ##
 ## `open` sets up the connection for a web app. The parameters after a `?` change it (`sqlite/url.agc` reads them):
-## `journal_mode` (default `wal`), `foreign_keys` (default `on`), `busy_timeout` (milliseconds, default 5000) and
+## `journal_mode` (default `wal`), `foreign_keys` (default `on`), `busy_timeout` (milliseconds, default 5000),
+## `synchronous` (default `normal` in WAL, SQLite's `full` in other modes), `mmap_size` (134217728 bytes),
+## `cache_size` (2000 pages) and `journal_size_limit` (67108864 bytes), the pragmas of Rails 8, and
 ## `fts5=required` (the open fails when this SQLite has no FTS5). `sqlite:app.db?journal_mode=delete&foreign_keys=off`
 ## is SQLite's own behavior. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is, with its own
 ## `?` parameters (`file:app.db?mode=ro`); the defaults still apply to it. A default `wal` that a read-only database
@@ -278,7 +280,29 @@ def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
 
   # Set in both cases: a build can turn foreign keys on by default.
   try run_execute(conn, "PRAGMA foreign_keys = #{on_off(settings.foreign_keys)}", [])
-  try set_journal_mode(conn, settings)
+  mode = try set_journal_mode(conn, settings)
+  try set_synchronous(conn, settings, mode)
+  try run_query(conn, "PRAGMA mmap_size = #{settings.mmap_size}", [])
+  try run_query(conn, "PRAGMA cache_size = #{settings.cache_size}", [])
+  try run_query(conn, "PRAGMA journal_size_limit = #{settings.journal_size_limit}", [])
+  return ok()
+end
+
+# NORMAL in WAL does not sync the WAL file at each commit, only at a checkpoint: a power loss (not a crash of the
+# process) can lose the last commits, but never corrupts the database. That is why it is the default only there; in
+# the other modes SQLite's own FULL stays, and a url that names the level always wins. `mode` is the journal mode in
+# force, empty when it is not known (a database that cannot be written, which has nothing to sync).
+def set_synchronous(conn: Connection, settings: SqliteUrl.Settings, mode: String) -> Result[Void]
+  level = settings.synchronous
+  if level.empty? and mode == "wal"
+    level = "normal"
+  end
+
+  if level.empty?
+    return ok()
+  end
+
+  try run_execute(conn, "PRAGMA synchronous = #{level.upcase}", [])
   return ok()
 end
 
@@ -295,14 +319,15 @@ end
 # best effort in two cases, so a url that worked before still opens: a database that cannot be written (code 8: a
 # read-only file or `mode=ro`), and a `file:` URI, whose own parameters (`immutable=1`, `nolock=1`, `vfs=unix-none`)
 # can rule WAL out. A plain path that cannot take WAL (a file system without shared memory) is an error, since a web
-# app would rather stop at startup than run in another mode. An explicit journal_mode is always an error.
-def set_journal_mode(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
+# app would rather stop at startup than run in another mode. An explicit journal_mode is always an error. It gives
+# the mode in force (empty when the pragma was skipped).
+def set_journal_mode(conn: Connection, settings: SqliteUrl.Settings) -> Result[String]
   mode = settings.journal_mode
   asked = run_query(conn, "PRAGMA journal_mode = #{mode.upcase}", [])
   case asked
     error(message) ->
       if not settings.journal_given and message.start_with?("sqlite error #{SQLITE_READONLY}:")
-        return ok()
+        return ok("")
       end
 
       return error(message)
@@ -320,7 +345,7 @@ def set_journal_mode(conn: Connection, settings: SqliteUrl.Settings) -> Result[V
         return error("sqlite error: journal_mode #{mode} could not be set, the database is in #{answer} mode")
       end
 
-      return ok()
+      return ok(answer)
   end
 end
 
