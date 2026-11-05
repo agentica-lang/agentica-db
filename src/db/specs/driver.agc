@@ -36,7 +36,10 @@ WORK_SQL = {
 SESSION_POLL_MS = 50
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 SQLITE_MEMORY = "sqlite::memory:"
-SCRATCH_ROOT = "../tmp"
+# The folder of a driver that runs without the steps (by hand); a scenario always has its own.
+SCRATCH_DEFAULT = "../tmp/scratch"
+# The variable that steps.agc sets to the folder of the scenario (see `[SCRATCH]`).
+SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"
 CARRY_ON = "carry on"
 TICKS = 40
 TICK_MS = 20
@@ -176,8 +179,8 @@ struct Hold
 end
 
 def main() -> Void
-  # The runner never closes the input of the driver, so the folder of a scenario that ended stays until the next
-  # scenario starts: scenarios run one at a time, and each starts from nothing.
+  # The folder is the scenario's own (see `scratch_dir`): this removes it if it exists, so a driver that runs alone
+  # starts from nothing.
   clean_scratch()
   state = State(conns: [], pools: [], adapter: "", last: Outcome.Nothing, checked: true)
   line = IO.gets
@@ -341,7 +344,7 @@ def address(without_scheme: String) -> String
 end
 
 def scratch_dir() -> String
-  return "#{SCRATCH_ROOT}/scratch"
+  return System.env(SCRATCH_VARIABLE).unwrap_or(SCRATCH_DEFAULT)
 end
 
 # The sql of a step: [SLOW] and [WORK] are the statements of the adapter, then the markers of a cell.
