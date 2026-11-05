@@ -36,10 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- SQLite keeps a cache of prepared statements on each connection (64 by default; the url parameter
-  `statement_cache`, 0 turns it off): a query that runs again no longer parses and plans its sql again, and a
-  statement is prepared once, not twice. In a benchmark of 10,000 selects by primary key a run takes about half the
-  time.
+- SQLite prepares each statement once: `Db.query` and `Db.execute` used to parse the sql twice (a probe to refuse a second statement, then the statement itself). A run of 10,000 selects takes about a fifth less time.
 - **Breaking:** the packages moved to `src/db` and `src/pool`, and the root of the repository is only a workspace.
   A project that depends on `db` must name the folder: `db = { git = "https://github.com/agentica-lang/agentica-db",
   tag = "TAG", subdir = "src/db" }` (or `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG

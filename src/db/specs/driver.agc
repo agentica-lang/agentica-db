@@ -34,7 +34,6 @@ WORK_SQL = {
   "mysql": "select 1 as n from dual where sleep(0.6) = 0",
 }
 SESSION_POLL_MS = 50
-FILE_POLL_MS = 20
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 SQLITE_MEMORY = "sqlite::memory:"
 # The folder of a driver that runs without the steps (by hand); a scenario always has its own.
@@ -259,9 +258,6 @@ def act(state: State, req: Request) -> Handled
     "query_while_locked" -> return query_while_locked(state, req)
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
-    "drop_connection" -> return drop_connection(state, req.text)
-    "note_open_files" -> return note_open_files(state)
-    "open_files_back" -> return open_files_back(state, req.number)
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
     "keep_running" -> return keep_running(state, req.text, req.number)
@@ -1290,66 +1286,6 @@ def execute_in_task(state: State, sql: String) -> State
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
-end
-
-# The task opens the url, uses the connection twice (the second use is a cached statement) and ends without closing it.
-def open_use_and_leave(job: Fresh) -> Result[Int]
-  conn = try Db.open(job.url)
-  try Db.query(conn, job.sql, [])
-  try Db.query(conn, job.sql, [])
-  return ok(0)
-end
-
-def drop_connection(state: State, url: String) -> Handled
-  job = Fresh(url: expand(state, url), sql: "select 1 as v")
-  if job.url.include?(scratch_dir())
-    _ = Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
-  end
-
-  case Task.await(Task.spawn(&open_use_and_leave, job))
-    error(message) -> return Handled(state: state, reply: message)
-    ok(_) -> return reply_ok(state)
-  end
-end
-
-# The number of files the process has open, which a connection that SQLite could not close (a statement left
-# unfinalized) keeps up. -1 where there is no way to count them (Windows).
-def open_file_count() -> Int
-  if System.os() == "windows"
-    return -1
-  end
-
-  folder = "/dev/fd"
-  if System.os() == "linux"
-    folder = "/proc/self/fd"
-  end
-
-  names: List[String] = Dir.list(folder, IO_TIMEOUT_MS).unwrap_or([])
-  return names.size
-end
-
-# The count goes to a file of the scenario: a step program keeps nothing between steps, and the state is the driver's.
-def note_open_files(state: State) -> Handled
-  _ = Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
-  case File.write_text("#{scratch_dir()}/open_files", "#{open_file_count()}", IO_TIMEOUT_MS)
-    error(message) -> return Handled(state: state, reply: message)
-    ok(_) -> return reply_ok(state)
-  end
-end
-
-# The files the process has open come back to the noted number within `limit_ms`.
-def open_files_back(state: State, limit_ms: Int) -> Handled
-  noted = File.read_text("#{scratch_dir()}/open_files", IO_TIMEOUT_MS).unwrap_or("-1").to_i.unwrap_or(-1)
-  started = Time.monotonic_ms()
-  while noted >= 0 and open_file_count() > noted
-    if Time.monotonic_ms() - started >= limit_ms
-      return Handled(state: state, reply: "#{open_file_count()} files are open, #{noted} were before")
-    end
-
-    Task.sleep(FILE_POLL_MS)
-  end
-
-  return reply_ok(state)
 end
 
 def fresh_query(job: Fresh) -> Result[List[Db.Row]]

@@ -26,15 +26,6 @@
 ## first step does not run at all, so nothing is rolled back and the transaction stays open. The watchdog is awaited
 ## before the call returns, so an interrupt never reaches the next statement.
 ##
-## Each connection keeps up to `statement_cache` prepared statements (64 by default; a url parameter, 0 for none), by
-## the exact text of the sql, so a statement that runs again is not parsed and planned again. A task of its own, the
-## keeper, owns them: a statement dies with its preparing task, and a connection of a pool is used by a new task for
-## each block. The keeper is a child of the task that opened the connection, so it ends with it, and its statements
-## with it; `close` ends them first. A call takes a statement from the keeper and gives it back reset and with no
-## bindings, also after a failure. A statement that runs is not in the cache, so a second call for the same sql
-## (another task on the same connection) gets a statement of its own, which is cached when it comes back if the sql has
-## no idle one.
-##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
 import SqliteLock from "lock"
@@ -60,81 +51,22 @@ SQLITE_INTERRUPT = 9
 # The state of a connection with a read transaction open, for `sqlite3_txn_state`, which SQLite has since 3.34.0
 # (3034000 for `sqlite3_libversion_number`). A system library that is older never says it, and the write is waited for.
 SQLITE_TXN_READ = 1
-# `sqlite3_stmt_status` counter of the times SQLite prepared a statement again by itself (a schema change).
-STMTSTATUS_REPREPARE = 5
 TXN_STATE_VERSION = 3_034_000
 # The sleep between two tries starts at 1 ms, grows with the time already waited and stops at 25 ms.
 MAX_PAUSE_MS = 25
 # The length argument that means "up to the NUL" for the sql.
 NUL_TERMINATED = -1
-# The start of the error of a result with two columns of one name: its statement is not kept.
-DUPLICATE_COLUMNS = "sqlite error: the result has the column"
-# How long the keeper waits for a message before it looks whether the connection is still open (the end of the task
-# that opened it closes it, with no word to the keeper), how long a caller waits to hand it one, and how long a caller
-# waits after a busy connection's own time for the answer (the keeper may be preparing for a lock).
-KEEPER_POLL_MS = 50
-SEND_MS = 5_000
-ANSWER_SLACK_MS = 10_000
-# The size of the queue of the keeper: a call has at most two messages in it.
-INBOX_SIZE = 256
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
 TRANSIENT_DESTRUCTOR = -1
 
 ## An open database, the time its statements wait for a lock, and the limit of a statement (0: none). `handle` is
 ## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
 ## opaque and pass the `Connection` around. `deadline` is set only on the copy that a bounded call works with.
-## `inbox` is the queue of the keeper of the statement cache, which holds `cache_limit` statements at most.
 export struct Connection
   handle: Handle
   busy_timeout: Int
-  inbox: Channel[Msg]
-  cache_limit: Int
   timeout_ms: Int = 0
   deadline: Int = 0
-end
-
-# What a call says to the keeper of the statement cache of a connection. `Take` (connection, sql, reply) asks for a
-# statement for the sql and gets it on the reply channel; `Give` (id, sql, keep) hands one back (`keep` false: it
-# is not
-# fit for another use); `Shut` (reply) finalizes every statement, whoever holds it, and says so on its channel.
-enum Msg
-  Take(Connection, String, Channel[Result[Granted]])
-  Give(Int, String, Bool)
-  Shut(Channel[Bool])
-end
-
-# A statement the keeper lends, with the id it knows it by, and whether it was just prepared (the names of its columns
-# are then current, which a statement of the cache has to check after its first step).
-struct Granted
-  id: Int
-  stmt: Stmt
-  fresh: Bool
-end
-
-# What a call works with: a statement of the keeper (`cached`, with its id) or one of its own, which it closes.
-struct Held
-  stmt: Stmt
-  id: Int
-  cached: Bool
-  fresh: Bool
-end
-
-# What the keeper starts with.
-struct Keeping
-  inbox: Channel[Msg]
-  limit: Int
-  handle: Handle
-end
-
-# What the keeper knows: the statements nobody holds, by sql (`idle`, with `order` oldest first), and every statement
-# it made and has not finalized (`all`), by id, because a statement that a cancelled call held is in neither of the
-# first two and still has to be finalized at the end.
-struct Shelf
-  limit: Int
-  idle: Map[String, Int]
-  order: List[String]
-  all: Map[Int, Stmt]
-  next_id: Int
 end
 
 # What the watchdog of a bounded call needs.
@@ -167,9 +99,6 @@ extern "sqlite3"
   compute def sqlite3_probe(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
                             out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
   compute def sqlite3_step(stmt: Stmt) -> C.Int32
-  def sqlite3_reset(stmt: Stmt) -> C.Int32
-  def sqlite3_clear_bindings(stmt: Stmt) -> C.Int32
-  def sqlite3_stmt_status(stmt: Stmt, op: C.Int32, reset: C.Int32) -> C.Int32
   def sqlite3_stmt_readonly(stmt: Stmt) -> C.Int32
   def sqlite3_libversion_number() -> C.Int32
   def sqlite3_txn_state(db: Handle, schema: C.Pointer) -> C.Int32
@@ -207,32 +136,24 @@ export def open(path: String) -> Result[Connection]
     return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
 
-  inbox: Channel[Msg] = Channel.new(INBOX_SIZE)
   conn = Connection(
     handle: opened.db,
     busy_timeout: target.settings.busy_timeout,
-    inbox: inbox,
-    cache_limit: 0,
     timeout_ms: target.settings.timeout_ms,
   )
 
-  # The setup statements run once: they go without the cache, and so without its keeper.
   configured = configure(conn, target.settings)
   case configured
-    ok(_) -> return ok(start_cache(conn, target.settings.statement_cache))
+    ok(_) -> return ok(conn)
     error(message) ->
       Native.close(opened.db)
       return error(message)
   end
 end
 
-## Closes the connection, after its cached statements; closing it again does nothing. Closing the last connection of a
-## WAL database checkpoints it, which can take a while: this call blocks the task meanwhile.
+## Closes the connection; closing it again does nothing. Closing the last connection of a WAL database checkpoints
+## it, which can take a while: this call blocks the task meanwhile.
 export def close(conn: Connection) -> Void
-  if conn.cache_limit > 0 and not Native.closed?(conn.handle)
-    shut_cache(conn)
-  end
-
   Native.close(conn.handle)
 end
 
@@ -282,51 +203,27 @@ export def healthy?(conn: Connection) -> Bool
   return run_query(conn, "SELECT 1", []).ok?
 end
 
-# `try` leaves only before the statement is held: from there every path ends in `release`.
 def run_query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
-  held = try acquire(conn, sql, params)
-  rows = query_statement(conn, held)
-  release(conn, sql, held, not duplicate_columns?(rows))
+  stmt = try prepare(conn, sql, params)
+  names = column_names(stmt)
+  if names.uniq.size != names.size
+    Native.close(stmt)
+    return error("sqlite error: the result has the column #{repeated_name(names)} twice, alias one of them")
+  end
+
+  rows = collect(conn, stmt, names, true)
+  Native.close(stmt)
   return rows
 end
 
-# A statement just prepared has its columns checked before it runs, so that a statement that would give two columns
-# one name does not run (it may write: `insert ... returning`). A statement of the cache was checked when it was
-# prepared, and `collect` checks it again when SQLite prepared it again since.
-def query_statement(conn: Connection, held: Held) -> Result[List[Row]]
-  names = column_names(held.stmt)
-  if held.fresh
-    try unique_names(names)
-  end
-
-  return collect(conn, held.stmt, names, true)
-end
-
 def run_execute(conn: Connection, sql: String, params: List[Value]) -> Result[Int]
-  held = try acquire(conn, sql, params)
+  stmt = try prepare(conn, sql, params)
   before = sqlite3_total_changes(conn.handle)
   # A statement that returns rows is run for its effect: its rows are stepped over, not read.
-  ran = collect(conn, held.stmt, [], false)
-  release(conn, sql, held, true)
+  ran = collect(conn, stmt, [], false)
+  Native.close(stmt)
   try ran
   return ok(changes_since(conn, before))
-end
-
-def unique_names(names: List[String]) -> Result[Void]
-  if names.uniq.size != names.size
-    return error("#{DUPLICATE_COLUMNS} #{repeated_name(names)} twice, alias one of them")
-  end
-
-  return ok()
-end
-
-# A statement whose columns have one name twice is finalized, not kept: when the schema changes it must be prepared
-# again, and SQLite would not do it by itself for a statement that never got to run.
-def duplicate_columns?(rows: Result[List[Row]]) -> Bool
-  case rows
-    ok(_) -> return false
-    error(message) -> return message.start_with?(DUPLICATE_COLUMNS)
-  end
 end
 
 # Runs `body` with the limit of the call. With a limit, a watchdog task interrupts the statement when the time is over
@@ -461,195 +358,22 @@ def changes_since(conn: Connection, before: Int) -> Int
   return sqlite3_changes(conn.handle)
 end
 
-# A statement for `sql` with `params` bound: one of the cache, or a new one.
-def acquire(conn: Connection, sql: String, params: List[Value]) -> Result[Held]
+def prepare(conn: Connection, sql: String, params: List[Value]) -> Result[Stmt]
   if has_nul?(sql)
     return error("sqlite error: the sql contains a NUL character")
   end
 
-  held = try take(conn, sql)
-  bound = bind_all(conn, held.stmt, params)
+  # The sql goes through an owned buffer, not a C.String: SQLite points `tail` into its copy, and a C.String copy
+  # lives only during the call.
+  made: Result[Stmt] = Native.from_string(sql) do |buf| prepare_buffer(conn, buf) end
+  stmt = try made
+  bound = bind_all(conn, stmt, params)
   case bound
-    ok(_) -> return ok(held)
+    ok(_) -> return ok(stmt)
     error(message) ->
-      release(conn, sql, held, true)
+      Native.close(stmt)
       return error(message)
   end
-end
-
-# Asks the keeper for a statement. A connection without a cache, a closed one (the call that follows stops with the
-# runtime error of a closed handle, as it always did) and a keeper that does not answer get a statement of their own.
-def take(conn: Connection, sql: String) -> Result[Held]
-  if conn.cache_limit == 0 or Native.closed?(conn.handle)
-    return own_statement(conn, sql)
-  end
-
-  reply: Channel[Result[Granted]] = Channel.new(1)
-  sent = conn.inbox.send(Msg.Take(conn, sql, reply), SEND_MS)
-  if not sent.ok?
-    return own_statement(conn, sql)
-  end
-
-  answer = reply.recv(conn.busy_timeout + ANSWER_SLACK_MS)
-  case answer
-    error(_) -> return own_statement(conn, sql)
-    ok(granted) ->
-      case granted
-        error(message) -> return error(message)
-        ok(lent) -> return ok(Held(stmt: lent.stmt, id: lent.id, cached: true, fresh: lent.fresh))
-      end
-  end
-end
-
-def own_statement(conn: Connection, sql: String) -> Result[Held]
-  stmt = try prepare_new(conn, sql)
-  return ok(Held(stmt: stmt, id: 0, cached: false, fresh: true))
-end
-
-# Ends a call's use of a statement. A statement of the keeper is reset (which also stops one that is half way through
-# its rows, after a failed step or a deadline) and loses its bindings before it goes back; `keep` false has it
-# finalized. A statement of the call's own is finalized. A statement the connection's close has finalized already is
-# left alone.
-def release(conn: Connection, sql: String, held: Held, keep: Bool) -> Void
-  if Native.closed?(held.stmt)
-    return
-  end
-
-  if not held.cached
-    Native.close(held.stmt)
-    return
-  end
-
-  sqlite3_reset(held.stmt)
-  sqlite3_clear_bindings(held.stmt)
-  _ = conn.inbox.send(Msg.Give(held.id, sql, keep), SEND_MS)
-end
-
-# Starts the keeper, a child of the task that opens the connection. The `Connection` that gives its statements a limit
-# is the one that is returned.
-def start_cache(conn: Connection, limit: Int) -> Connection
-  if limit == 0
-    return conn
-  end
-
-  _ = Task.spawn(&keep, Keeping(inbox: conn.inbox, limit: limit, handle: conn.handle))
-  return conn.with(cache_limit: limit)
-end
-
-# Has the keeper finalize every statement and waits for it, so that SQLite closes the connection at once and not when
-# the last statement is finalized. A keeper that is busy preparing is waited for as long as a prepare can last.
-def shut_cache(conn: Connection) -> Void
-  reply: Channel[Bool] = Channel.new(1)
-  sent = conn.inbox.send(Msg.Shut(reply), SEND_MS)
-  if sent.ok?
-    _ = reply.recv(conn.busy_timeout + ANSWER_SLACK_MS)
-  end
-end
-
-# The keeper: one task for the statements of a connection, which owns them all. It serves one message at a time, so
-# the statements need no lock, and what it owns is finalized by the end of the task, whatever ends it.
-def keep(args: Keeping) -> Void
-  shelf = Shelf(limit: args.limit, idle: {}, order: [], all: {}, next_id: 1)
-  running = true
-  while running
-    case args.inbox.recv(KEEPER_POLL_MS)
-      error(_) ->
-        # The statements have to go before SQLite can close a connection whose task has ended.
-        if Native.closed?(args.handle) or (args.inbox.closed? and args.inbox.empty?)
-          finalize_all(shelf)
-          running = false
-        end
-
-      ok(msg) ->
-        case msg
-          Msg.Take(conn, sql, reply) -> shelf = lend(shelf, conn, sql, reply)
-          Msg.Give(id, sql, keepit) -> shelf = shelve(shelf, id, sql, keepit)
-          Msg.Shut(reply) ->
-            finalize_all(shelf)
-            _ = reply.send(true, SEND_MS)
-            running = false
-        end
-    end
-  end
-end
-
-# Lends the idle statement of the sql, or prepares a new one. A new statement is the keeper's own, whoever asked.
-def lend(shelf: Shelf, conn: Connection, sql: String, reply: Channel[Result[Granted]]) -> Shelf
-  idle_id = shelf.idle.get(sql)
-  case idle_id
-    some(id) ->
-      _ = reply.send(ok(Granted(id: id, stmt: shelf.all[id], fresh: false)), SEND_MS)
-      return shelf.with(idle: shelf.idle.delete(sql), order: shelf.order.select do |kept| kept != sql end)
-
-    none -> return lend_new(shelf, conn, sql, reply)
-  end
-end
-
-def lend_new(shelf: Shelf, conn: Connection, sql: String, reply: Channel[Result[Granted]]) -> Shelf
-  # The connection may have been closed since the caller looked: a prepare would stop the keeper.
-  if Native.closed?(conn.handle)
-    _ = reply.send(error("sqlite error: the connection is closed"), SEND_MS)
-    return shelf
-  end
-
-  made = prepare_new(conn, sql)
-  case made
-    error(message) ->
-      _ = reply.send(error(message), SEND_MS)
-      return shelf
-
-    ok(stmt) ->
-      id = shelf.next_id
-      _ = reply.send(ok(Granted(id: id, stmt: stmt, fresh: true)), SEND_MS)
-      return shelf.with(all: shelf.all.put(id, stmt), next_id: id + 1)
-  end
-end
-
-# Takes a statement back: idle, as the newest, unless it is not fit or the sql has an idle one already (two calls ran
-# it at once), in which case it is finalized. The oldest idle statements over the limit are finalized.
-def shelve(shelf: Shelf, id: Int, sql: String, keepit: Bool) -> Shelf
-  if not shelf.all.key?(id)
-    return shelf
-  end
-
-  if not keepit or shelf.idle.key?(sql)
-    Native.close(shelf.all[id])
-    return shelf.with(all: shelf.all.delete(id))
-  end
-
-  idle = shelf.idle.put(sql, id)
-  order = shelf.order.push(sql)
-  return evict(shelf.with(idle: idle, order: order))
-end
-
-def evict(shelf: Shelf) -> Shelf
-  current = shelf
-  while current.idle.size > current.limit
-    oldest = current.order[0]
-    id = current.idle[oldest]
-    Native.close(current.all[id])
-    current = current.with(
-      idle: current.idle.delete(oldest),
-      order: current.order.drop(1),
-      all: current.all.delete(id),
-    )
-  end
-
-  return current
-end
-
-# Closing a statement that a call is stepping is the runtime's business: the free waits for the call to return.
-def finalize_all(shelf: Shelf) -> Void
-  for stmt in shelf.all.values
-    Native.close(stmt)
-  end
-end
-
-# A new statement for the one statement in `sql`, owned by the task that calls. The sql goes through an owned buffer,
-# not a C.String: SQLite points `tail` into its copy, and a C.String copy lives only during the call.
-def prepare_new(conn: Connection, sql: String) -> Result[Stmt]
-  made: Result[Stmt] = Native.from_string(sql) do |buf| prepare_buffer(conn, buf) end
-  return made
 end
 
 # Prepares the first statement in the buffer, waiting for a lock like a step does, and refuses a second one. SQLite
@@ -683,7 +407,7 @@ end
 # The text after the first statement must hold none. It is tried with an out pointer, where NULL can be told, and the
 # probe is finalized by hand right after its call. The call is a compute def: if the task is cancelled during the
 # parse, the C call still finishes but its result is dropped, so that one probe statement is never finalized (an out
-# C.Pointer is not freed on cancel, unlike an out resource). SQLite frees it when the connection closes.
+# C.Pointer is not freed on cancel, unlike an out resource). It is freed when the connection closes.
 def no_more_statements(conn: Connection, tail: C.Pointer) -> Result[Void]
   if Native.get_string(tail, 0) == ""
     return ok()
@@ -785,8 +509,6 @@ def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Re
   end
 
   rows: List[Row] = []
-  columns = names
-  checked = false
   while true
     stepped = step(conn, stmt)
     code = stepped.code
@@ -805,24 +527,11 @@ def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Re
     end
 
     if keep
-      # A statement of the cache that SQLite prepared again at its first step (a schema change since its last use) may
-      # have other columns than the ones read before the step.
-      if not checked and reprepared?(stmt)
-        columns = column_names(stmt)
-        try unique_names(columns)
-      end
-
-      checked = true
-      rows = rows.push(read_row(stmt, columns))
+      rows = rows.push(read_row(stmt, names))
     end
   end
 
   return ok(rows)
-end
-
-# Whether SQLite has prepared the statement again since the last time this asked.
-def reprepared?(stmt: Stmt) -> Bool
-  return sqlite3_stmt_status(stmt, STMTSTATUS_REPREPARE, 1) > 0
 end
 
 # One step, tried again while the database is locked. SQLite documents a retry for a COMMIT, which stays open after

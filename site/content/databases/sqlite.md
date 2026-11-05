@@ -38,7 +38,6 @@ A connection is set up for a web app. The parameters after a `?` change the sett
 | `foreign_keys` | `on`, `off` | `on` |
 | `busy_timeout` | milliseconds, 0 or more | `5000` |
 | `timeout_ms` | milliseconds, the limit of each statement | none |
-| `statement_cache` | a number of statements, 0 for none | `64` |
 | `fts5` | `required` | not checked |
 
 ```agentica
@@ -73,10 +72,6 @@ true
 `timeout_ms` (a url parameter, or the `timeout_ms` argument of `Db.query` and `Db.execute`: `-1` takes the connection's, `0` has none) ends a statement that runs longer. A watchdog task calls `sqlite3_interrupt` when the time is over, and the statement fails with `sqlite error 9: interrupted`; `Db.timeout?(message)` tells it from other failures. The connection works after it. The wait for a lock (`busy_timeout`) ends at the same deadline and fails the same way.
 
 SQLite rolls back the whole transaction when it interrupts a write inside one, the earlier writes of the transaction included: `Db.in_transaction?(conn)` is then `false`. `Db.transaction` sends its `ROLLBACK` only when the transaction is still open, so its error is the timeout alone. A read that times out leaves the transaction open, and so does a statement whose time ran out before its first step: it does not run, so nothing is rolled back.
-
-### Prepared statements
-
-A connection keeps up to `statement_cache` prepared statements, by the exact text of the sql, so a query that runs again on it is not parsed and planned again (`select ... where id = ?` with another id is the same statement). Values are always bound, so a statement is reused with any parameters. A task of its own, started by `open` as a child of the task that opens the connection, owns the statements: a statement belongs to the task that prepared it and is finalized when that task ends, and a connection of `DbPool` is used by a new task for each block. A statement that runs is not in the cache, so a second call for the same sql (another task on the same connection) prepares its own statement. A statement goes back reset and without its bindings, also after a failure, and the oldest one is finalized when the cache is full. SQLite prepares a statement again by itself when the schema changed (`ALTER TABLE`, `DROP TABLE`), and the columns of the result are read again after it. `Db.close` finalizes every statement of the connection, also the one a cancelled call was using, so SQLite closes the database and its files at once. A connection that is only dropped (its task ends without `close`) is closed as before; its statements are finalized within about 50 ms, the time the keeper takes to see that the connection is gone. `statement_cache=0` turns the cache off and starts no task.
 
 ### SQLite URIs
 

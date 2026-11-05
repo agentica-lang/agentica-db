@@ -97,11 +97,6 @@ def main() -> Void
       send(ctx, Request(op: "execute_waiting", text: args[0], cells: [args[1]], number: args[2].to_i!))
     end,
     text_step("another task opens its own connection and queries {string}", "query_in_new_task"),
-    text_step("a task opens {string}, queries twice and ends without closing it", "drop_connection"),
-    plain_step("I note the open files of the process", "note_open_files"),
-    BDD.step("the open files of the process are back to the noted ones within {int} ms") do |ctx, args|
-      send(ctx, Request(op: "open_files_back", number: args[0].to_i!))
-    end,
     text_step("I read people with {string}", "orm_query"),
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
     BDD.step("I read partial people with {string}") do |ctx, args|
