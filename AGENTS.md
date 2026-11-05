@@ -40,12 +40,16 @@ that moves a folder, move the `ref` (and the lock) to its merge commit.
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
+  Developing and testing the package needs Agentica 0.24.1 or later (`agentica test --jobs`); the minimum for a
+  project that uses the package is the one in the README, and stays 0.18.0.
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
   itself). `make check` (from the root) runs `agentica check *.agc sqlite postgres mysql support orm examples specs
   test` there, which is every `.agc` file of the package. `agentica fmt --check` on the same paths (CI runs it;
   `agentica fmt` fixes it), then `agentica test`: the features of `specs/` and the unit tests of `test/`. SQLite needs
-  no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`.
+  no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`. CI runs `agentica test --jobs 4`
+  (four files at once), so a feature file must not share a path, a port or a table with another: `[SCRATCH]` is a
+  folder of its own for each scenario, and a scenario on a server names its own tables or makes them temporary.
 - The pool package has the same three commands in `src/pool` (`agentica check *.agc specs test`,
   `agentica fmt --check *.agc specs test`, `agentica test`); `make check` runs the check. Its features use a fake
   resource (`src/pool/specs/driver.agc`), so they need no server.

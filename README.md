@@ -64,8 +64,10 @@ end
 
 ```sh
 make check
-cd src/db && agentica test
+cd src/db && agentica test --jobs 4
 ```
+
+Developing needs Agentica 0.24.1 or later (`agentica test --jobs`); using the package still needs only 0.18.0.
 
 The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
 `AGENTS.md`. CI runs the SQLite suite on Linux, macOS and Windows, and the whole suite on Linux.

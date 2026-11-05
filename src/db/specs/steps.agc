@@ -10,6 +10,7 @@ import {Request} from "protocol"
 
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 REPLY_MS = 60_000
+SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"
 # The `timeout_ms` of a call that takes the one of the connection (`Db.CONNECTION_DEFAULT`).
 CONNECTION_DEFAULT = -1
 
@@ -206,7 +207,16 @@ def start(ctx: BDD.Context) -> BDD.Context
     return ctx
   end
 
-  return BDD.set(BDD.given_program(ctx, "driver.agc"), "driver", JSON.from(true))
+  # `[SCRATCH]` is a folder of this scenario under tmp/, so that test files that run at once never share, or empty,
+  # one folder. The driver makes it when a scenario needs it; the hook removes it, and the scenario is not failed
+  # when it cannot (Windows keeps an open database file).
+  scratch = "#{Path.cwd().unwrap!}/tmp/scratch-#{SecureRandom.hex(8)}"
+  named = BDD.after(BDD.given_env(ctx, SCRATCH_VARIABLE, scratch)) do |_|
+    _ = Path.remove(scratch)
+    ok()
+  end
+
+  return BDD.set(BDD.given_program(named, "driver.agc"), "driver", JSON.from(true))
 end
 
 # The Data Table of a step is a header row and one row per item.
