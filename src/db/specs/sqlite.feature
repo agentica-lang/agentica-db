@@ -87,6 +87,73 @@ Feature: SQLite
       | foreign_keys |
       | Int 1        |
 
+  # The pragmas of Rails 8: synchronous=NORMAL (1) in WAL, a 128 MiB memory map, 2000 pages of cache and a 64 MiB limit
+  # for the WAL file left after a checkpoint.
+  Scenario Outline: A file database opens with the <pragma> default of a web app on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/defaults.db"
+    Then the query "pragma <pragma>" returns:
+      | <pragma> |
+      | Int <value> |
+
+    Examples:
+      | pragma             | value     |
+      | synchronous        | 1         |
+      | mmap_size          | 134217728 |
+      | cache_size         | 2000      |
+      | journal_size_limit | 67108864  |
+
+  Scenario: The url parameters change the pragmas, and another journal mode keeps the SQLite synchronous on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/rollback.db?journal_mode=delete"
+    Then the query "pragma synchronous" returns:
+      | synchronous |
+      | Int 2       |
+    When I open "sqlite:[SCRATCH]/tuned.db?synchronous=extra&mmap_size=0&cache_size=-4000&journal_size_limit=-1"
+    Then the query "pragma synchronous" returns:
+      | synchronous |
+      | Int 3       |
+    And the query "pragma mmap_size" returns:
+      | mmap_size |
+      | Int 0     |
+    And the query "pragma cache_size" returns:
+      | cache_size |
+      | Int -4000  |
+    And the query "pragma journal_size_limit" returns:
+      | journal_size_limit |
+      | Int -1             |
+    When I open "sqlite:[SCRATCH]/tuned.db?journal_mode=delete&synchronous=off"
+    Then the query "pragma synchronous" returns:
+      | synchronous |
+      | Int 0       |
+
+  Scenario Outline: A bad value of <name> is an error on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?<name>=<value>"
+    Then it fails with "sqlite error: the url"
+
+    Examples:
+      | name        | value  |
+      | synchronous | always |
+      | mmap_size   | big    |
+
+  Scenario: A memory database and a read-only file open with the pragma defaults on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:"
+    Then the query "pragma cache_size" returns:
+      | cache_size |
+      | Int 2000   |
+    When I open "sqlite:[SCRATCH]/ro-defaults.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I close the database
+    And I make the file "[SCRATCH]/ro-defaults.db" read-only
+    And I open "sqlite:[SCRATCH]/ro-defaults.db"
+    Then the query "pragma cache_size" returns:
+      | cache_size |
+      | Int 2000   |
+    When I make the file "[SCRATCH]/ro-defaults.db" writable
+    Then it succeeds
+
   Scenario: The url parameters give SQLite's own behavior back on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/plain.db?journal_mode=delete&foreign_keys=off"
