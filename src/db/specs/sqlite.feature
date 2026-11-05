@@ -432,18 +432,57 @@ Feature: SQLite
       | Int 1 |
       | Int 3 |
 
-  # A connection that is still open in WAL mode keeps the database from leaving it, so the second open shows whether
-  # close finalized the statements: SQLite keeps a closed connection open for as long as one is left.
-  Scenario: Closing a connection finalizes its cached statements on sqlite
+  # SQLite keeps a closed connection open for as long as a statement of it is not finalized, with its files.
+  Scenario: Closing a connection finalizes its cached statements at once on sqlite
     Given a "sqlite" database
-    When I open "sqlite:[SCRATCH]/cached.db"
+    When I note the open files of the process
+    And I open "sqlite:[SCRATCH]/cached.db"
     And I execute "create table t (x integer)"
     And I execute "insert into t values (1)"
     Then the query "select x from t" returns:
       | x     |
       | Int 1 |
     When I close the database
-    And I open "sqlite:[SCRATCH]/cached.db?journal_mode=delete&busy_timeout=300"
-    Then the query "pragma journal_mode" returns:
-      | journal_mode |
-      | Text delete  |
+    Then the open files of the process are back to the noted ones within 0 ms
+
+  Scenario: A result with a column twice runs again once the schema is fixed on sqlite
+    Given a "sqlite" database
+    And I execute "create table a (id, x)"
+    And I execute "create table b (id, y)"
+    And I execute "insert into a values (1, 2)"
+    And I execute "insert into b values (1, 3)"
+    When I query "select * from a, b"
+    Then it fails with "sqlite error: the result has the column id twice"
+    When I execute "alter table b rename column id to bid"
+    And I query "select * from a, b"
+    Then the result is:
+      | id    | x     | bid   | y     |
+      | Int 1 | Int 2 | Int 1 | Int 3 |
+
+  # The pool closes the connection of a block that ran past lease_ms while its statement may still be stepping; SQLite
+  # can close a connection (and give back its files) only when every statement of it is finalized.
+  Scenario: A statement that outlives lease_ms leaves no file open behind it on sqlite
+    Given a "sqlite" database
+    When I note the open files of the process
+    And I start a pool on "sqlite:[SCRATCH]/leased.db" with:
+      | option      | value |
+      | size        | 1     |
+      | lease_ms    | 300   |
+      | checkout_ms | 3000  |
+    And I query "[SLOW]" in the pool
+    Then it fails with "pool error: lease timed out after 300 ms"
+    When I query "select 1 as v" in the pool
+    Then the result is:
+      | v     |
+      | Int 1 |
+    When I start a pool on "sqlite::memory:" with:
+      | option | value |
+      | size   | 1     |
+    Then the open files of the process are back to the noted ones within 2000 ms
+
+  # The keeper of the statements ends with the task that opened the connection and finalizes them, within its poll.
+  Scenario: A connection that is dropped without close leaves no file open on sqlite
+    Given a "sqlite" database
+    When I note the open files of the process
+    And a task opens "sqlite:[SCRATCH]/dropped.db", queries twice and ends without closing it
+    Then the open files of the process are back to the noted ones within 2000 ms
