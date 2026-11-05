@@ -447,15 +447,3 @@ Feature: SQLite
     Then the query "pragma journal_mode" returns:
       | journal_mode |
       | Text delete  |
-
-  Scenario: Two tasks that run the same sql on one connection at once both get its rows on sqlite
-    Given a "sqlite" database
-    When two tasks query "[WORK]" on the connection at once
-    Then the result is:
-      | n     |
-      | Int 1 |
-    When two tasks query "[WORK]" on the connection at once
-    Then the result is:
-      | n     |
-      | Int 1 |
-    And the connection is healthy

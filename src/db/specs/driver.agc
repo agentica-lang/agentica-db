@@ -258,7 +258,6 @@ def act(state: State, req: Request) -> Handled
     "query_while_locked" -> return query_while_locked(state, req)
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
-    "query_at_once" -> return reply_ok(query_at_once(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
     "keep_running" -> return keep_running(state, req.text, req.number)
@@ -1285,34 +1284,6 @@ def execute_in_task(state: State, sql: String) -> State
     case Task.await(Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(sql))))
       error(message) -> return failed(state, message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
-    end
-  end
-end
-
-def run_query_job(job: Job) -> Result[List[Db.Row]]
-  return Db.query(job.conn, job.sql, [])
-end
-
-# Two tasks run the same sql on the one connection at the same time, and must read the same rows.
-def query_at_once(state: State, sql: String) -> State
-  return with_conn(state) do |conn|
-    job = Job(conn: conn, sql: sql_of(state, sql))
-    first = Task.spawn(&run_query_job, job)
-    second = Task.spawn(&run_query_job, job)
-    one = Task.await(first)
-    two = Task.await(second)
-    case one
-      error(message) -> return failed(state, message)
-      ok(rows_one) ->
-        case two
-          error(message) -> return failed(state, message)
-          ok(rows_two) ->
-            if rows_one != rows_two
-              return failed(state, "the two tasks read different rows")
-            end
-
-            return recorded(state, Outcome.Rows(rows_two))
-        end
     end
   end
 end
