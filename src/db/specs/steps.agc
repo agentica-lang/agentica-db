@@ -97,6 +97,7 @@ def main() -> Void
       send(ctx, Request(op: "execute_waiting", text: args[0], cells: [args[1]], number: args[2].to_i!))
     end,
     text_step("another task opens its own connection and queries {string}", "query_in_new_task"),
+    text_step("two tasks query {string} on the connection at once", "query_at_once"),
     text_step("I read people with {string}", "orm_query"),
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
     BDD.step("I read partial people with {string}") do |ctx, args|

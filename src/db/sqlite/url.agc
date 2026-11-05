@@ -2,12 +2,13 @@
 ##
 ## `app.db?journal_mode=delete&foreign_keys=off&busy_timeout=250&fts5=required`. The parameters are `journal_mode`
 ## (`wal`, `delete`, `truncate`, `persist`, `memory` or `off`), `foreign_keys` (`on` or `off`), `busy_timeout` (a
-## number of milliseconds, at most nine digits), `timeout_ms` (the same: the limit of each statement, none by default)
-## and `fts5=required`. Names and values are lowercase and case-sensitive (SQLite itself takes `WAL`; this reader does
-## not), and a value is not percent-decoded. A name given twice keeps its last value. A `?` always starts the
-## parameters, so a path that holds one (or the Windows `\\?\` prefix) cannot be named here: write it as a `file:`
-## URI. A text that starts with `file:` is a SQLite URI, and its `?` belongs to
-## SQLite: it is returned whole as the path, with the default settings. An error is `sqlite error: <message>`.
+## number of milliseconds, at most nine digits), `timeout_ms` (the same: the limit of each statement, none by default),
+## `statement_cache` (how many prepared statements a connection keeps, 64 by default, 0 for none) and `fts5=required`.
+## Names and values are lowercase and case-sensitive (SQLite itself takes `WAL`; this reader does not), and a value
+## is not percent-decoded. A name given twice keeps its last value. A `?` always starts the parameters, so a path
+## that holds one (or the Windows `\\?\` prefix) cannot be named here: write it as a `file:` URI. A text that starts
+## with `file:` is a SQLite URI, and its `?` belongs to SQLite: it is returned whole as the path, with the default
+## settings. An error is `sqlite error: <message>`.
 
 import Milliseconds from "../support/milliseconds"
 
@@ -26,6 +27,7 @@ export struct Settings
   foreign_keys: Bool = true
   busy_timeout: Int = 5000
   timeout_ms: Int = 0
+  statement_cache: Int = 64
   fts5: Bool = false
 end
 
@@ -89,6 +91,8 @@ def read_settings(query: String) -> Result[Settings]
       settings = settings.with(busy_timeout: try read_milliseconds(value, name))
     elsif name == "timeout_ms"
       settings = settings.with(timeout_ms: try read_milliseconds(value, name))
+    elsif name == "statement_cache"
+      settings = settings.with(statement_cache: try read_count(value, name))
     elsif name == "fts5" and value == "required"
       settings = settings.with(fts5: true)
     elsif one_of?(["journal_mode", "foreign_keys", "fts5"], name)
@@ -96,7 +100,7 @@ def read_settings(query: String) -> Result[Settings]
     else
       return error(
         "sqlite error: unknown url parameter #{name}, expected journal_mode, foreign_keys, busy_timeout, " +
-        "timeout_ms or fts5",
+        "timeout_ms, statement_cache or fts5",
       )
     end
   end
@@ -108,5 +112,12 @@ def read_milliseconds(text: String, name: String) -> Result[Int]
   case Milliseconds.parse(text)
     some(n) -> return ok(n)
     none -> return error("sqlite error: the url #{name} is not a number of milliseconds")
+  end
+end
+
+def read_count(text: String, name: String) -> Result[Int]
+  case Milliseconds.parse(text)
+    some(n) -> return ok(n)
+    none -> return error("sqlite error: the url #{name} is not a number")
   end
 end

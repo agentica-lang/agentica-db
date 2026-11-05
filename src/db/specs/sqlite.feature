@@ -308,3 +308,154 @@ Feature: SQLite
     And the query "select count(*) as n from t" returns:
       | n     |
       | Int 0 |
+
+  # The connection keeps its prepared statements by their sql (statement_cache, 64 by default).
+  Scenario: A statement that runs again binds its own parameters on sqlite
+    Given a "sqlite" database
+    And I execute "create table t (id integer primary key, name text)"
+    And I execute "insert into t values (?, ?)" with:
+      | value    |
+      | Int 1    |
+      | Text ann |
+    And I execute "insert into t values (?, ?)" with:
+      | value    |
+      | Int 2    |
+      | Text bob |
+    Then the changed row count is 1
+    When I query "select name from t where id = ?" with:
+      | value |
+      | Int 2 |
+    Then the result is:
+      | name     |
+      | Text bob |
+    When I query "select name from t where id = ?" with:
+      | value |
+      | Int 1 |
+    Then the result is:
+      | name     |
+      | Text ann |
+    When I query "select name from t where id = ?" with:
+      | value |
+      | Int 3 |
+    Then the result is:
+      | name |
+
+  Scenario: A statement that failed in a step is ready again on sqlite
+    Given a "sqlite" database
+    When I query "select abs(?) as v" with:
+      | value                    |
+      | Int -9223372036854775808 |
+    Then it fails with "sqlite error 1: "
+    When I query "select abs(?) as v" with:
+      | value  |
+      | Int -5 |
+    Then the result is:
+      | v     |
+      | Int 5 |
+    When I query "select abs(?) as v" with:
+      | value                    |
+      | Int -9223372036854775808 |
+    Then it fails with "sqlite error 1: "
+    And the connection is healthy
+
+  Scenario: A statement that runs again sees a changed schema on sqlite
+    Given a "sqlite" database
+    And I execute "create table t (a integer)"
+    And I execute "insert into t values (1)"
+    Then the query "select * from t" returns:
+      | a     |
+      | Int 1 |
+    When I execute "alter table t add column b integer default 7"
+    Then the query "select * from t" returns:
+      | a     | b     |
+      | Int 1 | Int 7 |
+    When I execute "alter table t rename column b to c"
+    Then the query "select * from t" returns:
+      | a     | c     |
+      | Int 1 | Int 7 |
+    When I execute "drop table t"
+    And I execute "create table t (z text)"
+    And I execute "insert into t values ('x')"
+    Then the query "select * from t" returns:
+      | z      |
+      | Text x |
+    When I execute "drop table t"
+    And I query "select * from t"
+    Then it fails with "sqlite error 1: no such table: t"
+
+  Scenario Outline: A cache of <limit> statements gives the same rows when more statements than that run on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?statement_cache=<limit>"
+    Then the query "select 1 as v" returns:
+      | v     |
+      | Int 1 |
+    And the query "select 2 as v" returns:
+      | v     |
+      | Int 2 |
+    And the query "select 3 as v" returns:
+      | v     |
+      | Int 3 |
+    And the query "select 1 as v" returns:
+      | v     |
+      | Int 1 |
+    And the query "select 3 as v" returns:
+      | v     |
+      | Int 3 |
+    And the query "select 2 as v" returns:
+      | v     |
+      | Int 2 |
+
+    Examples:
+      | limit |
+      | 0     |
+      | 1     |
+      | 2     |
+
+  Scenario: Statements of a connection that runs transactions again behave as before on sqlite
+    Given a "sqlite" database
+    And I execute "create table t (x integer)"
+    When I run these statements in a transaction:
+      | sql                      |
+      | insert into t values (1) |
+    Then it succeeds
+    When I run these statements in a transaction:
+      | sql                            |
+      | insert into t values (2)       |
+      | insert into missing values (1) |
+    Then it fails with "sqlite error 1: no such table: missing"
+    When I run these statements in a transaction:
+      | sql                      |
+      | insert into t values (3) |
+    Then it succeeds
+    And the query "select x from t order by x" returns:
+      | x     |
+      | Int 1 |
+      | Int 3 |
+
+  # A connection that is still open in WAL mode keeps the database from leaving it, so the second open shows whether
+  # close finalized the statements: SQLite keeps a closed connection open for as long as one is left.
+  Scenario: Closing a connection finalizes its cached statements on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/cached.db"
+    And I execute "create table t (x integer)"
+    And I execute "insert into t values (1)"
+    Then the query "select x from t" returns:
+      | x     |
+      | Int 1 |
+    When I close the database
+    And I open "sqlite:[SCRATCH]/cached.db?journal_mode=delete&busy_timeout=300"
+    Then the query "pragma journal_mode" returns:
+      | journal_mode |
+      | Text delete  |
+
+  Scenario: Two tasks that run the same sql on one connection at once both get its rows on sqlite
+    Given a "sqlite" database
+    When two tasks query "[WORK]" on the connection at once
+    Then the result is:
+      | n     |
+      | Int 1 |
+    When two tasks query "[WORK]" on the connection at once
+    Then the result is:
+      | n     |
+      | Int 1 |
+    And the connection is healthy

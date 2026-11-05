@@ -1,5 +1,5 @@
-## The one reader of a url parameter that is a number of milliseconds (`busy_timeout`, `timeout_ms`), shared by the url
-## readers of the adapters, which word their own errors.
+## The one reader of a url parameter that is a number of milliseconds (`busy_timeout`, `timeout_ms`) or a plain count
+## (`statement_cache`), shared by the url readers of the adapters, which word their own errors.
 
 MAX_DIGITS = 9
 DIGIT_ZERO = 48
