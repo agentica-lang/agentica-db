@@ -36,6 +36,7 @@ WORK_SQL = {
 SESSION_POLL_MS = 50
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 SQLITE_MEMORY = "sqlite::memory:"
+# The folder of a driver that runs without the steps (by hand); a scenario always has its own.
 SCRATCH_DEFAULT = "../tmp/scratch"
 # The variable that steps.agc sets to the folder of the scenario (see `[SCRATCH]`).
 SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"
@@ -178,7 +179,8 @@ struct Hold
 end
 
 def main() -> Void
-  # The folder is the scenario's own (see `scratch_dir`), so this only removes what a start that was killed left.
+  # The folder is the scenario's own (see `scratch_dir`): this removes it if it exists, so a driver that runs alone
+  # starts from nothing.
   clean_scratch()
   state = State(conns: [], pools: [], adapter: "", last: Outcome.Nothing, checked: true)
   line = IO.gets

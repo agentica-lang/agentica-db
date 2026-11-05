@@ -85,8 +85,8 @@ jobs:
           [ -z "$bad" ] || { echo "$bad"; echo "name each scenario 'on <adapter>' or 'on sqlite'"; exit 1; }
 
       # The features of src/db/specs/ and the unit tests of src/db/test/, four files at once. The variables point the
-      # postgres and mysql scenarios at the service containers; without them they fail. The mysql host is an address: `localhost` means
-      # the local socket to the client library.
+      # postgres and mysql scenarios at the service containers; without them they fail. The mysql host is an address:
+      # `localhost` means the local socket to the client library.
       - name: Test
         env:
           AGENTICA_DB_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable

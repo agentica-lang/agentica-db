@@ -11,6 +11,7 @@ import {Request} from "protocol"
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 REPLY_MS = 60_000
 SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"
+IO_TIMEOUT_MS = 5_000
 # The `timeout_ms` of a call that takes the one of the connection (`Db.CONNECTION_DEFAULT`).
 CONNECTION_DEFAULT = -1
 
@@ -212,11 +213,32 @@ def start(ctx: BDD.Context) -> BDD.Context
   # when it cannot (Windows keeps an open database file).
   scratch = "#{Path.cwd().unwrap!}/tmp/scratch-#{SecureRandom.hex(8)}"
   named = BDD.after(BDD.given_env(ctx, SCRATCH_VARIABLE, scratch)) do |_|
-    _ = Path.remove(scratch)
+    make_writable("#{scratch}/readonly.db")
+    _ = Path.remove(scratch, IO_TIMEOUT_MS)
     ok()
   end
 
   return BDD.set(BDD.given_program(named, "driver.agc"), "driver", JSON.from(true))
+end
+
+# A scenario that failed between `read_only` and `writable` leaves a read-only file, which Windows refuses to remove
+# (the driver has the same two commands in `set_access`). Only when the file exists: a process costs time.
+def make_writable(path: String) -> Void
+  if not File.stat(path, IO_TIMEOUT_MS).ok?
+    return
+  end
+
+  command = "chmod"
+  args = ["644", path]
+  if System.os() == "windows"
+    command = "attrib.exe"
+    args = ["-R", path.replace("/", "\\")]
+  end
+
+  started = Process.spawn(command, args, IO_TIMEOUT_MS)
+  if started.ok?
+    _ = Process.wait(started.unwrap!, IO_TIMEOUT_MS)
+  end
 end
 
 # The Data Table of a step is a header row and one row per item.

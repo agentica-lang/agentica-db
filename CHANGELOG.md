@@ -54,8 +54,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Breaking:** a `?` in a SQLite path now starts the parameters, so `a?b.db`, `q.db?` and the Windows `\\?\C:\...`
   prefix are no longer file names (`sqlite:file:a%3fb.db` is). A parameter that is not known is an error.
 - CI now tests with Agentica 0.24.1 (pinned by sha256 on every OS), four test files at once. The package still needs
-  Agentica 0.18.0 or later; `examples/users.agc` needs a newer one: it reads the `Bytes` body of `HttpRequest` and writes the `Bytes` body of
-  `HttpResponse`, which came with the 0.19.0 series. The library itself uses no HTTP type.
+  Agentica 0.18.0 or later; `examples/users.agc` needs a newer one: it reads the `Bytes` body of `HttpRequest` and
+  writes the `Bytes` body of `HttpResponse`, which came with the 0.19.0 series. The library itself uses no HTTP
+  type.
 - A SQLite statement that finds the database locked by another connection (or a table of a shared cache) waits by
   sleeping in its task and trying again, up to `busy_timeout` (default 5000 ms), and not inside SQLite: concurrent
   write transactions succeed with `AGENTICA_SCHEDULERS=1` or `2`, where they failed with `database is locked`.
