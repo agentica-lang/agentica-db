@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- SQLite prepares each statement once: `Db.query` and `Db.execute` used to parse the sql twice (a probe to refuse a
+  second statement, then the statement itself). A run of 10,000 selects takes about a fifth less time.
 - **Breaking:** the packages moved to `src/db` and `src/pool`, and the root of the repository is only a workspace.
   A project that depends on `db` must name the folder: `db = { git = "https://github.com/agentica-lang/agentica-db",
   tag = "TAG", subdir = "src/db" }` (or `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG

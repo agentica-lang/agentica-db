@@ -376,9 +376,9 @@ def prepare(conn: Connection, sql: String, params: List[Value]) -> Result[Stmt]
   end
 end
 
-# Prepares the one statement in the buffer, waiting for a lock like a step does.
+# Prepares the first statement in the buffer, waiting for a lock like a step does, and refuses a second one. SQLite
+# gives a NULL statement for sql that holds only whitespace and comments, which an out resource shows as a closed one.
 def prepare_buffer(conn: Connection, buf: C.Pointer) -> Result[Stmt]
-  try single_statement(conn, buf)
   started = Time.monotonic_ms()
   prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
   while lock_wait?(conn, prepared.result, started)
@@ -390,41 +390,34 @@ def prepare_buffer(conn: Connection, buf: C.Pointer) -> Result[Stmt]
     return error(failure(conn, prepared.result))
   end
 
-  return ok(prepared.stmt)
-end
-
-# SQLite gives a NULL statement for sql that holds only whitespace and comments, which an out resource cannot
-# show (it is a closed resource, and any call on it stops the program). So the sql is prepared first with an out
-# pointer, where NULL can be tested, and the tail is tried the same way to refuse a second statement.
-# A probe is finalized by hand right after its call. The call is a compute def: if the task is cancelled during
-# the parse, the C call still finishes but its result is dropped, so that one probe statement is never finalized
-# (an out C.Pointer is not freed on cancel, unlike an out resource). It is freed when the connection closes.
-def single_statement(conn: Connection, buf: C.Pointer) -> Result[Void]
-  started = Time.monotonic_ms()
-  probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
-  while lock_wait?(conn, probe.result, started)
-    pause(conn, started)
-    probe = sqlite3_probe(conn.handle, buf, NUL_TERMINATED)
-  end
-
-  if probe.result != SQLITE_OK
-    return error(failure(conn, probe.result))
-  end
-
-  if Native.null?(probe.stmt)
+  if Native.closed?(prepared.stmt)
     return error("sqlite error: the sql has no statement")
   end
 
-  sqlite3_finalize_pointer(probe.stmt)
-  if Native.get_string(probe.tail, 0) == ""
+  stmt = prepared.stmt
+  more = no_more_statements(conn, prepared.tail)
+  case more
+    ok(_) -> return ok(stmt)
+    error(message) ->
+      Native.close(stmt)
+      return error(message)
+  end
+end
+
+# The text after the first statement must hold none. It is tried with an out pointer, where NULL can be told, and the
+# probe is finalized by hand right after its call. The call is a compute def: if the task is cancelled during the
+# parse, the C call still finishes but its result is dropped, so that one probe statement is never finalized (an out
+# C.Pointer is not freed on cancel, unlike an out resource). It is freed when the connection closes.
+def no_more_statements(conn: Connection, tail: C.Pointer) -> Result[Void]
+  if Native.get_string(tail, 0) == ""
     return ok()
   end
 
-  more_started = Time.monotonic_ms()
-  more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
-  while lock_wait?(conn, more.result, more_started)
-    pause(conn, more_started)
-    more = sqlite3_probe(conn.handle, probe.tail, NUL_TERMINATED)
+  started = Time.monotonic_ms()
+  more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
+  while lock_wait?(conn, more.result, started)
+    pause(conn, started)
+    more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
   end
 
   # Text after the first statement that is only comments gives a NULL statement: still one statement.
