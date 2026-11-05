@@ -10,8 +10,9 @@
 ## `cache_size` (2000 pages) and `journal_size_limit` (67108864 bytes), the pragmas of Rails 8, and
 ## `fts5=required` (the open fails when this SQLite has no FTS5). `sqlite:app.db?journal_mode=delete&foreign_keys=off`
 ## is SQLite's own behavior. A name that starts with `file:` is a SQLite URI and goes to SQLite as it is, with its own
-## `?` parameters (`file:app.db?mode=ro`); the defaults still apply to it. A default `wal` that a read-only database
-## refuses is skipped (for a `file:` name, one that SQLite will not set is skipped too); an explicit one is an error.
+## `?` parameters (`file:app.db?mode=ro`); the defaults still apply to it (change one with its PRAGMA after `open`). A
+## default `wal` that a read-only database refuses is skipped (for a `file:` name, one that SQLite will not set is
+## skipped too); an explicit one is an error.
 ##
 ## A statement that finds a lock held by another connection (SQLITE_BUSY, or SQLITE_LOCKED for a table of a shared
 ## cache) is tried again after a short sleep until `busy_timeout` is over, then fails with that error; 0 fails at once.

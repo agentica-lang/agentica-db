@@ -81,7 +81,7 @@ SQLite rolls back the whole transaction when it interrupts a write inside one, t
 
 ### SQLite URIs
 
-A name that starts with `file:` is a [SQLite URI](https://www.sqlite.org/uri.html) and goes to SQLite as it is: its `?` parameters belong to SQLite, and the table above does not apply to it. `sqlite:file:app.db?mode=ro` opens read-only, and `sqlite:file::memory:?cache=shared` is an in-memory database that several connections share. The defaults still apply (`foreign_keys` on, and WAL tried: if SQLite will not switch, for example with `immutable=1`, `nolock=1` or `mode=ro`, the database keeps its mode), and to change one, run `PRAGMA journal_mode = DELETE` or `PRAGMA foreign_keys = OFF` after `open`.
+A name that starts with `file:` is a [SQLite URI](https://www.sqlite.org/uri.html) and goes to SQLite as it is: its `?` parameters belong to SQLite, and the table above does not apply to it. `sqlite:file:app.db?mode=ro` opens read-only, and `sqlite:file::memory:?cache=shared` is an in-memory database that several connections share. The defaults still apply (`foreign_keys` on, WAL tried, and the `synchronous`, `mmap_size`, `cache_size` and `journal_size_limit` of the table: if SQLite will not switch to WAL, for example with `immutable=1`, `nolock=1` or `mode=ro`, the database keeps its mode and `synchronous` stays SQLite's), and to change one, run its `PRAGMA` after `open`, such as `PRAGMA journal_mode = DELETE`, `PRAGMA foreign_keys = OFF` or `PRAGMA synchronous = FULL`.
 
 ### A `?` in a path
 
