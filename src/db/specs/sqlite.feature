@@ -24,6 +24,22 @@ Feature: SQLite
       | s            | n     |
       | Text a[NUL]b | Int 3 |
 
+  # SQLite types the value, not the column: the adapter asks for the type of each value of each row.
+  Scenario: A column that holds a different type in each row is read row by row on sqlite
+    Given a "sqlite" database
+    And I execute "create temp table t (id integer primary key, v)"
+    And I execute "insert into t values (1, 7), (2, 'x'), (3, 0.5), (4, x'00ff'), (5, null), (6, ''), (7, x''), (8, 'é')"
+    Then the query "select id, v from t order by id" returns:
+      | id    | v          |
+      | Int 1 | Int 7      |
+      | Int 2 | Text x     |
+      | Int 3 | Float 0.5  |
+      | Int 4 | Blob 0,255 |
+      | Int 5 | Null       |
+      | Int 6 | Text       |
+      | Int 7 | Blob       |
+      | Int 8 | Text é     |
+
   Scenario: A form feed is a space and a vertical tab is refused on sqlite
     Given a "sqlite" database
     When I execute "[FF]"

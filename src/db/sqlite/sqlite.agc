@@ -405,11 +405,13 @@ end
 # Prepares the first statement in the buffer, waiting for a lock like a step does, and refuses a second one. SQLite
 # gives a NULL statement for sql that holds only whitespace and comments, which an out resource shows as a closed one.
 def prepare_buffer(conn: Connection, buf: C.Pointer) -> Result[Stmt]
-  started = Time.monotonic_ms()
   prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-  while lock_wait?(conn, prepared.result, started)
-    pause(conn, started)
-    prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+  if lock_code?(prepared.result)
+    started = Time.monotonic_ms()
+    while lock_wait?(conn, prepared.result, started)
+      pause(conn, started)
+      prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+    end
   end
 
   if prepared.result != SQLITE_OK
@@ -439,11 +441,13 @@ def no_more_statements(conn: Connection, tail: C.Pointer) -> Result[Void]
     return ok()
   end
 
-  started = Time.monotonic_ms()
   more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
-  while lock_wait?(conn, more.result, started)
-    pause(conn, started)
-    more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
+  if lock_code?(more.result)
+    started = Time.monotonic_ms()
+    while lock_wait?(conn, more.result, started)
+      pause(conn, started)
+      more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
+    end
   end
 
   # Text after the first statement that is only comments gives a NULL statement: still one statement.
@@ -524,7 +528,8 @@ def bool_int(flag: Bool) -> Int
   return 0
 end
 
-# The shared step loop: every row read with the given column names, or none when `keep` is false.
+# The shared step loop: every row read with the given column names, or none when `keep` is false. A step that gives a
+# row costs one comparison here; the clock and the lock rules are for the step that finds a lock.
 def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Result[List[Row]]
   # An interrupt that came between the prepare and the first step is lost (SQLite ignores one while no statement
   # runs), so the deadline is read here. Later steps are left to the interrupt: a statement that SQLite stopped is
@@ -536,44 +541,47 @@ def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Re
 
   rows: List[Row] = []
   while true
-    stepped = step(conn, stmt)
-    code = stepped.code
-    # SQLite rolls a write back and runs it again after a wait (a commit refused in a rollback journal), so the rows
-    # of the first run are dropped; a read goes on from where it stopped.
-    if stepped.waited and sqlite3_stmt_readonly(stmt) == 0
-      rows = []
+    code = sqlite3_step(stmt)
+    # Written out here, not as a call: the check runs once per row, and a row fails its first comparison.
+    if code != SQLITE_ROW and (code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED)
+      stepped = step_after_lock(conn, stmt, code)
+      code = stepped.code
+      # SQLite rolls a write back and runs it again after a wait (a commit refused in a rollback journal), so the
+      # rows of the first run are dropped; a read goes on from where it stopped.
+      if stepped.waited and sqlite3_stmt_readonly(stmt) == 0
+        rows = []
+      end
     end
 
-    if code == SQLITE_DONE
+    if code == SQLITE_ROW
+      if keep
+        rows = rows.push(read_row(stmt, names))
+      end
+    elsif code == SQLITE_DONE
       return ok(rows)
-    end
-
-    if code != SQLITE_ROW
+    else
       return error(failure(conn, code))
-    end
-
-    if keep
-      rows = rows.push(read_row(stmt, names))
     end
   end
 
   return ok(rows)
 end
 
-# One step, tried again while the database is locked. SQLite documents a retry for a COMMIT, which stays open after
-# SQLITE_BUSY, and for a statement outside a transaction. A write that a read transaction of this connection asks for
-# is not tried again (`upgrade?`).
-def step(conn: Connection, stmt: Stmt) -> Stepped
+# What is left of a step that found a lock (`code`), tried again while the database stays locked. SQLite documents a
+# retry for a COMMIT, which stays open after SQLITE_BUSY, and for a statement outside a transaction. A write that a
+# read transaction of this connection asks for is not tried again (`upgrade?`). The wait is counted from here, after
+# the first refusal, which SQLite gives at once (its own busy timeout is 0), so the clock is read only on this path.
+def step_after_lock(conn: Connection, stmt: Stmt, code: Int) -> Stepped
   started = Time.monotonic_ms()
-  code = sqlite3_step(stmt)
+  current = code
   waited = false
-  while lock_wait?(conn, code, started) and not upgrade?(conn, stmt)
+  while lock_wait?(conn, current, started) and not upgrade?(conn, stmt)
     pause(conn, started)
     waited = true
-    code = sqlite3_step(stmt)
+    current = sqlite3_step(stmt)
   end
 
-  return Stepped(code: code, waited: waited)
+  return Stepped(code: current, waited: waited)
 end
 
 # A statement that writes, in a connection that holds a read lock: SQLite does not wait for the lock of the writer
@@ -594,10 +602,15 @@ def upgrade?(conn: Connection, stmt: Stmt) -> Bool
   return sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_READ
 end
 
+# Whether a result code is SQLITE_BUSY or SQLITE_LOCKED, the two that can be a lock of another connection.
+def lock_code?(code: Int) -> Bool
+  return code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED
+end
+
 # True when `code` says that another connection holds a lock and the wait that began at `started` is not over, so
-# the caller pauses and tries again. The codes are checked first, so a step that gives a row asks nothing of SQLite.
+# the caller pauses and tries again. The codes are checked first, so a call that succeeded asks nothing of SQLite.
 def lock_wait?(conn: Connection, code: Int, started: Int) -> Bool
-  if code != SqliteLock.SQLITE_BUSY and code != SQLITE_LOCKED
+  if not lock_code?(code)
     return false
   end
 
@@ -649,33 +662,32 @@ def column_names(stmt: Stmt) -> List[String]
   return names
 end
 
+# The type of each value is asked of SQLite every time, since a column of one statement can hold a different type in
+# each row. The value is read in this loop, not in a function, because it runs for every column of every row.
 def read_row(stmt: Stmt, names: List[String]) -> Row
   row: Row = {}
-  index = 0
+  col = 0
   for name in names
-    row = row.put(name, read_value(stmt, index))
-    index += 1
+    kind = sqlite3_column_type(stmt, col)
+    if kind == SQLITE_INTEGER
+      row = row.put(name, Value.Int(sqlite3_column_int64(stmt, col)))
+    elsif kind == SQLITE_TEXT
+      # The pointer first, then its length: sqlite3_column_bytes is only right after the conversion.
+      text = sqlite3_column_text(stmt, col)
+      row = row.put(name, Value.Text(Native.get_string(text, 0, sqlite3_column_bytes(stmt, col))))
+    elsif kind == SQLITE_FLOAT
+      row = row.put(name, Value.Float(sqlite3_column_double(stmt, col)))
+    elsif kind == SQLITE_BLOB
+      blob = sqlite3_column_blob(stmt, col)
+      row = row.put(name, Value.Blob(Native.get_bytes(blob, 0, sqlite3_column_bytes(stmt, col))))
+    else
+      row = row.put(name, Value.Null)
+    end
+
+    col += 1
   end
 
   return row
-end
-
-def read_value(stmt: Stmt, col: Int) -> Value
-  kind = sqlite3_column_type(stmt, col)
-  if kind == SQLITE_INTEGER
-    return Value.Int(sqlite3_column_int64(stmt, col))
-  elsif kind == SQLITE_FLOAT
-    return Value.Float(sqlite3_column_double(stmt, col))
-  elsif kind == SQLITE_TEXT
-    # The pointer first, then its length: sqlite3_column_bytes is only right after the conversion.
-    text = sqlite3_column_text(stmt, col)
-    return Value.Text(Native.get_string(text, 0, sqlite3_column_bytes(stmt, col)))
-  elsif kind == SQLITE_BLOB
-    blob = sqlite3_column_blob(stmt, col)
-    return Value.Blob(Native.get_bytes(blob, 0, sqlite3_column_bytes(stmt, col)))
-  end
-
-  return Value.Null
 end
 
 # The code is the one the failed call returned; the text is SQLite's own message.

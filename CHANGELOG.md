@@ -36,6 +36,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- SQLite reads rows with fewer VM steps: a step that gives a row no longer reads the clock or runs the lock rules (they
+  run only when a step finds a lock, and the `busy_timeout` wait is counted from that first refusal), and the columns of
+  a row are read in one loop. The public API and the errors are the same.
 - SQLite prepares each statement once: `Db.query` and `Db.execute` used to parse the sql twice (a probe to refuse a
   second statement, then the statement itself). A run of 10,000 selects takes about a fifth less time.
 - **Breaking:** the packages moved to `src/db` and `src/pool`, and the root of the repository is only a workspace.
