@@ -980,7 +980,7 @@ def step_after_lock(conn: Connection, stmt: C.Pointer, code: Int) -> Stepped
   while lock_wait?(conn, current, started) and not upgrade?(conn, stmt)
     mark_running(conn, Native.null())
     pause(conn, started)
-    # The sleep is where a `close` from another task can finalize the statement.
+    # A `close` from another task can come in the sleep, and finalizes the statement.
     if Native.closed?(conn.handle)
       break
     end
@@ -989,6 +989,10 @@ def step_after_lock(conn: Connection, stmt: C.Pointer, code: Int) -> Stepped
     waited = true
     note_step(conn, stmt)
     current = sqlite3_step(stmt)
+    # The same for the step: the condition of the loop asks the handle about the code.
+    if Native.closed?(conn.handle)
+      break
+    end
   end
 
   return Stepped(code: current, waited: waited)
