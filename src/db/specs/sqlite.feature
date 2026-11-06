@@ -152,13 +152,15 @@ Feature: SQLite
     Then it fails mentioning "RUNTIME-NATIVE-CLOSED"
 
   # The write of another task finds the lock held and sleeps between its tries; the connection is closed in that sleep,
-  # which finalizes its statement. The task finds the connection closed when it wakes up and fails without touching
-  # the statement, and the second close does nothing. The WAL file shows that the database was closed for good, once the
-  # task that held the lock has closed its own connection.
+  # which finalizes its statement. The write ran once before, so its statement is cached and the wait is at the step,
+  # not at a prepare (which a closed connection ends with RUNTIME-NATIVE-CLOSED). The task finds the connection closed
+  # when it wakes up and fails without touching the statement, and the second close does nothing. The WAL file shows
+  # that the database was closed for good, once the task that held the lock has closed its own connection.
   Scenario: Closing a connection under a call that waits for a lock ends the call cleanly on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/waiting.db?statement_cache=128"
     And I execute "create table t (x integer)"
+    And I execute "insert into t values (1)"
     And another task on "sqlite:[SCRATCH]/waiting.db?statement_cache=128" holds the write lock for 800 ms while I close the database under my "insert into t values (1)"
     Then it fails with "sqlite error: the connection was closed while the statement ran"
     And the file "[SCRATCH]/waiting.db-wal" is gone or empty
