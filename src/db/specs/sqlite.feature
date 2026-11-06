@@ -40,6 +40,89 @@ Feature: SQLite
       | Int 7 | Blob       |
       | Int 8 | Text é     |
 
+  # The cache keeps a statement by its sql, so a second call resets it and binds its own values, whatever the first
+  # bound (a NULL, a blob), and the statements of the connection are the three sql texts.
+  Scenario: A statement runs again with other values and is prepared once on sqlite
+    Given a "sqlite" database
+    And I execute "create table t (id integer primary key, v)"
+    When I execute "insert into t values (?, ?)" with:
+      | value  |
+      | Int 1  |
+      | Text a |
+    And I execute "insert into t values (?, ?)" with:
+      | value        |
+      | Int 2        |
+      | Blob 0,1,255 |
+    And I execute "insert into t values (?, ?)" with:
+      | value |
+      | Int 3 |
+      | Null  |
+    And I query "select id, v from t where id >= ? order by id" with:
+      | value |
+      | Int 2 |
+    Then the result is:
+      | id    | v            |
+      | Int 2 | Blob 0,1,255 |
+      | Int 3 | Null         |
+    When I query "select id, v from t where id >= ? order by id" with:
+      | value |
+      | Int 1 |
+    Then the result is:
+      | id    | v            |
+      | Int 1 | Text a       |
+      | Int 2 | Blob 0,1,255 |
+      | Int 3 | Null         |
+    And the connection holds 3 prepared statements
+
+  # With statement_cache=2 a third sql makes room by finalizing the one used least recently, so the connection never
+  # holds more than two; a sql that does not prepare is not kept; 0 keeps none, as before the cache.
+  Scenario: The cache is bounded by statement_cache and keeps only statements that prepared on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?statement_cache=2"
+    And I query "select 1 as n"
+    And I query "select 2 as n"
+    And I query "select 1 as n"
+    And I query "select 3 as n"
+    Then the connection holds 2 prepared statements
+    When I query "select 4 as n"
+    And I query "selec 5 as n"
+    Then it fails with "sqlite error 1: "
+    And the connection holds 2 prepared statements
+    When I open "sqlite::memory:?statement_cache=0"
+    And I query "select 1 as n"
+    And I query "select 1 as n"
+    Then the connection holds 0 prepared statements
+
+  # A statement that is not finalized makes SQLite keep the closed connection (and its WAL file) until the program
+  # ends; closing it last checkpoints the WAL and removes its files.
+  Scenario: Closing the connection finalizes its cached statements on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/close.db"
+    And I execute "create table t (x integer)"
+    And I execute "insert into t values (1)"
+    And I query "select x from t"
+    Then the connection holds 3 prepared statements
+    When I close the database
+    Then the file "[SCRATCH]/close.db-wal" is gone
+
+  # SQLite prepares the cached statement again at its first step after the schema changed, and the names of its
+  # columns change with it.
+  Scenario: A cached select * reads the columns the table has now on sqlite
+    Given a "sqlite" database
+    And I execute "create table t (a integer)"
+    And I execute "insert into t values (1)"
+    And the query "select * from t" returns:
+      | a     |
+      | Int 1 |
+    When I execute "alter table t add column b text default 'x'"
+    Then the query "select * from t" returns:
+      | a     | b      |
+      | Int 1 | Text x |
+    When I execute "alter table t rename column b to c"
+    Then the query "select * from t" returns:
+      | a     | c      |
+      | Int 1 | Text x |
+
   Scenario: A form feed is a space and a vertical tab is refused on sqlite
     Given a "sqlite" database
     When I execute "[FF]"
@@ -71,6 +154,9 @@ Feature: SQLite
     And I execute "create table t (x integer)"
     And I execute "insert into t values (1), (2), (3), (4)"
     # abs of the smallest int is an integer overflow, raised on the third row.
+    When I query "select case when x = 3 then abs(-9223372036854775807 - 1) else x end as y from t order by x"
+    Then it fails with "sqlite error 1: "
+    # The statement is kept by the cache: it starts again from the first row, and fails the same way.
     When I query "select case when x = 3 then abs(-9223372036854775807 - 1) else x end as y from t order by x"
     Then it fails with "sqlite error 1: "
     When I execute "drop table t"
@@ -149,9 +235,10 @@ Feature: SQLite
     Then it fails with "sqlite error: the url"
 
     Examples:
-      | name        | value  |
-      | synchronous | always |
-      | mmap_size   | big    |
+      | name            | value  |
+      | synchronous     | always |
+      | mmap_size       | big    |
+      | statement_cache | many   |
 
   Scenario: A memory database and a read-only file open with the pragma defaults on sqlite
     Given a "sqlite" database
@@ -241,6 +328,9 @@ Feature: SQLite
     Then the query "select body from notes where notes match 'runs'" returns:
       | body                 |
       | Text Running quickly |
+    # FTS5 keeps prepared statements of its own, which it finalizes itself: closing must not finalize them too.
+    When I close the database
+    Then it succeeds
 
   # The wait for a lock is made by the adapter, which sleeps between tries, and not by SQLite, whose busy handler
   # would sleep on a thread of the compute pool: the pool has one thread per scheduler, so with few schedulers the

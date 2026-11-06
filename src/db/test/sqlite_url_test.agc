@@ -22,6 +22,7 @@ def main() -> Void
       try Test.eq(bare.settings.mmap_size, 134_217_728)
       try Test.eq(bare.settings.cache_size, 2000)
       try Test.eq(bare.settings.journal_size_limit, 67_108_864)
+      try Test.eq(bare.settings.statement_cache, 128)
       try Test.eq(bare.settings.fts5, false)
       try Test.eq(target_of(":memory:").path, ":memory:")
       lone = target_of("app.db?")
@@ -31,7 +32,7 @@ def main() -> Void
     Test.test("every parameter is read, a repeated name keeps its last value, and the path stops at the first ?") do
       found = target_of(
         "a.db?journal_mode=wal&journal_mode=delete&foreign_keys=off&busy_timeout=250&timeout_ms=300&fts5=required" +
-        "&synchronous=extra&mmap_size=0&cache_size=-64000&journal_size_limit=-1",
+        "&synchronous=extra&mmap_size=0&cache_size=-64000&journal_size_limit=-1&statement_cache=16",
       )
 
       try Test.eq(found.path, "a.db")
@@ -45,6 +46,7 @@ def main() -> Void
       try Test.eq(found.settings.mmap_size, 0)
       try Test.eq(found.settings.cache_size, -64000)
       try Test.eq(found.settings.journal_size_limit, -1)
+      try Test.eq(found.settings.statement_cache, 16)
       return Test.eq(target_of("a.db?foreign_keys=off&foreign_keys=on").settings.foreign_keys, true)
     end,
     Test.test("a text that starts with file: is a SQLite URI and goes whole, with the defaults") do
@@ -62,7 +64,7 @@ def main() -> Void
       return refused(
         "a.db?color=red",
         "unknown url parameter color, expected journal_mode, foreign_keys, busy_timeout, timeout_ms, synchronous, " +
-        "mmap_size, cache_size, journal_size_limit or fts5",
+        "mmap_size, cache_size, journal_size_limit, statement_cache or fts5",
       )
     end,
     Test.test("names and values are lowercase and case-sensitive, and nothing is percent-decoded") do
@@ -70,7 +72,7 @@ def main() -> Void
       try refused(
         "a.db?Foreign_Keys=on",
         "unknown url parameter Foreign_Keys, expected journal_mode, foreign_keys, busy_timeout, timeout_ms, " +
-        "synchronous, mmap_size, cache_size, journal_size_limit or fts5",
+        "synchronous, mmap_size, cache_size, journal_size_limit, statement_cache or fts5",
       )
 
       try refused("a.db?foreign_keys=ON", "the url parameter foreign_keys has a value that is not allowed: ON")
@@ -97,6 +99,13 @@ def main() -> Void
       try refused("a.db?cache_size=-", "the url cache_size is not a whole number")
       try refused("a.db?journal_size_limit=1k", "the url journal_size_limit is not a whole number")
       return refused("a.db?mmap_size=1234567890123456", "the url mmap_size is not a whole number")
+    end,
+    Test.test("statement_cache is a whole number up to 10000, and 0 keeps no statement") do
+      try Test.eq(target_of("a.db?statement_cache=0").settings.statement_cache, 0)
+      try Test.eq(target_of("a.db?statement_cache=10000").settings.statement_cache, 10_000)
+      try refused("a.db?statement_cache=10001", "the url statement_cache is at most 10000")
+      try refused("a.db?statement_cache=-1", "the url statement_cache is not a whole number")
+      return refused("a.db?statement_cache=", "the url statement_cache is not a whole number")
     end,
   ])
 end

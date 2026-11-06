@@ -9,6 +9,7 @@ import DbPool from "../db_pool"
 import Migrate from "../migrate"
 import Orm from "../orm"
 import Protocol from "protocol"
+import Sqlite from "../sqlite/sqlite"
 import {Request} from "protocol"
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
@@ -231,6 +232,7 @@ def act(state: State, req: Request) -> Handled
     "pool_crash" -> return reply_ok(pool_crash(state))
     "pool_hold" -> return reply_ok(pool_hold(state, req.number))
     "pool_query_while_held" -> return reply_ok(pool_query_while_held(state, req))
+    "statements" -> return reply_ok(statements(state))
     "in_transaction" -> return check_connection(state, req.op)
     "not_in_transaction" -> return check_connection(state, req.op)
     "healthy" -> return check_connection(state, req.op)
@@ -264,6 +266,18 @@ def act(state: State, req: Request) -> Handled
     "keep_running" -> return keep_running(state, req.text, req.number)
     "leave_open" -> return leave_open(state, req.number)
     _ -> return Handled(state: state, reply: "unknown op #{req.op.inspect}")
+  end
+end
+
+# The number of prepared statements the SQLite connection holds, as a count for `expect_count`.
+def statements(state: State) -> State
+  if state.conns.empty?
+    return failed(state, NO_DATABASE)
+  end
+
+  case state.conns[0]
+    Db.Connection.Sqlite(handle) -> return recorded(state, Outcome.Counted(Sqlite.prepared_count(handle)))
+    _ -> return failed(state, "only a SQLite connection has prepared statements to count")
   end
 end
 
@@ -1502,8 +1516,17 @@ def judge(last: Outcome, req: Request) -> String
     "expect_mentions" -> return judge_failure(last, "mentioning", wanted) do |message| message.include?(wanted) end
     "expect_kind" -> return judge_kind(last, wanted)
     "expect_hides" -> return judge_failure(last, "never showing", wanted) do |message| not message.include?(wanted) end
+    "expect_gone" -> return judge_gone(wanted.replace("[SCRATCH]", scratch_dir()))
     _ -> return "unknown op #{req.op.inspect}"
   end
+end
+
+def judge_gone(path: String) -> String
+  if File.stat(path, IO_TIMEOUT_MS).ok?
+    return "expected the file #{path} to be gone, but it exists"
+  end
+
+  return ""
 end
 
 # The failure must be of the kind that `Orm.classify` gives its message.
@@ -1528,7 +1551,7 @@ end
 def judge_count(last: Outcome, wanted: Int) -> String
   case last
     Outcome.Counted(count) if count == wanted -> return ""
-    Outcome.Counted(count) -> return "expected #{wanted} rows changed, got #{count}"
+    Outcome.Counted(count) -> return "expected a count of #{wanted}, got #{count}"
     Outcome.Failed(message) -> return "expected a count, but it failed with #{message.inspect}"
     _ -> return "expected a count, got no count"
   end

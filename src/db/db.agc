@@ -79,7 +79,8 @@ end
 
 ## Opens a SQLite database file, or `:memory:`. Parameters after a `?` set `journal_mode` (default `wal`),
 ## `foreign_keys` (default `on`), `busy_timeout` in milliseconds (default 5000), `timeout_ms` (default none),
-## `synchronous`, `mmap_size`, `cache_size`, `journal_size_limit` and `fts5=required` (see `sqlite/sqlite.agc`).
+## `synchronous`, `mmap_size`, `cache_size`, `journal_size_limit`, `statement_cache` (prepared statements kept per
+## connection, default 128) and `fts5=required` (see `sqlite/sqlite.agc`).
 export def open_sqlite(path: String) -> Result[Connection]
   handle = try Sqlite.open(path)
   return ok(Connection.Sqlite(handle))

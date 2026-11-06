@@ -4,7 +4,8 @@
 ## (`wal`, `delete`, `truncate`, `persist`, `memory` or `off`), `foreign_keys` (`on` or `off`), `busy_timeout` (a
 ## number of milliseconds, at most nine digits), `timeout_ms` (the same: the limit of each statement, none by default),
 ## `synchronous` (`off`, `normal`, `full` or `extra`), `mmap_size` and `journal_size_limit` (bytes), `cache_size`
-## (pages, or KiB when negative) and `fts5=required`. Names and values are lowercase and case-sensitive (SQLite itself
+## (pages, or KiB when negative), `statement_cache` (the prepared statements a connection keeps, at most 10000, 0 for
+## none) and `fts5=required`. Names and values are lowercase and case-sensitive (SQLite itself
 ## takes `WAL`; this reader does not), and a value is not percent-decoded. A name given twice keeps its last value. A
 ## `?` always starts the parameters, so a path that holds one (or the Windows `\\?\` prefix) cannot be named here:
 ## write it as a `file:` URI. A text that starts with `file:` is a SQLite URI, and its `?` belongs to SQLite: it is
@@ -16,10 +17,11 @@ JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
 SYNCHRONOUS_MODES = ["off", "normal", "full", "extra"]
 NAMES = [
   "journal_mode, foreign_keys, busy_timeout, timeout_ms, synchronous, mmap_size, cache_size, ",
-  "journal_size_limit or fts5",
+  "journal_size_limit, statement_cache or fts5",
 ].join("")
 # At most 15 digits, so that a number is far from the limit of an Int and of what SQLite takes.
 MAX_DIGITS = 15
+MAX_STATEMENT_CACHE = 10_000
 MINUS = 45
 DIGIT_ZERO = 48
 DIGIT_NINE = 57
@@ -34,7 +36,8 @@ URI_PREFIX = "file:"
 ## The other pragmas have the defaults of Rails 8. `synchronous` is empty when the url did not name it: the adapter
 ## then uses `normal` in a WAL database and leaves SQLite's own `full` in any other mode. `mmap_size` is in bytes (0 is
 ## SQLite's own: no memory map), `cache_size` is in pages, or in KiB when negative (SQLite's own is -2000), and
-## `journal_size_limit` is in bytes (negative is SQLite's own: no limit).
+## `journal_size_limit` is in bytes (negative is SQLite's own: no limit). `statement_cache` is the number of prepared
+## statements that a connection keeps for the next call with the same sql (0 keeps none, as before the cache).
 export struct Settings
   journal_mode: String = "wal"
   journal_given: Bool = false
@@ -46,6 +49,7 @@ export struct Settings
   mmap_size: Int = 134_217_728
   cache_size: Int = 2000
   journal_size_limit: Int = 67_108_864
+  statement_cache: Int = 128
   fts5: Bool = false
 end
 
@@ -117,6 +121,8 @@ def read_settings(query: String) -> Result[Settings]
       settings = settings.with(cache_size: try read_number(value, name, true))
     elsif name == "journal_size_limit"
       settings = settings.with(journal_size_limit: try read_number(value, name, true))
+    elsif name == "statement_cache"
+      settings = settings.with(statement_cache: try read_statement_cache(value))
     elsif name == "fts5" and value == "required"
       settings = settings.with(fts5: true)
     elsif one_of?(["journal_mode", "foreign_keys", "synchronous", "fts5"], name)
@@ -134,6 +140,15 @@ def read_milliseconds(text: String, name: String) -> Result[Int]
     some(n) -> return ok(n)
     none -> return error("sqlite error: the url #{name} is not a number of milliseconds")
   end
+end
+
+def read_statement_cache(text: String) -> Result[Int]
+  size = try read_number(text, "statement_cache", false)
+  if size > MAX_STATEMENT_CACHE
+    return error("sqlite error: the url statement_cache is at most #{MAX_STATEMENT_CACHE}")
+  end
+
+  return ok(size)
 end
 
 # A whole number of up to MAX_DIGITS digits, with a leading `-` when `signed`. SQLite reads a negative `cache_size` as

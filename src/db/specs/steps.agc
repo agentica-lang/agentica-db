@@ -76,6 +76,11 @@ def main() -> Void
       send(ctx, Request(op: "migrate", text: args[0], table: BDD.table(ctx)))
     end,
     plain_step("I close the database", "close"),
+    BDD.step("the connection holds {int} prepared statements") do |ctx, args|
+      asked = send(ctx, Request(op: "statements"))
+      send(asked, Request(op: "expect_count", number: args[0].to_i!))
+    end,
+    text_step("the file {string} is gone", "expect_gone"),
     text_step("I make the file {string} read-only", "read_only"),
     text_step("I make the file {string} writable", "writable"),
     BDD.step("a program whose native libraries are missing") do |ctx, _args|
