@@ -6,7 +6,7 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.18.0 or later. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.25.0 or later. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]
@@ -29,7 +29,7 @@ struct Note
 end
 
 def main() -> Void
-  notes = Orm.schema("notes", Note.members, JSON.codec(Note))
+  notes = Orm.schema("notes", Note.codec)
   puts(Db.open("sqlite::memory:").ok?)
   puts(notes.table)
 end

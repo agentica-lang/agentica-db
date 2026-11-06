@@ -28,7 +28,7 @@ def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   try Db.execute(conn, "insert into users (name, age) values ('Ana', 31), ('Bob', null)", [])
-  users = Orm.schema("users", User.members, JSON.codec(User))
+  users = Orm.schema("users", User.codec)
   found = try Orm.query(conn, users, "select id, name, age from users where age > ?", [Db.Value.Int(28)])
   puts(found)
   names = try Orm.query_as(conn, "select name from users order by id", []) do |row|

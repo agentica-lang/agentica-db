@@ -23,7 +23,7 @@ end
 def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, CREATE_USERS, [])
-  users = Orm.schema("users", User.members, JSON.codec(User))
+  users = Orm.schema("users", User.codec)
   try Orm.check(conn, users)
   puts(users.table)
   puts(users.primary_key)
@@ -47,7 +47,7 @@ done
 
 ## The schema
 
-`Orm.schema(table, T.members, JSON.codec(T))` gives an `Orm.Schema[T]`. It checks nothing. `Orm.check(conn, schema)` does, once, at start up, and reads no row:
+`Orm.schema(table, T.codec)` gives an `Orm.Schema[T]`. It checks nothing. `Orm.check(conn, schema)` does, once, at start up, and reads no row:
 
 - the table and column names are plain identifiers (a letter or `_`, then letters, digits or `_`);
 - every field has a type a column can hold;
@@ -65,7 +65,7 @@ struct Tag
 end
 
 def main() -> Void
-  tags = Orm.schema("tags", Tag.members, JSON.codec(Tag)).with(primary_key: "code", generated: false)
+  tags = Orm.schema("tags", Tag.codec).with(primary_key: "code", generated: false)
   puts(tags.primary_key)
   puts(tags.generated)
 end

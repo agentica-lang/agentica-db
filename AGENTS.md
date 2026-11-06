@@ -15,7 +15,7 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
   postgres/    postgres.agc, sql.agc (the placeholder scanner), url.agc (it takes timeout_ms out of the url
                before libpq sees it)
   mysql/       mysql.agc, sql.agc (the statement scanner), url.agc
-  orm/         build.agc (the sql of the query builder), codec.agc (row to Json for JSON.codec), dialect.agc
+  orm/         build.agc (the sql of the query builder), codec.agc (row to Json for T.codec), dialect.agc
                (identifier names and quotes), errors.agc
   support/     value.agc (Value, Row; db.agc re-exports them), milliseconds.agc (the timeout_ms and
                busy_timeout numbers of the url readers)
@@ -40,8 +40,8 @@ that moves a folder, move the `ref` (and the lock) to its merge commit.
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-  Developing and testing the package needs Agentica 0.24.4 or later (`agentica test --jobs`); the minimum for a
-  project that uses the package is the one in the README, and stays 0.18.0.
+  Developing and testing the package needs Agentica 0.25.0 or later (`T.codec`, `agentica test --jobs`); the minimum
+  for a project that uses the package is the one in the README.
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
   itself). `make check` (from the root) runs `agentica check *.agc sqlite postgres mysql support orm examples specs

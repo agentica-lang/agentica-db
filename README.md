@@ -3,7 +3,7 @@
 Database package for [Agentica](https://github.com/agentica-lang/agentica): one API for SQLite, PostgreSQL and MySQL or
 MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI.
 
-agentica-db 0.4.0 needs Agentica 0.18.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
+agentica-db 0.5.0 needs Agentica 0.25.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
 
 ## Install
 
@@ -67,7 +67,7 @@ make check
 cd src/db && agentica test --jobs 4
 ```
 
-Developing needs Agentica 0.24.4 or later (`agentica test --jobs`); using the package still needs only 0.18.0.
+Developing and using the package need Agentica 0.25.0 or later (`T.codec`).
 
 The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
 `AGENTS.md`. CI runs the SQLite suite on Linux, macOS and Windows, and the whole suite on Linux.

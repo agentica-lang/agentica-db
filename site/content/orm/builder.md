@@ -38,7 +38,7 @@ def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer, admin integer not null)", [])
   try Db.execute(conn, "insert into users (name, age, admin) values ('Ana', 31, 1), ('Bob', 27, 0), ('Cy', 40, 1), ('Dee', null, 1)", [])
-  users = Orm.schema("users", User.members, JSON.codec(User))
+  users = Orm.schema("users", User.codec)
   admins = try (Orm.from(users)
     |> Orm.where_eq("admin", Db.Value.Bool(true))
     |> Orm.where("age > ?", [Db.Value.Int(28)])

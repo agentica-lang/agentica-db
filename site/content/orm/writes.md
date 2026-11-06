@@ -28,7 +28,7 @@ end
 def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
-  users = Orm.schema("users", User.members, JSON.codec(User))
+  users = Orm.schema("users", User.codec)
   ana = try Db.transaction(conn) do |tx|
     Orm.insert(tx, users, User(name: "Ana"))
   end
@@ -103,7 +103,7 @@ def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   try Db.execute(conn, "insert into users (name, age) values ('Ana', 31), ('Bob', 27), ('Cy', 40)", [])
-  users = Orm.schema("users", User.members, JSON.codec(User))
+  users = Orm.schema("users", User.codec)
   refused = Orm.from(users) |> Orm.delete_all(conn)
   puts(refused.ok?)
   old = try (Orm.from(users) |> Orm.where("age > ?", [Db.Value.Int(30)]) |> Orm.delete_all(conn))

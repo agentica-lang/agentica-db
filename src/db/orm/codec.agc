@@ -1,4 +1,4 @@
-## Turns a result row into the Json of a struct, so that `JSON.codec` can decode it. The values of a row are the
+## Turns a result row into the Json of a struct, so that `T.codec` can decode it. The values of a row are the
 ## types of the database (Int, Float, Text, Bool, Null), and a struct field asks for more: a Bool column of SQLite and
 ## MySQL comes back as 0 or 1, and a NULL goes into an `Optional` (`none`) or a `JsonField` (`Null`). Only the fields
 ## of the struct are read: a column the struct does not have is ignored, and a field with no column is left out of the
