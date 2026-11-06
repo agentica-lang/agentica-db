@@ -40,7 +40,7 @@ that moves a folder, move the `ref` (and the lock) to its merge commit.
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-  Developing and testing the package needs Agentica 0.24.1 or later (`agentica test --jobs`); the minimum for a
+  Developing and testing the package needs Agentica 0.24.4 or later (`agentica test --jobs`); the minimum for a
   project that uses the package is the one in the README, and stays 0.18.0.
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
