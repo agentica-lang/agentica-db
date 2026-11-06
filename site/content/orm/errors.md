@@ -39,7 +39,7 @@ end
 def run() -> Result[Void]
   conn = try Db.open("sqlite::memory:")
   try Db.execute(conn, "create table users (id integer primary key, name text not null unique, age integer)", [])
-  users = Orm.schema("users", User.members, JSON.codec(User))
+  users = Orm.schema("users", User.codec)
   try Orm.insert(conn, users, User(name: "Ana"))
   case Orm.insert(conn, users, User(name: "Ana"))
     ok(_) -> puts("inserted")

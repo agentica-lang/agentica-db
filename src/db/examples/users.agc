@@ -177,7 +177,7 @@ def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) ->
 end
 
 def users() -> Orm.Schema[User]
-  return Orm.schema("users", User.members, JSON.codec(User))
+  return Orm.schema("users", User.codec)
 end
 
 def json(status: Int, body: String) -> HttpResponse

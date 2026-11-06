@@ -739,11 +739,11 @@ def orm_find(state: State, key: String) -> State
 end
 
 def people() -> Orm.Schema[Person]
-  return Orm.schema("people", Person.members, JSON.codec(Person))
+  return Orm.schema("people", Person.codec)
 end
 
 def partials() -> Orm.Schema[Partial]
-  return Orm.schema("people", Partial.members, JSON.codec(Partial))
+  return Orm.schema("people", Partial.codec)
 end
 
 # The persons read, shown as rows: an age shows its value or Null.
@@ -814,19 +814,19 @@ def orm_check(state: State, which: String) -> State
   return with_conn(state) do |conn|
     case which
       "people" -> return checked(state, Orm.check(conn, people()))
-      "ghost" -> return checked(state, Orm.check(conn, Orm.schema("people", Ghost.members, JSON.codec(Ghost))))
+      "ghost" -> return checked(state, Orm.check(conn, Orm.schema("people", Ghost.codec)))
       "keyless" -> return checked(state, Orm.check(conn, people().with(primary_key: "pk")))
       "injection" -> return checked(state, Orm.check(conn, injected()))
-      "textkey" -> return checked(state, Orm.check(conn, Orm.schema("people", Named.members, JSON.codec(Named))))
+      "textkey" -> return checked(state, Orm.check(conn, Orm.schema("people", Named.codec)))
       "nullkey" -> return checked(state, Orm.check(conn, nullable_key()))
-      "nested" -> return checked(state, Orm.check(conn, Orm.schema("people", Nested.members, JSON.codec(Nested))))
-      _ -> return checked(state, Orm.check(conn, Orm.schema("people", Tagged.members, JSON.codec(Tagged))))
+      "nested" -> return checked(state, Orm.check(conn, Orm.schema("people", Nested.codec)))
+      _ -> return checked(state, Orm.check(conn, Orm.schema("people", Tagged.codec)))
     end
   end
 end
 
 def nullable_key() -> Orm.Schema[MaybeKeyed]
-  return Orm.schema("people", MaybeKeyed.members, JSON.codec(MaybeKeyed)).with(generated: false)
+  return Orm.schema("people", MaybeKeyed.codec).with(generated: false)
 end
 
 def injected() -> Orm.Schema[Person]
@@ -971,7 +971,7 @@ end
 # A marker has no field to write but its key, so an insert and an update have no column.
 def orm_marker(state: State, which: String) -> State
   return with_conn(state) do |conn|
-    markers = Orm.schema("markers", Marker.members, JSON.codec(Marker))
+    markers = Orm.schema("markers", Marker.codec)
     marker = Marker(note: JsonField.Absent)
     if which == "insert"
       case Orm.insert(conn, markers, marker)

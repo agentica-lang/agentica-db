@@ -2,7 +2,7 @@
 ## your sql; `find`, the writes (`insert`, `update`, `delete`, `patch`) and the query builder (`from`, `where_eq`, ...,
 ## `all`) write theirs from the schema, with quoted names.
 ##
-## A schema ties a struct to a table: `Orm.schema("users", User.members, JSON.codec(User))`. Every function takes
+## A schema ties a struct to a table: `Orm.schema("users", User.codec)`. Every function takes
 ## the `Db.Connection`, so a transaction body or a pooled connection passes its own. `query`, `find` and the writes
 ## take it first; the steps and the ends of a query take the query first, so that they chain with `|>`. The
 ## functions give values and never change one. An error is `error("orm error <code>: <table>: <message>")`, and
@@ -17,7 +17,7 @@
 ## column of SQLite and MySQL (0 or 1) reads as a Bool.
 
 import Build from "orm/build"
-import Codec from "orm/codec"
+import RowCodec from "orm/codec"
 import Db from "db"
 import Dialect from "orm/dialect"
 import Errors from "orm/errors"
@@ -29,7 +29,7 @@ export Errors.Error
 export struct Schema[T]
   table: String
   members: List[StructMember]
-  codec: JSON.Codec[T]
+  codec: Codec[T]
   primary_key: String = "id"
   generated: Bool = true
 end
@@ -49,10 +49,10 @@ struct Sets
   params: List[Db.Value]
 end
 
-## The schema of `table` for the struct whose `members` and `codec` are given:
-## `Orm.schema("users", User.members, JSON.codec(User))`. Nothing is checked here; `check` does.
-export def schema[T](table: String, members: List[StructMember], codec: JSON.Codec[T]) -> Schema[T]
-  return Schema(table: table, members: members, codec: codec)
+## The schema of `table` for the struct whose `codec` is given: `Orm.schema("users", User.codec)`. The members come
+## from the codec (`codec.members`). Nothing is checked here; `check` does.
+export def schema[T](table: String, codec: Codec[T]) -> Schema[T]
+  return Schema(table: table, members: codec.members, codec: codec)
 end
 
 ## The kind of the failure a text describes, so that a handler can `case` on it: `Error.BadRequest` (a column, a value
@@ -161,7 +161,7 @@ export def where_in[T](q: Query[T], column: String, values: List[Db.Value]) -> Q
     ok(member) ->
       for value in values
         problem = value_problem(member, value)
-        if Codec.value_kind(value) == "Null"
+        if RowCodec.value_kind(value) == "Null"
           return failed(q, "where_in takes no Null item, use where_eq(column, Null)")
         elsif not problem.empty?
           return failed(q, problem)
@@ -364,15 +364,15 @@ end
 # not a quiet no-match (or a conversion by the database).
 def key_kind[T](schema: Schema[T], id: Db.Value) -> Result[Void]
   keys = schema.members.select do |member| member.name == schema.primary_key end
-  if Codec.field_kind(keys[0].type) != Codec.value_kind(id)
-    return refuse(schema, "the key #{schema.primary_key} has type #{keys[0].type}, not #{Codec.value_kind(id)}")
+  if RowCodec.field_kind(keys[0].type) != RowCodec.value_kind(id)
+    return refuse(schema, "the key #{schema.primary_key} has type #{keys[0].type}, not #{RowCodec.value_kind(id)}")
   end
 
   return ok()
 end
 
 def bound[T](schema: Schema[T], member: StructMember, json: Json) -> Result[Db.Value]
-  case Codec.to_value(member, json)
+  case RowCodec.to_value(member, json)
     ok(value) -> return ok(value)
     error(message) -> return refuse(schema, message)
   end
@@ -457,7 +457,7 @@ end
 
 # What is wrong with a value for a column, or an empty text when nothing: its kind, or a Float that is not finite.
 def value_problem(member: StructMember, value: Db.Value) -> String
-  if not Codec.accepts?(member.type, value)
+  if not RowCodec.accepts?(member.type, value)
     return wrong_kind("column", member, value)
   end
 
@@ -468,7 +468,7 @@ def value_problem(member: StructMember, value: Db.Value) -> String
 end
 
 def wrong_kind(what: String, member: StructMember, value: Db.Value) -> String
-  return "the #{what} #{member.name} has type #{member.type}, not #{Codec.value_kind(value)}"
+  return "the #{what} #{member.name} has type #{member.type}, not #{RowCodec.value_kind(value)}"
 end
 
 # What every end of a query checks first: the problem met while it was built, and the schema.
@@ -537,7 +537,7 @@ def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Res
 end
 
 def read[T](schema: Schema[T], row: Db.Row) -> Result[T]
-  json = Codec.to_json(schema.members, row)
+  json = RowCodec.to_json(schema.members, row)
   case json
     error(message) -> return undecodable(schema, message)
     ok(object) ->
@@ -558,7 +558,7 @@ def valid[T](schema: Schema[T]) -> Result[Void]
       return unsound(schema, "the column name #{member.name.inspect} is not a plain identifier")
     end
 
-    if not Codec.column_type?(member.type)
+    if not RowCodec.column_type?(member.type)
       return unsound(schema, "the field #{member.name} has the type #{member.type}, which a column cannot hold")
     end
   end
@@ -569,7 +569,7 @@ def valid[T](schema: Schema[T]) -> Result[Void]
   end
 
   # A NULL key would bind as NULL in `update`, `delete` and `find` and match no row, with no error.
-  if Codec.nullable?(keys[0].type)
+  if RowCodec.nullable?(keys[0].type)
     return unsound(schema, "the primary key #{schema.primary_key} cannot be an Optional or a JsonField")
   end
 

@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `Orm.schema(table, codec)` takes the codec of the struct, `Orm.schema("users", User.codec)`, and reads
+  the members from `codec.members`; the `members` argument and `JSON.codec(User)` are gone. The package needs Agentica
+  0.25.0 or later, which has `T.codec` and `Codec[T]` in place of `JSON.codec(T)` and `JSON.Codec[T]`.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added
