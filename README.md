@@ -3,7 +3,7 @@
 Database package for [Agentica](https://github.com/agentica-lang/agentica): one API for SQLite, PostgreSQL and MySQL or
 MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI.
 
-agentica-db 0.3.0 needs Agentica 0.18.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
+agentica-db 0.4.0 needs Agentica 0.18.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
 
 ## Install
 
@@ -11,14 +11,14 @@ In your `agentica.toml`:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "TAG", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.4.0", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG --subdir src/db`. Both (and
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.4.0 --subdir src/db`. Both (and
 `agentica install` for a manifest you edited) write `agentica.lock` and `deps/db/`.
 
-The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`. `TAG` is a release
-after 0.3.0 (or `ref = "COMMIT"` for a commit of `main`); 0.3.0 and earlier have the package at the root of the
+The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release
+after 0.3.0 and for `ref = "COMMIT"` (a commit of `main`). 0.3.0 and earlier have the package at the root of the
 repository, so with those tags leave `subdir` out. The imports (`pkg/db/db`, `pkg/db/orm`) are the same in both.
 
 ## Example
