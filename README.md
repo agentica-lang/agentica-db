@@ -11,10 +11,10 @@ In your `agentica.toml`:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.4.0", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.5.0", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.4.0 --subdir src/db`. Both (and
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.5.0 --subdir src/db`. Both (and
 `agentica install` for a manifest you edited) write `agentica.lock` and `deps/db/`.
 
 The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release
