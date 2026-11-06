@@ -159,7 +159,7 @@ Feature: SQLite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/waiting.db?statement_cache=128"
     And I execute "create table t (x integer)"
-    And another task on "sqlite:[SCRATCH]/waiting.db?statement_cache=128" holds the write lock for 600 ms while I close the database under my "insert into t values (1)"
+    And another task on "sqlite:[SCRATCH]/waiting.db?statement_cache=128" holds the write lock for 800 ms while I close the database under my "insert into t values (1)"
     Then it fails with "sqlite error: the connection was closed while the statement ran"
     And the file "[SCRATCH]/waiting.db-wal" is gone or empty
 

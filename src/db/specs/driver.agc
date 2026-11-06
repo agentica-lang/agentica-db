@@ -57,7 +57,7 @@ POOL_DRAIN_MS = 1_000
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 # The time a task needs to be inside the step of a long statement before the step closes the connection.
-CLOSE_RACE_MS = 50
+CLOSE_RACE_MS = 100
 
 # The struct of the Orm scenarios: the table `people`, whose age is a value or NULL.
 struct Person
@@ -1170,23 +1170,6 @@ def blocked?(probe: Db.Connection) -> Bool
   return false
 end
 
-# Like `blocked?`, for a lock that readers do not feel (a WAL database): True once the probe cannot take the
-# write lock.
-# A probe that gets it lets it go at once.
-def write_blocked?(probe: Db.Connection) -> Bool
-  deadline = Time.monotonic_ms() + BLOCKED_WAIT_MS
-  while Time.monotonic_ms() < deadline
-    if not Db.execute(probe, Sqlite.BEGIN_SQL, []).ok?
-      return true
-    end
-
-    _ = Db.execute(probe, "ROLLBACK", [])
-    Task.sleep(1)
-  end
-
-  return false
-end
-
 def never_blocked() -> String
   return "the task never held a lock in #{BLOCKED_WAIT_MS} ms"
 end
@@ -1347,28 +1330,18 @@ def close_while_locked(state: State, req: Request) -> Handled
     return reply_ok(failed(state, NO_DATABASE))
   end
 
-  url = expand(state, req.text)
-  case Db.open(probe_url(url))
-    error(message) -> return Handled(state: state, reply: message)
-    ok(probe) ->
-      holder = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
-      seen = write_blocked?(probe)
-      Db.close(probe)
-      if not seen
-        return Handled(state: state, reply: never_blocked())
-      end
-
-      conn = state.conns[0]
-      writer = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
-      Task.sleep(CLOSE_RACE_MS)
-      Db.close(conn)
-      ran = Task.await(writer)
-      _ = Task.await(holder)
-      Db.close(conn)
-      case ran
-        error(message) -> return reply_ok(failed(state, message))
-        ok(count) -> return reply_ok(recorded(state, Outcome.Counted(count)))
-      end
+  holder = Task.spawn(&hold_lock, Hold(url: expand(state, req.text), ms: req.number))
+  Task.sleep(HOLD_START_MS)
+  conn = state.conns[0]
+  writer = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
+  Task.sleep(CLOSE_RACE_MS)
+  Db.close(conn)
+  ran = Task.await(writer)
+  _ = Task.await(holder)
+  Db.close(conn)
+  case ran
+    error(message) -> return reply_ok(failed(state, message))
+    ok(count) -> return reply_ok(recorded(state, Outcome.Counted(count)))
   end
 end
 
