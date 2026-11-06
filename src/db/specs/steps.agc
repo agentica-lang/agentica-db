@@ -80,7 +80,7 @@ def main() -> Void
       asked = send(ctx, Request(op: "statements"))
       send(asked, Request(op: "expect_count", number: args[0].to_i!))
     end,
-    text_step("the file {string} is gone", "expect_gone"),
+    text_step("the file {string} is gone or empty", "expect_gone"),
     text_step("I make the file {string} read-only", "read_only"),
     text_step("I make the file {string} writable", "writable"),
     BDD.step("a program whose native libraries are missing") do |ctx, _args|

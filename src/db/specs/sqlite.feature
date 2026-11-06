@@ -94,7 +94,7 @@ Feature: SQLite
     Then the connection holds 0 prepared statements
 
   # A statement that is not finalized makes SQLite keep the closed connection (and its WAL file) until the program
-  # ends; closing it last checkpoints the WAL and removes its files.
+  # ends; closing it last checkpoints the WAL and removes its files (the SQLite of macOS keeps the WAL file, empty).
   Scenario: Closing the connection finalizes its cached statements on sqlite
     Given a "sqlite" database
     When I open "sqlite:[SCRATCH]/close.db"
@@ -103,7 +103,7 @@ Feature: SQLite
     And I query "select x from t"
     Then the connection holds 3 prepared statements
     When I close the database
-    Then the file "[SCRATCH]/close.db-wal" is gone
+    Then the file "[SCRATCH]/close.db-wal" is gone or empty
 
   # SQLite prepares the cached statement again at its first step after the schema changed, and the names of its
   # columns change with it.

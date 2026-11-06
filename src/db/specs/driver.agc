@@ -1521,9 +1521,11 @@ def judge(last: Outcome, req: Request) -> String
   end
 end
 
+# A WAL file that the last connection closed is gone, or empty where the SQLite library keeps it (Apple's).
 def judge_gone(path: String) -> String
-  if File.stat(path, IO_TIMEOUT_MS).ok?
-    return "expected the file #{path} to be gone, but it exists"
+  found = File.stat(path, IO_TIMEOUT_MS)
+  if found.ok? and found.unwrap!.size_bytes > 0
+    return "expected the file #{path} to be gone or empty, but it has #{found.unwrap!.size_bytes} bytes"
   end
 
   return ""
