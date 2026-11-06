@@ -49,16 +49,17 @@ pool_hash="$(
   done | sha256sum | cut -d' ' -f1
 )"
 commit="0000000000000000000000000000000000000000"
-# The db package declares the pool at a commit (src/db/agentica.toml), and one name stands for one source in a build:
-# the project and the lock must name that same commit for it.
-pool_commit="$(sed -n 's/^pool = .*ref = "\([0-9a-f]*\)".*/\1/p' "$db_root/agentica.toml")"
-[ -n "$pool_commit" ] || { echo "check-site-samples: no pool ref in $db_root/agentica.toml" >&2; exit 2; }
+# The db package declares the pool at a tag (src/db/agentica.toml), and one name stands for one source in a build:
+# the project and the lock must name that same tag for it.
+pool_tag="$(sed -n 's/^pool = .*tag = "\([^"]*\)".*/\1/p' "$db_root/agentica.toml")"
+[ -n "$pool_tag" ] || { echo "check-site-samples: no pool tag in $db_root/agentica.toml" >&2; exit 2; }
+pool_commit="$commit"
 cat > "$work/agentica.toml" <<TOML
 name = "site_samples"
 
 [dependencies]
 db = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit", subdir = "src/db" }
-pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "$pool_commit", subdir = "src/pool" }
+pool = { git = "https://github.com/agentica-lang/agentica-db", tag = "$pool_tag", subdir = "src/pool" }
 TOML
 cat > "$work/agentica.lock" <<LOCK
 version = 1
@@ -75,7 +76,7 @@ hash = "sha256:$hash"
 name = "pool"
 git = "https://github.com/agentica-lang/agentica-db"
 subdir = "src/pool"
-ref = "$pool_commit"
+tag = "$pool_tag"
 commit = "$pool_commit"
 hash = "sha256:$pool_hash"
 LOCK
