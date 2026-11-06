@@ -4,11 +4,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-06
+
+Needs Agentica 0.25.0 or later.
+
 ### Changed
 
 - **Breaking:** `Orm.schema(table, codec)` takes the codec of the struct, `Orm.schema("users", User.codec)`, and reads
   the members from `codec.members`; the `members` argument and `JSON.codec(User)` are gone. The package needs Agentica
   0.25.0 or later, which has `T.codec` and `Codec[T]` in place of `JSON.codec(T)` and `JSON.Codec[T]`.
+- The `pool` dependency of `src/db` is pinned by the tag `0.4.0` and no longer by a commit.
 
 ## [0.4.0] - 2026-11-06
 
@@ -137,7 +142,8 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.4.0...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/agentica-lang/agentica-db/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/agentica-lang/agentica-db/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/agentica-lang/agentica-db/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/agentica-lang/agentica-db/compare/0.1.0...0.2.0

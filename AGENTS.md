@@ -32,8 +32,8 @@ A user's import path is the file path inside the package, so `import Db from "pk
 dependency says `subdir = "src/db"` (`subdir = "src/pool"` for the pool). Moving a file other than the modules at the
 root of `src/db` (`db`, `db_pool`, `orm`, `migrate`) does not change the documented imports of users; moving one of
 those four does. The package of this repository that uses the pool declares `subdir = "src/pool"` like any user, and
-the workspace reads it from its folder. Its `ref` is a commit that holds the pool at `src/pool`: after the pull request
-that moves a folder, move the `ref` (and the lock) to its merge commit.
+the workspace reads it from its folder. Its `tag` is a release that holds the pool at `src/pool` (0.4.0 and later): after
+the pull request that moves a folder, move the `tag` (and the lock, `agentica update pool`) to a release that has it.
 
 ## Commands
 
