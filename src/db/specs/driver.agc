@@ -236,7 +236,7 @@ def act(state: State, req: Request) -> Handled
     "pool_query_while_held" -> return reply_ok(pool_query_while_held(state, req))
     "statements" -> return reply_ok(statements(state))
     "pool_statements" -> return reply_ok(pool_statements(state))
-    "close_while_running" -> return reply_ok(close_while_running(state, req.text))
+    "close_while_locked" -> return close_while_locked(state, req)
     "in_transaction" -> return check_connection(state, req.op)
     "not_in_transaction" -> return check_connection(state, req.op)
     "healthy" -> return check_connection(state, req.op)
@@ -1170,6 +1170,23 @@ def blocked?(probe: Db.Connection) -> Bool
   return false
 end
 
+# Like `blocked?`, for a lock that readers do not feel (a WAL database): True once the probe cannot take the
+# write lock.
+# A probe that gets it lets it go at once.
+def write_blocked?(probe: Db.Connection) -> Bool
+  deadline = Time.monotonic_ms() + BLOCKED_WAIT_MS
+  while Time.monotonic_ms() < deadline
+    if not Db.execute(probe, Sqlite.BEGIN_SQL, []).ok?
+      return true
+    end
+
+    _ = Db.execute(probe, "ROLLBACK", [])
+    Task.sleep(1)
+  end
+
+  return false
+end
+
 def never_blocked() -> String
   return "the task never held a lock in #{BLOCKED_WAIT_MS} ms"
 end
@@ -1321,6 +1338,40 @@ def open_while_locked(state: State, req: Request) -> Handled
   end
 end
 
+# A task holds the write lock of the database at the url for `req.number` milliseconds. This connection's write, run in
+# another task, finds the lock held and sleeps between its tries; the connection is closed in that sleep,
+# which finalizes
+# its statement. The outcome is the failure of the write, whose task finds the connection closed when it wakes up.
+def close_while_locked(state: State, req: Request) -> Handled
+  if state.conns.empty?
+    return reply_ok(failed(state, NO_DATABASE))
+  end
+
+  url = expand(state, req.text)
+  case Db.open(probe_url(url))
+    error(message) -> return Handled(state: state, reply: message)
+    ok(probe) ->
+      holder = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
+      seen = write_blocked?(probe)
+      Db.close(probe)
+      if not seen
+        return Handled(state: state, reply: never_blocked())
+      end
+
+      conn = state.conns[0]
+      writer = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
+      Task.sleep(CLOSE_RACE_MS)
+      Db.close(conn)
+      ran = Task.await(writer)
+      _ = Task.await(holder)
+      Db.close(conn)
+      case ran
+        error(message) -> return reply_ok(failed(state, message))
+        ok(count) -> return reply_ok(recorded(state, Outcome.Counted(count)))
+      end
+  end
+end
+
 def hold_lock(job: Hold) -> Result[Int]
   conn = try Db.open(job.url)
   try Db.execute(conn, "BEGIN EXCLUSIVE", [])
@@ -1340,27 +1391,6 @@ end
 # A runtime error in the task ends only the task, and its await gives it as an error.
 def run_job(job: Job) -> Result[Int]
   return Db.execute(job.conn, job.sql, [])
-end
-
-def query_job(job: Job) -> Result[List[Db.Row]]
-  return Db.query(job.conn, job.sql, [])
-end
-
-# Closes the connection while another task runs a long statement on it, and once more when the task is back. The close
-# waits for the step and finalizes the statement; the outcome is the failure of the task, whose call found the
-# connection closed when its step returned.
-def close_while_running(state: State, sql: String) -> State
-  return with_conn(state) do |conn|
-    task = Task.spawn(&query_job, Job(conn: conn, sql: Cells.expand(sql)))
-    Task.sleep(CLOSE_RACE_MS)
-    Db.close(conn)
-    ran = Task.await(task)
-    Db.close(conn)
-    case ran
-      error(message) -> return failed(state, message)
-      ok(rows) -> return recorded(state, Outcome.Rows(rows))
-    end
-  end
 end
 
 def execute_in_task(state: State, sql: String) -> State

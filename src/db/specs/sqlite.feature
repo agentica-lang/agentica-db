@@ -151,16 +151,17 @@ Feature: SQLite
     And another task executes "select 1 as n"
     Then it fails mentioning "RUNTIME-NATIVE-CLOSED"
 
-  # The close finds the statement of the other task inside a step: it finalizes the statement once the step is out of
-  # it. The task finds the connection closed when its step returns and fails without reading the statement. The WAL
-  # file shows that the database was closed for good, and the second close does nothing.
-  Scenario: Closing a connection under a running statement ends the call cleanly on sqlite
+  # The write of another task finds the lock held and sleeps between its tries; the connection is closed in that sleep,
+  # which finalizes its statement. The task finds the connection closed when it wakes up and fails without touching
+  # the statement, and the second close does nothing. The WAL file shows that the database was closed for good, once the
+  # task that held the lock has closed its own connection.
+  Scenario: Closing a connection under a call that waits for a lock ends the call cleanly on sqlite
     Given a "sqlite" database
-    When I open "sqlite:[SCRATCH]/running.db?statement_cache=0"
+    When I open "sqlite:[SCRATCH]/waiting.db?statement_cache=128"
     And I execute "create table t (x integer)"
-    And I close the database while another task runs "with recursive c(x) as (select 1 union all select x + 1 from c limit 2000000) select min(x) as n from c"
+    And another task on "sqlite:[SCRATCH]/waiting.db?statement_cache=128" holds the write lock for 600 ms while I close the database under my "insert into t values (1)"
     Then it fails with "sqlite error: the connection was closed while the statement ran"
-    And the file "[SCRATCH]/running.db-wal" is gone or empty
+    And the file "[SCRATCH]/waiting.db-wal" is gone or empty
 
   Scenario: A file database keeps its rows after it is closed and opened again on sqlite
     Given a "sqlite" database

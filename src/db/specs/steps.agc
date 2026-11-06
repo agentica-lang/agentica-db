@@ -85,7 +85,11 @@ def main() -> Void
       send(asked, Request(op: "expect_count", number: args[0].to_i!))
     end,
     text_step("the file {string} is gone or empty", "expect_gone"),
-    text_step("I close the database while another task runs {string}", "close_while_running"),
+    BDD.step(
+      "another task on {string} holds the write lock for {int} ms while I close the database under my {string}",
+    ) do |ctx, args|
+      send(ctx, Request(op: "close_while_locked", text: args[0], cells: [args[2]], number: args[1].to_i!))
+    end,
     text_step("I make the file {string} read-only", "read_only"),
     text_step("I make the file {string} writable", "writable"),
     BDD.step("a program whose native libraries are missing") do |ctx, _args|
