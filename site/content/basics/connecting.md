@@ -56,6 +56,6 @@ The code of PostgreSQL is its five character SQLSTATE. The code of MySQL is the 
 
 ## Closing
 
-`Db.close(conn)` ends the connection, and closing twice is safe. The end of the task that opened the connection closes it too, and so does the end of `main`.
+`Db.close(conn)` ends the connection, and closing twice is safe. The end of the task that opened the connection closes it too, and so does the end of `main`. The one exception is a SQLite url with `statement_cache` above 0: the connection then keeps prepared statements that only `Db.close` finalizes, so close it yourself (see [SQLite](/databases/sqlite/)).
 
 A connection belongs to the task that opened it, and one task uses it at a time. Open it in the task that keeps it (usually `main`), or hand it over with `Task.spawn_owning(&f, conn)`: a connection opened in a task that ends comes back closed. Using a connection after `close` is an error (`postgres error: the connection is closed`), except for SQLite, where it is a runtime error (`RUNTIME-NATIVE-CLOSED`).

@@ -56,6 +56,8 @@ NO_POOL = "no pool is started"
 POOL_DRAIN_MS = 1_000
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
+# The time a task needs to be inside the step of a long statement before the step closes the connection.
+CLOSE_RACE_MS = 50
 
 # The struct of the Orm scenarios: the table `people`, whose age is a value or NULL.
 struct Person
@@ -233,6 +235,8 @@ def act(state: State, req: Request) -> Handled
     "pool_hold" -> return reply_ok(pool_hold(state, req.number))
     "pool_query_while_held" -> return reply_ok(pool_query_while_held(state, req))
     "statements" -> return reply_ok(statements(state))
+    "pool_statements" -> return reply_ok(pool_statements(state))
+    "close_while_running" -> return reply_ok(close_while_running(state, req.text))
     "in_transaction" -> return check_connection(state, req.op)
     "not_in_transaction" -> return check_connection(state, req.op)
     "healthy" -> return check_connection(state, req.op)
@@ -278,6 +282,23 @@ def statements(state: State) -> State
   case state.conns[0]
     Db.Connection.Sqlite(handle) -> return recorded(state, Outcome.Counted(Sqlite.prepared_count(handle)))
     _ -> return failed(state, "only a SQLite connection has prepared statements to count")
+  end
+end
+
+# The number of prepared statements of the SQLite connection that a block of the pool gets.
+def pool_statements(state: State) -> State
+  return with_pool(state) do |pool|
+    found = DbPool.with(pool) do |conn|
+      case conn
+        Db.Connection.Sqlite(handle) -> return ok(Sqlite.prepared_count(handle))
+        _ -> return error("only a SQLite connection has prepared statements to count")
+      end
+    end
+
+    case found
+      error(message) -> return failed(state, message)
+      ok(count) -> return recorded(state, Outcome.Counted(count))
+    end
   end
 end
 
@@ -1319,6 +1340,27 @@ end
 # A runtime error in the task ends only the task, and its await gives it as an error.
 def run_job(job: Job) -> Result[Int]
   return Db.execute(job.conn, job.sql, [])
+end
+
+def query_job(job: Job) -> Result[List[Db.Row]]
+  return Db.query(job.conn, job.sql, [])
+end
+
+# Closes the connection while another task runs a long statement on it, and once more when the task is back. The close
+# waits for the step and finalizes the statement; the outcome is the failure of the task, whose call found the
+# connection closed when its step returned.
+def close_while_running(state: State, sql: String) -> State
+  return with_conn(state) do |conn|
+    task = Task.spawn(&query_job, Job(conn: conn, sql: Cells.expand(sql)))
+    Task.sleep(CLOSE_RACE_MS)
+    Db.close(conn)
+    ran = Task.await(task)
+    Db.close(conn)
+    case ran
+      error(message) -> return failed(state, message)
+      ok(rows) -> return recorded(state, Outcome.Rows(rows))
+    end
+  end
 end
 
 def execute_in_task(state: State, sql: String) -> State

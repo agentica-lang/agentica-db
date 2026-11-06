@@ -138,7 +138,7 @@ def private_memory?(url: String) -> Bool
 end
 
 def connect(url: String) -> Result[Db.Connection]
-  return Db.open(url)
+  return Db.open_pooled(url)
 end
 
 # Gets a connection back after a block. A connection the block closed or lost is not reused (`Db.connected?`, no round

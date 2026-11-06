@@ -38,7 +38,8 @@ export NO_TIMEOUT = 0
 
 ## An open connection, owned by the task that opened it. Close it with `close`, or the end of the task closes it (the
 ## end of `main` closes one still open). Open it in the task that keeps it (usually `main`), or hand it over with
-## `Task.spawn_owning(&f, conn)`.
+## `Task.spawn_owning(&f, conn)`. The one exception is a SQLite url with `statement_cache` above 0: its prepared
+## statements are finalized by `close` only.
 export enum Connection
   Sqlite(Sqlite.Connection)
   Postgres(Postgres.Connection)
@@ -49,38 +50,20 @@ end
 ## parameters follow a `?`, as in `sqlite:app.db?journal_mode=delete`), or
 ## `postgres://` and `postgresql://` urls, which libpq parses, or `mysql://` and `mariadb://` urls.
 export def open(url: String) -> Result[Connection]
-  # Errors name the scheme only: a url can hold a password.
-  if url.start_with?("sqlite://")
-    return error("db error: unsupported database url with scheme sqlite://: write sqlite:PATH, without //")
-  end
+  return open_for(url, false)
+end
 
-  if url.start_with?(SQLITE_PREFIX)
-    path = url.slice(SQLITE_PREFIX.length, url.length - SQLITE_PREFIX.length)
-    if path.empty?
-      return error("db error: unsupported database url with scheme sqlite: the path is empty")
-    end
-
-    return open_sqlite(path)
-  end
-
-  if POSTGRES_PREFIXES.any? do |prefix| url.start_with?(prefix) end
-    return open_postgres(url)
-  end
-
-  if MYSQL_PREFIXES.any? do |prefix| url.start_with?(prefix) end
-    return open_mysql(url)
-  end
-
-  return error(
-    "db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory:, " +
-    "postgres:// or mysql://",
-  )
+## Like `open`, for a connection that its owner always closes, which is what `DbPool` does: a SQLite connection then
+## keeps 128 prepared statements unless the url sets `statement_cache` (`open` keeps none by default). The other
+## databases open as in `open`.
+export def open_pooled(url: String) -> Result[Connection]
+  return open_for(url, true)
 end
 
 ## Opens a SQLite database file, or `:memory:`. Parameters after a `?` set `journal_mode` (default `wal`),
 ## `foreign_keys` (default `on`), `busy_timeout` in milliseconds (default 5000), `timeout_ms` (default none),
 ## `synchronous`, `mmap_size`, `cache_size`, `journal_size_limit`, `statement_cache` (prepared statements kept per
-## connection, default 128) and `fts5=required` (see `sqlite/sqlite.agc`).
+## connection, default 0: a connection nobody closes must hold none, see `sqlite/sqlite.agc`) and `fts5=required`.
 export def open_sqlite(path: String) -> Result[Connection]
   handle = try Sqlite.open(path)
   return ok(Connection.Sqlite(handle))
@@ -190,6 +173,44 @@ export def transaction[R](conn: Connection, body: Fn[Connection, Result[R]]) -> 
     ok(value) -> return commit(conn, value)
     error(message) -> return abandon(conn, message)
   end
+end
+
+def open_for(url: String, pooled: Bool) -> Result[Connection]
+  # Errors name the scheme only: a url can hold a password.
+  if url.start_with?("sqlite://")
+    return error("db error: unsupported database url with scheme sqlite://: write sqlite:PATH, without //")
+  end
+
+  if url.start_with?(SQLITE_PREFIX)
+    path = url.slice(SQLITE_PREFIX.length, url.length - SQLITE_PREFIX.length)
+    if path.empty?
+      return error("db error: unsupported database url with scheme sqlite: the path is empty")
+    end
+
+    if pooled
+      return open_sqlite_pooled(path)
+    end
+
+    return open_sqlite(path)
+  end
+
+  if POSTGRES_PREFIXES.any? do |prefix| url.start_with?(prefix) end
+    return open_postgres(url)
+  end
+
+  if MYSQL_PREFIXES.any? do |prefix| url.start_with?(prefix) end
+    return open_mysql(url)
+  end
+
+  return error(
+    "db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory:, " +
+    "postgres:// or mysql://",
+  )
+end
+
+def open_sqlite_pooled(path: String) -> Result[Connection]
+  handle = try Sqlite.open_pooled(path)
+  return ok(Connection.Sqlite(handle))
 end
 
 def commit[R](conn: Connection, value: R) -> Result[R]

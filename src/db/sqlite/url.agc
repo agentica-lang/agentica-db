@@ -37,7 +37,9 @@ URI_PREFIX = "file:"
 ## then uses `normal` in a WAL database and leaves SQLite's own `full` in any other mode. `mmap_size` is in bytes (0 is
 ## SQLite's own: no memory map), `cache_size` is in pages, or in KiB when negative (SQLite's own is -2000), and
 ## `journal_size_limit` is in bytes (negative is SQLite's own: no limit). `statement_cache` is the number of prepared
-## statements that a connection keeps for the next call with the same sql (0 keeps none, as before the cache).
+## statements that a connection keeps for the next call with the same sql (0 keeps none); -1, which no url can say,
+## means that the url did not name it, and the caller's default applies (0 for `Sqlite.open`, 128 for
+## `Sqlite.open_pooled`).
 export struct Settings
   journal_mode: String = "wal"
   journal_given: Bool = false
@@ -49,7 +51,7 @@ export struct Settings
   mmap_size: Int = 134_217_728
   cache_size: Int = 2000
   journal_size_limit: Int = 67_108_864
-  statement_cache: Int = 128
+  statement_cache: Int = -1
   fts5: Bool = false
 end
 

@@ -22,7 +22,7 @@ def main() -> Void
       try Test.eq(bare.settings.mmap_size, 134_217_728)
       try Test.eq(bare.settings.cache_size, 2000)
       try Test.eq(bare.settings.journal_size_limit, 67_108_864)
-      try Test.eq(bare.settings.statement_cache, 128)
+      try Test.eq(bare.settings.statement_cache, -1)
       try Test.eq(bare.settings.fts5, false)
       try Test.eq(target_of(":memory:").path, ":memory:")
       lone = target_of("app.db?")

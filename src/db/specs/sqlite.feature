@@ -44,6 +44,7 @@ Feature: SQLite
   # bound (a NULL, a blob), and the statements of the connection are the three sql texts.
   Scenario: A statement runs again with other values and is prepared once on sqlite
     Given a "sqlite" database
+    When I open "sqlite::memory:?statement_cache=128"
     And I execute "create table t (id integer primary key, v)"
     When I execute "insert into t values (?, ?)" with:
       | value  |
@@ -75,7 +76,8 @@ Feature: SQLite
     And the connection holds 3 prepared statements
 
   # With statement_cache=2 a third sql makes room by finalizing the one used least recently, so the connection never
-  # holds more than two; a sql that does not prepare is not kept; 0 keeps none, as before the cache.
+  # holds more than two; a sql that does not prepare is not kept; 0 keeps none, and so does a connection opened without
+  # the parameter (the end of its task closes it, which a kept statement would stop).
   Scenario: The cache is bounded by statement_cache and keeps only statements that prepared on sqlite
     Given a "sqlite" database
     When I open "sqlite::memory:?statement_cache=2"
@@ -92,12 +94,16 @@ Feature: SQLite
     And I query "select 1 as n"
     And I query "select 1 as n"
     Then the connection holds 0 prepared statements
+    When I open "sqlite::memory:"
+    And I query "select 1 as n"
+    And I query "select 1 as n"
+    Then the connection holds 0 prepared statements
 
   # A statement that is not finalized makes SQLite keep the closed connection (and its WAL file) until the program
   # ends; closing it last checkpoints the WAL and removes its files (the SQLite of macOS keeps the WAL file, empty).
   Scenario: Closing the connection finalizes its cached statements on sqlite
     Given a "sqlite" database
-    When I open "sqlite:[SCRATCH]/close.db"
+    When I open "sqlite:[SCRATCH]/close.db?statement_cache=128"
     And I execute "create table t (x integer)"
     And I execute "insert into t values (1)"
     And I query "select x from t"
@@ -135,6 +141,26 @@ Feature: SQLite
     When I close the database
     And another task executes "select 1"
     Then it fails mentioning "RUNTIME-NATIVE-CLOSED"
+
+  # The sql was cached before the close: the cache must not hand its statement to a call on a closed connection.
+  Scenario: A sql that was cached before the close is a closed connection error on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:?statement_cache=128"
+    And I query "select 1 as n"
+    And I close the database
+    And another task executes "select 1 as n"
+    Then it fails mentioning "RUNTIME-NATIVE-CLOSED"
+
+  # The close finds the statement of the other task inside a step: it finalizes the statement once the step is out of
+  # it. The task finds the connection closed when its step returns and fails without reading the statement. The WAL
+  # file shows that the database was closed for good, and the second close does nothing.
+  Scenario: Closing a connection under a running statement ends the call cleanly on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/running.db?statement_cache=0"
+    And I execute "create table t (x integer)"
+    And I close the database while another task runs "with recursive c(x) as (select 1 union all select x + 1 from c limit 2000000) select min(x) as n from c"
+    Then it fails with "sqlite error: the connection was closed while the statement ran"
+    And the file "[SCRATCH]/running.db-wal" is gone or empty
 
   Scenario: A file database keeps its rows after it is closed and opened again on sqlite
     Given a "sqlite" database

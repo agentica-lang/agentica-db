@@ -129,6 +129,44 @@ Feature: Pooling
       | v     |
       | Int 1 |
 
+  # A pool owns its connections and closes them, so they keep prepared statements by default.
+  Scenario: A pool connection keeps its prepared statements on sqlite
+    Given a "sqlite" database
+    When I start a pool on "[URL]" with:
+      | option | value |
+      | size   | 1     |
+    And I query "select 1 as v" in the pool
+    And I query "select 2 as v" in the pool
+    Then the pool connection holds 2 prepared statements
+
+  # The lease runs out while the block reads a result of many rows: its task is parked in a step, and the statement sits
+  # at a row. The pool interrupts and closes the connection, which must finalize the statement (cached, or not cached
+  # with statement_cache=0) and not wait for it: the next caller is served, and the file is closed for good once the
+  # pool is, which its WAL file shows.
+  Scenario Outline: A lease that runs out in the middle of many rows leaves no open file on sqlite with <cache>
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/lease.db<suffix>" with:
+      | option      | value |
+      | size        | 1     |
+      | lease_ms    | 300   |
+      | checkout_ms | 3000  |
+    And I execute "create table t (x integer)" in the pool
+    And I query "with recursive c(x) as (select 1 union all select x + 1 from c limit 400000000) select x from c" in the pool
+    Then it fails with "pool error: lease timed out after 300 ms"
+    When I query "select 1 as v" in the pool
+    Then the result is:
+      | v     |
+      | Int 1 |
+    When I start a pool on "[URL]" with:
+      | option | value |
+      | size   | 1     |
+    Then the file "[SCRATCH]/lease.db-wal" is gone or empty
+
+    Examples:
+      | cache   | suffix                |
+      | default |                       |
+      | none    | ?statement_cache=0    |
+
   Scenario Outline: A caller that waits too long for a connection gets a checkout timeout on <adapter>
     Given a "<adapter>" database
     When I start a pool on "[URL]" with:

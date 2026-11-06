@@ -6,10 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- SQLite keeps the prepared statements of a connection by their sql, up to `statement_cache` (a url parameter, default
-  128, 0 keeps none): a repeated query skips the prepare, a hop to the compute pool, and the least recently used
-  statement is finalized when the cache is full. `Db.close` finalizes them all. `examples/sqlite_bench.agc` measures the
-  cost of a query and of a row.
+- SQLite keeps the prepared statements of a connection by their sql, up to `statement_cache` (a url parameter): a
+  repeated query skips the prepare, a hop to the compute pool, and the least recently used statement is finalized when
+  the cache is full. The default is 128 for the connections of a `DbPool` and 0 for `Db.open`, because the end of a
+  task does not finalize statements and SQLite would keep the file of an unclosed connection open until the program
+  ends: close a connection that you open with `statement_cache` above 0. `Db.close` finalizes the statements, also
+  those of a call that was cancelled. `Db.open_pooled` is `Db.open` with the pool default.
+  `examples/sqlite_bench.agc` measures the cost of a query and of a row.
 
 ## [0.5.0] - 2026-11-06
 

@@ -33,8 +33,9 @@ export OK = "ok"
 ## (text: the key as a typed cell), `round_trips` (table: column type and cell), `float_oracle` (text: a float
 ## literal), `query_within` and `execute_within` (text: sql, number: the `timeout_ms` of the call), `in_transaction`,
 ## `not_in_transaction`, `healthy` and `not_healthy` (they check the answer of `Db.in_transaction?` and `Db.healthy?`),
-## `statements` (the number of prepared statements of the SQLite connection, for `expect_count`) and `expect_gone`
-## (text: a file that must not exist or must be empty),
+## `statements` and `pool_statements` (the number of prepared statements of the SQLite connection, or of the one a
+## block of the pool gets, for `expect_count`), `close_while_running` (text: a long sql that a task runs while this one
+## closes the connection) and `expect_gone` (text: a file that must not exist or must be empty),
 ## the ops of `DbPool`: `pool_start` (text: a database url, table: header and the options `size`, `max_overflow`,
 ## `checkout_ms` and `lease_ms`), `pool_query` and `pool_execute` (text: sql, number: the `timeout_ms` of the call;
 ## each runs in one block of the pool), `pool_script` (table: header and statements, run in one block),
