@@ -315,6 +315,19 @@ Feature: SQLite
       | Int 2 |
       | Int 3 |
 
+  # A new connection has not read the schema, so its first statements wait for the lock at their prepare, not at a
+  # step: `open` runs PRAGMAs that read the file, and it must give a working connection once the lock is let go.
+  Scenario: A connection that is opened while another holds the write lock waits at its prepare on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/open.db?journal_mode=delete"
+    And I execute "create table t (x integer)"
+    And I execute "insert into t values (1), (2)"
+    And another task on "sqlite:[SCRATCH]/open.db?journal_mode=delete" holds the write lock for 300 ms while I open it
+    Then the query "select x from t order by x" returns:
+      | x     |
+      | Int 1 |
+      | Int 2 |
+
   # A deferred transaction that has read holds a read lock. A write that another connection blocks cannot be waited
   # for: that connection commits only after this one lets go of its read lock, so both would wait for the busy_timeout.
   # SQLite does not wait here either, and the write fails at once. The other connection commits when this one ends

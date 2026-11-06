@@ -256,6 +256,7 @@ def act(state: State, req: Request) -> Handled
     "query_until_commit" -> return query_until_commit(state, req)
     "write_while_blocked" -> return write_while_blocked(state, req)
     "query_while_locked" -> return query_while_locked(state, req)
+    "open_while_locked" -> return open_while_locked(state, req)
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -1255,6 +1256,33 @@ def query_while_locked(state: State, req: Request) -> Handled
         error(message) -> return reply_ok(failed(state, message))
         ok(rows) -> return reply_ok(recorded(state, Outcome.Rows(rows)))
       end
+  end
+end
+
+# A task holds the write lock (EXCLUSIVE, which refuses readers too) for `req.number` milliseconds while this
+# connection is opened again at the same url. A new connection has not read the schema, so the statements that `open`
+# runs must wait at their prepare, not at a step; the open must give a connection that works.
+def open_while_locked(state: State, req: Request) -> Handled
+  url = expand(state, req.text)
+  case Db.open(probe_url(url))
+    error(message) -> return Handled(state: state, reply: message)
+    ok(probe) ->
+      task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
+      seen = blocked?(probe)
+      Db.close(probe)
+      started = Time.monotonic_ms()
+      reopened = open_at(state, state.adapter, url)
+      waited = Time.monotonic_ms() - started
+      _ = Task.await(task)
+      if not seen
+        return Handled(state: state, reply: never_blocked())
+      end
+
+      if waited < req.number / 10
+        return Handled(state: reopened, reply: "the open took #{waited} ms, it did not wait for the lock")
+      end
+
+      return reply_ok(reopened)
   end
 end
 

@@ -542,7 +542,8 @@ def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Re
   rows: List[Row] = []
   while true
     code = sqlite3_step(stmt)
-    # Written out here, not as a call: the check runs once per row, and a row fails its first comparison.
+    # Written out here, not as a call: the check runs once per row, and a row fails its first comparison. Keep it in
+    # sync with `lock_code?`.
     if code != SQLITE_ROW and (code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED)
       stepped = step_after_lock(conn, stmt, code)
       code = stepped.code
