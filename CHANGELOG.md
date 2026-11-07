@@ -4,7 +4,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Needs Agentica 0.26.0 or later (native modules).
+Needs Agentica 0.26.1 or later (native modules).
 
 ### Added
 
@@ -21,7 +21,7 @@ Needs Agentica 0.26.0 or later (native modules).
 
 ### Changed
 
-- **Breaking:** needs Agentica 0.26.0 or later.
+- **Breaking:** needs Agentica 0.26.1 or later.
 - **Breaking:** `DbPool.Pool` is a pool of a private config, no longer `Pool[String, Db.Connection]` of `pkg/pool`:
   name it `DbPool.Pool`.
 

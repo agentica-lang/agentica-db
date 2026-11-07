@@ -43,12 +43,11 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 
 ## Commands
 
-- Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
-  under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
-  three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-  Developing and testing the package needs Agentica 0.26.0 or later (native modules) and a C compiler (`cc`, or
-  `CC`); the minimum for a project that uses the package is the one in the README. Until 0.26.0 is released, CI
-  builds Agentica at the commit `AGENTICA_COMMIT` of `ci.yml` instead (`.github/actions/agentica`).
+- Binary: developing and testing the package needs Agentica 0.26.1 or later (native modules) and a C compiler
+  (`cc`, or `CC`); the minimum for a project that uses the package is the one in the README. Download a release
+  under `.tools/` (gitignored), never `/tmp`. CI builds Agentica at the commit `AGENTICA_COMMIT` of
+  `.github/workflows/ci.yml`, the one of the tag 0.26.1 (`.github/actions/agentica`); a version bump sets it to the
+  commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
   sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver (CI does both). A C change: C11, every
   SQLite return code checked, every statement and connection freed exactly once, also on the error paths.

@@ -9,10 +9,9 @@ permissions:
   contents: read
 
 env:
-  # The package needs Agentica 0.26.0 (native modules), not released yet: .github/actions/agentica builds this commit
-  # of agentica-lang/agentica (master and the fix of native resources in a package, agentica PR
-  # native-resource-library) until it is.
-  AGENTICA_COMMIT: 01e52f1d257544fd45b3a80effbc6a1fa5586456
+  # The package needs Agentica 0.26.1 (native modules, and native resources in a package): .github/actions/agentica
+  # builds the commit of the tag 0.26.1 of agentica-lang/agentica.
+  AGENTICA_COMMIT: 88f8bb3498ca86959f3e8dc7626d89de17e74ddf
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
