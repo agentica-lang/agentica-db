@@ -57,6 +57,12 @@ NO_POOL = "no pool is started"
 POOL_DRAIN_MS = 1_000
 # The runs of the query in each task of `query_together`.
 QUERY_REPEATS = 50
+# `query_beside_long`: the time the long statement needs to start its step, the time the ticker needs to start, how
+# long it ticks and the sleep between its ticks.
+LONG_START_MS = 100
+TICKER_START_MS = 20
+TICKER_MS = 600
+PAUSE_TICK_MS = 5
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 
@@ -270,6 +276,7 @@ def act(state: State, req: Request) -> Handled
     "open_while_locked" -> return open_while_locked(state, req)
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_together" -> return reply_ok(query_together(state, req))
+    "query_beside_long" -> return reply_ok(query_beside_long(state, req))
     "statement_cache" -> return reply_ok(statement_cache(state))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -1361,6 +1368,54 @@ def query_together(state: State, req: Request) -> State
     results = tasks.map do |task| Task.await(task) end
     return same_rows(state, results)
   end
+end
+
+# The rows of a query on the connection while another task runs a long statement there, unless the scheduler stopped
+# meanwhile for `req.number` ms or more: a short call that waited for the other task's statement stops it.
+def query_beside_long(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    Task.sleep(LONG_START_MS)
+    ticker = Task.spawn(&longest_pause, TICKER_MS)
+    Task.sleep(TICKER_START_MS)
+    rows = Db.query(conn, Cells.expand(req.cells[0]), [])
+    pause = Task.await(ticker)
+    _ = Task.await(long)
+    return beside_rows(state, rows, pause, req.number)
+  end
+end
+
+def beside_rows(state: State, rows: Result[List[Db.Row]], pause: Result[Int], limit: Int) -> State
+  case pause
+    error(message) -> return failed(state, message)
+    ok(ms) if ms >= limit -> return failed(state, "the scheduler stopped for #{ms} ms")
+    ok(_) -> return recorded_rows(state, rows)
+  end
+end
+
+def recorded_rows(state: State, rows: Result[List[Db.Row]]) -> State
+  case rows
+    error(message) -> return failed(state, message)
+    ok(found) -> return recorded(state, Outcome.Rows(found))
+  end
+end
+
+# The longest time between two ticks in `ms` milliseconds: about PAUSE_TICK_MS while the scheduler runs freely.
+def longest_pause(ms: Int) -> Result[Int]
+  started = Time.monotonic_ms()
+  last = started
+  longest = 0
+  while last - started < ms
+    Task.sleep(PAUSE_TICK_MS)
+    now = Time.monotonic_ms()
+    if now - last > longest
+      longest = now - last
+    end
+
+    last = now
+  end
+
+  return ok(longest)
 end
 
 def same_rows(state: State, results: List[Result[List[Db.Row]]]) -> State

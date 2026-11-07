@@ -219,8 +219,11 @@ static void *symbol(const char *name) { return dlsym(library, name); }
 
 static bool open_library(void) {
 #if defined(__APPLE__)
-  const char *name = "libsqlite3.dylib";
+  /* dyld searches a bare name in the working directory too, where anyone could plant one; /usr/lib (on disk or in the
+     dyld shared cache) is where the system's lives. */
+  const char *name = "/usr/lib/libsqlite3.dylib";
 #else
+  /* dlopen never searches the working directory for a bare name on Linux. */
   const char *name = "libsqlite3.so.0";
 #endif
   library = dlopen(name, RTLD_NOW | RTLD_LOCAL);
@@ -299,9 +302,10 @@ typedef struct {
   sqlite3_stmt *stmt;
   entry *e;
   bool started;
-  int before;
 } cursor_state;
 
+/* The largest statement cache, as the url's statement_cache allows (sqlite/url.agc). */
+#define MAX_CACHE 10000
 /* How often the progress handler runs, in SQLite VM instructions: a few microseconds of work. */
 #define PROGRESS_OPS 200
 /* The bytes that a value costs besides its text or blob, for the byte cap of a batch. */
@@ -352,11 +356,14 @@ static bool cached(conn *c, const char *sql, size_t len, uint64_t hash) {
   return false;
 }
 
+/* A letter in lowercase; any other byte as it is (`| 0x20` would make `_` a DEL). */
+static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c; }
+
 /* Whether SQL starts with WORD (any case), as a whole word, after white space; *AT is where the word ends. */
 static bool starts_with_word(const char *sql, size_t len, const char *word, size_t *at) {
   size_t i = 0, n = strlen(word), k = 0;
   while (i < len && (sql[i] == ' ' || (sql[i] >= '\t' && sql[i] <= '\r'))) i++;
-  while (k < n && i + k < len && (sql[i + k] | 0x20) == word[k]) k++;
+  while (k < n && i + k < len && lower(sql[i + k]) == word[k]) k++;
   if (k != n) return false;
   *at = i + n;
   if (*at == len) return true;
@@ -364,18 +371,30 @@ static bool starts_with_word(const char *sql, size_t len, const char *word, size
   return !(next >= 'a' && next <= 'z') && sql[*at] != '_';
 }
 
-/* Whether a statement that only reads may run in a short call: a SELECT, WITH or VALUES, or a PRAGMA that sets
-   nothing (no `=` and no argument), such as `PRAGMA data_version`. A short call can be stopped and run again from its
-   start (the progress handler interrupts it), which only a statement without effects allows. */
+static bool blank(const char *s, const char *end) {
+  while (s < end && (*s == ' ' || (*s >= '\t' && *s <= '\r'))) s++;
+  return s == end;
+}
+
+/* Whether a statement that only reads may run in a short call: a SELECT, WITH or VALUES, or one of the PRAGMAs that
+   read a counter (`PRAGMA data_version`, `user_version`), with nothing after it but a `;`. A short call can be stopped
+   and run again from its start (the progress handler interrupts it), which only a statement without effects allows;
+   another PRAGMA may have effects or run long in one instruction. */
 static bool quick_text(const char *sql, size_t len) {
   static const char *const words[] = {"select", "with", "values"};
-  size_t at;
+  static const char *const pragmas[] = {"data_version", "user_version"};
+  size_t at, end;
   for (size_t w = 0; w < sizeof words / sizeof words[0]; w++)
     if (starts_with_word(sql, len, words[w], &at)) return true;
   if (!starts_with_word(sql, len, "pragma", &at)) return false;
-  for (; at < len; at++)
-    if (sql[at] == '=' || sql[at] == '(') return false;
-  return true;
+  for (size_t w = 0; w < sizeof pragmas / sizeof pragmas[0]; w++) {
+    if (!starts_with_word(sql + at, len - at, pragmas[w], &end)) continue;
+    const char *rest = sql + at + end, *stop = sql + len;
+    while (rest < stop && (*rest == ' ' || (*rest >= '\t' && *rest <= '\r'))) rest++;
+    if (rest < stop && *rest == ';') rest++;
+    return blank(rest, stop);
+  }
+  return false;
 }
 
 static bool distinct_names(sqlite3_stmt *stmt, int *repeated) {
@@ -425,8 +444,8 @@ static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite
 
 /* Gives a statement back after its run: reset, unbound, and idle in the cache, or finalized when it has no entry or
    the connection closed meanwhile (then its entry is emptied here, the only owner left). RESET is false when the
-   caller has reset it already. */
-static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset) {
+   caller has reset it already; HIT counts a run of the cached statement (a short call counts only one that ended). */
+static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit) {
   /* reset gives the error of the last step again, which the caller has read already. */
   if (reset) {
     (void)sq.reset(stmt);
@@ -434,6 +453,7 @@ static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset) {
   }
   bool finalize = e == NULL;
   lock_take(&c->lock);
+  if (hit) c->hits++;
   if (e && c->closed) {
     finalize = true;
     free(e->sql);
@@ -469,7 +489,7 @@ static void conn_free(void *state) {
 static void cursor_free(void *state) {
   cursor_state *cur = state;
   if (!cur->c) return;
-  if (cur->stmt) release(cur->c, cur->stmt, cur->e, true);
+  if (cur->stmt) release(cur->c, cur->stmt, cur->e, true, false);
   conn_unref(cur->c);
 }
 
@@ -516,8 +536,10 @@ static an_term text(an_env *env, const char *data, size_t len) {
   if (len > (SIZE_MAX - 1) / 3) return an_raise(env, "sqlite: a text is too long");
   char *out = malloc(len * 3 + 1);
   if (!out) return an_raise(env, "sqlite: out of memory");
-  size_t at = 0;
-  for (i = 0; i < len;) {
+  /* The valid start is copied whole; the scan goes on from the first bad byte. */
+  memcpy(out, s, i);
+  size_t at = i;
+  while (i < len) {
     step = utf8_char(s + i, len - i);
     if (step) {
       memcpy(out + at, s + i, step);
@@ -574,13 +596,14 @@ static bool lock_code(int code) { return code == SQLITE_BUSY || code == SQLITE_L
 
 /* ---- Binding and reading. ---- */
 
-/* Binds PARAMS (a List[Value]); false with the failure in F. */
-static bool bind_all(an_env *env, conn *c, sqlite3_stmt *stmt, an_term params, failure *f) {
+/* Binds PARAMS (a List[Value], argument ARG of the call); false with the failure in F. The text of a failed bind
+   comes from its code, not from the connection's last message, which another thread may have set meanwhile. */
+static bool bind_all(an_env *env, sqlite3_stmt *stmt, an_term params, int arg, failure *f) {
   an_list_cursor walk;
   size_t count;
   an_term item;
   if (!an_list_cursor_begin(env, params, &walk, &count)) {
-    (void)an_badarg(env, 3);
+    (void)an_badarg(env, arg);
     fail_input(f, "the parameters are not a list");
     return false;
   }
@@ -633,7 +656,7 @@ static bool bind_all(an_env *env, conn *c, sqlite3_stmt *stmt, an_term params, f
       break;
     }
     if (rc != SQLITE_OK) {
-      fail_code(f, c, rc);
+      snprintf(f->text, sizeof f->text, "sqlite error %d: %s", rc, sq.errstr(rc));
       return false;
     }
   }
@@ -701,11 +724,15 @@ static an_term read_row(an_env *env, sqlite3_stmt *stmt, columns *cols, int64_t 
   return row;
 }
 
-/* One step under SQLite's mutex of the database, so that the error code and message are this step's. */
+/* One step under SQLite's mutex of the database, so that the error code and message are this step's, and so are the
+   changes: SQLite counts them when the statement ends, in the step that gives SQLITE_DONE, and a statement that writes
+   nothing leaves the total as it was (sqlite3_changes then still holds an earlier statement's count). */
 static int step(conn *c, sqlite3_stmt *stmt, outcome *o) {
   sqlite3_mutex *m = sq.db_mutex(c->db);
   sq.mutex_enter(m);
+  int before = sq.total_changes(c->db);
   int rc = sq.step(stmt);
+  if (rc == SQLITE_DONE) o->changes = sq.total_changes(c->db) == before ? 0 : sq.changes(c->db);
   if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
     o->code = rc;
     o->extended = sq.extended_errcode(c->db);
@@ -720,11 +747,6 @@ static int step(conn *c, sqlite3_stmt *stmt, outcome *o) {
 }
 
 /* ---- Preparing. ---- */
-
-static bool blank(const char *s, const char *end) {
-  while (s < end && (*s == ' ' || (*s >= '\t' && *s <= '\r'))) s++;
-  return s == end;
-}
 
 /* Prepares the one statement of SQL, refusing none or a second one; the statement, or NULL with the failure in O
    (a lock comes back as its code, for the caller to wait). */
@@ -768,6 +790,38 @@ static sqlite3_stmt *prepare(conn *c, const char *sql, size_t len, outcome *o) {
   return stmt;
 }
 
+/* Whether the plan of SQL has an instruction that can run long by itself, where the progress handler never runs:
+   OP_Count, the count(*) of a whole table, which reads its pages in one instruction. Such a read never runs in a short
+   call. A plan that cannot be read counts as long. */
+static bool long_instruction(conn *c, const char *sql, size_t len) {
+  static const char PREFIX[] = "EXPLAIN ";
+  size_t n = sizeof PREFIX - 1;
+  if (len > INT_MAX - n) return true;
+  char *text = malloc(n + len);
+  if (!text) return true;
+  memcpy(text, PREFIX, n);
+  memcpy(text + n, sql, len);
+  sqlite3_stmt *plan = NULL;
+  bool found = true;
+  int rc = SQLITE_DONE;
+  sqlite3_mutex *m = sq.db_mutex(c->db);
+  sq.mutex_enter(m);
+  if (sq.prepare_v2(c->db, text, (int)(n + len), &plan, NULL) == SQLITE_OK && plan) {
+    found = false;
+    /* The opcode is column 1 of each row of the plan. */
+    while (!found && (rc = sq.step(plan)) == SQLITE_ROW) {
+      const unsigned char *op = sq.column_text(plan, 1);
+      found = op && strcmp((const char *)op, "Count") == 0;
+    }
+    if (!found && rc != SQLITE_DONE) found = true;
+  }
+  /* finalize gives the error of the last step, which only decides `found`. */
+  if (plan) (void)sq.finalize(plan);
+  sq.mutex_leave(m);
+  free(text);
+  return found;
+}
+
 /* The statement of SQL for a fetch: the cached one when it is idle, else a new one, cached when there is room (and
    CACHE: the settings that `open` runs once are not). NULL with the failure in O. */
 static sqlite3_stmt *acquire(conn *c, const char *sql, size_t len, bool cache, entry **e, outcome *o) {
@@ -787,7 +841,7 @@ static sqlite3_stmt *acquire(conn *c, const char *sql, size_t len, bool cache, e
   if (!stmt) return NULL;
   int repeated;
   bool quick = sq.stmt_readonly(stmt) && sq.column_count(stmt) > 0 && quick_text(sql, len) &&
-               distinct_names(stmt, &repeated);
+               distinct_names(stmt, &repeated) && !long_instruction(c, sql, len);
   sqlite3_stmt *evicted;
   lock_take(&c->lock);
   *e = insert(c, sql, len, hash, stmt, quick, &evicted);
@@ -839,7 +893,7 @@ static an_term fn_connect(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   if (!an_get_string(env, argv[0], &path, &len)) return an_badarg(env, 0);
   if (!an_get_int(env, argv[1], &flags) || flags < 0 || flags > INT_MAX) return an_badarg(env, 1);
-  if (!an_get_int(env, argv[2], &capacity) || capacity < 0 || capacity > 100000) return an_badarg(env, 2);
+  if (!an_get_int(env, argv[2], &capacity) || capacity < 0 || capacity > MAX_CACHE) return an_badarg(env, 2);
   if (!library_ready()) {
     int n = snprintf(message, sizeof message, "sqlite error: cannot load the SQLite library: %s", load_error);
     return an_error(env, message, n > 0 ? (size_t)n : 0);
@@ -913,6 +967,18 @@ static an_term fn_cursor(an_env *env, int argc, const an_term *argv) {
   return out;
 }
 
+/* The bytes of the row at the statement's cursor, as the byte cap counts them, without reading it (column_bytes of a
+   number would convert it to text, so a number counts VALUE_COST alone). */
+static int64_t row_size(sqlite3_stmt *stmt, int n) {
+  int64_t size = 0;
+  for (int col = 0; col < n; col++) {
+    int kind = sq.column_type(stmt, col);
+    size += VALUE_COST;
+    if (kind == SQLITE_TEXT || kind == SQLITE_BLOB) size += sq.column_bytes(stmt, col);
+  }
+  return size;
+}
+
 /* fetch(conn, cursor, sql, params, options): the next batch of the query, preparing and binding it at its first
    call. */
 static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
@@ -935,26 +1001,36 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
     entry *e = NULL;
     sqlite3_stmt *stmt = acquire(c, sql, len, opt.cache, &e, &o);
     if (!stmt) return batch(env, &o, an_list_end(env, &rows));
-    if (!bind_all(env, c, stmt, argv[3], &o.why) || (opt.keep && !check_names(stmt, &o))) {
+    /* The names are checked before the statement runs too, so that a write whose result cannot be read is refused
+       before it writes. */
+    if (!bind_all(env, stmt, argv[3], 3, &o.why) || (opt.keep && !check_names(stmt, &o))) {
       if (o.code == 0) o.code = -1;
-      release(c, stmt, e, true);
+      release(c, stmt, e, true, false);
       cur->started = true;
       return batch(env, &o, an_list_end(env, &rows));
     }
     cur->stmt = stmt;
     cur->e = e;
     cur->started = true;
-    cur->before = sq.total_changes(c->db);
   }
   sqlite3_stmt *stmt = cur->stmt;
   o.readonly = sq.stmt_readonly(stmt) != 0;
   columns cols;
-  if (opt.keep) columns_begin(env, stmt, &cols);
+  bool named = false;
   int64_t count = 0, bytes = 0;
   for (;;) {
     int rc = step(c, stmt, &o);
     if (rc == SQLITE_ROW) {
       if (!opt.keep) continue;
+      /* The columns are read after the step: SQLite prepares a statement again when the schema changed, and the new
+         one may have other columns than before it ran. */
+      if (!named && !check_names(stmt, &o)) {
+        release(c, stmt, cur->e, true, false);
+        cur->stmt = NULL;
+        break;
+      }
+      if (!named) columns_begin(env, stmt, &cols);
+      named = true;
       an_list_push(env, &rows, read_row(env, stmt, &cols, &bytes));
       if (++count >= opt.rows || bytes >= opt.bytes) {
         o.code = SQLITE_ROW;
@@ -962,15 +1038,14 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
       }
     } else if (rc == SQLITE_DONE) {
       o.code = SQLITE_DONE;
-      o.changes = sq.total_changes(c->db) == cur->before ? 0 : sq.changes(c->db);
-      release(c, stmt, cur->e, true);
+      release(c, stmt, cur->e, true, false);
       cur->stmt = NULL;
       break;
     } else if (lock_code(rc)) {
-      /* The statement stays: the caller waits and fetches again, which steps it again. */
+      /* The statement stays: the caller waits and fetches again, which steps it again, or gives up with finish. */
       break;
     } else {
-      release(c, stmt, cur->e, true);
+      release(c, stmt, cur->e, true, false);
       cur->stmt = NULL;
       break;
     }
@@ -978,8 +1053,26 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
   return batch(env, &o, an_list_end(env, &rows));
 }
 
+/* finish(conn, cursor): gives back the statement of a query that stopped at a lock, on the compute pool: its reset
+   waits for SQLite's mutex, which another thread may hold for a long step. */
+static an_term fn_finish(an_env *env, int argc, const an_term *argv) {
+  cursor_state *cur;
+  (void)argc;
+  conn *c = conn_of(env, argv[0]);
+  if (!c) return an_badarg(env, 0);
+  if (!an_get_resource(env, argv[1], CURSOR, (void **)&cur) || cur->c != c) return an_badarg(env, 1);
+  if (cur->stmt) release(c, cur->stmt, cur->e, true, false);
+  cur->stmt = NULL;
+  cur->started = true;
+  return an_void(env);
+}
+
+/* What a short call may read at most, whatever the batch allows: a bigger row is copied on the compute pool. */
+#define QUICK_BYTES 262144
+
 /* quick(conn, sql, params, options): the whole result of a cached read in this short call, or none for the caller
-   to fetch it: not cached, not a read, busy on another thread, over the budget or the caps, or a lock. */
+   to fetch it: not cached, not a read, busy on another thread, over the budget or the caps, or a lock. It never
+   waits for a lock or SQLite's mutex, so the scheduler that runs it never stops for another thread. */
 static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   const char *sql;
   size_t len;
@@ -990,41 +1083,47 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   if (!c) return an_badarg(env, 0);
   if (!an_get_string(env, argv[1], &sql, &len)) return an_badarg(env, 1);
   if (!read_options(env, argv[3], &opt)) return an_badarg(env, 3);
-  /* A short call never waits: another thread on this connection sends the query to fetch. */
   if (!opt.cache || opt.quick_steps <= 0 || opt.quick_rows <= 0 || !lock_try(&c->lock)) return an_none(env);
   entry *e = find_idle(c, sql, len, hash_text(sql, len));
   if (e && !e->quick) {
     e->busy = false;
     e = NULL;
   }
-  if (e) c->hits++;
   lock_drop(&c->lock);
   if (!e) return an_none(env);
   sqlite3_stmt *stmt = e->stmt;
   sqlite3_mutex *m = sq.db_mutex(c->db);
   if (sq.mutex_try(m) != SQLITE_OK) {
-    release(c, stmt, e, true);
+    /* An idle entry is reset already: a reset here would wait for the mutex that another thread holds. */
+    release(c, stmt, e, false, false);
     return an_none(env);
   }
   bool done = false, fallback = false;
   an_list_builder rows;
   an_list_begin(env, &rows, 0);
   columns cols;
-  if (!bind_all(env, c, stmt, argv[2], &o.why)) {
+  if (!bind_all(env, stmt, argv[2], 2, &o.why)) {
     o.code = -1;
     done = true;
   } else {
-    columns_begin(env, stmt, &cols);
     int64_t count = 0, bytes = 0;
     int64_t cap = opt.rows < opt.quick_rows ? opt.rows : opt.quick_rows;
+    int64_t most = opt.bytes < QUICK_BYTES ? opt.bytes : QUICK_BYTES;
+    bool named = false, repeated = false;
     c->quick_over = false;
     /* At least one call of the progress handler, which stops the statement at its first. */
     c->quick_left = opt.quick_steps > PROGRESS_OPS ? opt.quick_steps / PROGRESS_OPS : 1;
     while (!done && !fallback) {
       int rc = step(c, stmt, &o);
       if (rc == SQLITE_ROW) {
+        /* Read after the step, as fetch does; columns that repeat a name since the schema changed are fetch's to
+           report. */
+        int which;
+        if (!named) repeated = !distinct_names(stmt, &which);
+        if (!named) columns_begin(env, stmt, &cols);
+        named = true;
         /* A row past the caps: the result takes more than one batch, which only fetch gives. */
-        fallback = count >= cap || bytes >= opt.bytes;
+        fallback = repeated || count >= cap || bytes + row_size(stmt, cols.n) > most;
         if (fallback) break;
         an_list_push(env, &rows, read_row(env, stmt, &cols, &bytes));
         count++;
@@ -1042,10 +1141,11 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   (void)sq.reset(stmt);
   (void)sq.clear_bindings(stmt);
   sq.mutex_leave(m);
-  release(c, stmt, e, false);
+  release(c, stmt, e, false, !fallback);
   an_term list = an_list_end(env, &rows);
   if (fallback) return an_none(env);
   o.readonly = true;
+  o.changes = 0;
   return an_some(env, batch(env, &o, list));
 }
 
@@ -1096,6 +1196,7 @@ static const an_function functions[] = {
   {"connect", "(String, Int, Int) -> Result[Conn]", fn_connect, AN_DIRTY},
   {"cursor", "(Conn) -> Cursor", fn_cursor, AN_SHORT},
   {"fetch", "(Conn, Cursor, String, List[Value], Fetch) -> Batch", fn_fetch, AN_DIRTY},
+  {"finish", "(Conn, Cursor) -> Void", fn_finish, AN_DIRTY},
   {"quick", "(Conn, String, List[Value], Fetch) -> Optional[Batch]", fn_quick, AN_SHORT},
   {"interrupt", "(Conn) -> Void", fn_interrupt, AN_SHORT},
   {"autocommit?", "(Conn) -> Bool", fn_autocommit, AN_SHORT},

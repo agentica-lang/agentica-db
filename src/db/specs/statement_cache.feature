@@ -80,7 +80,7 @@ Feature: SQLite statement cache and batches
 
   # A cached read runs in a short call on the scheduler only while it is small: past a budget of SQLite VM
   # instructions or 100 rows it stops and runs again on the compute pool, which takes the cached statement once more
-  # (a second hit). The first run of each statement prepares it there.
+  # (one hit: the short call that gave up counts none). The first run of each statement prepares it there.
   Scenario: A cached read too big for a short call runs again on the compute pool, long work on sqlite
     Given a "sqlite" database
     When I open "sqlite::memory:"
@@ -92,7 +92,7 @@ Feature: SQLite statement cache and batches
     When I read the statement cache
     Then the result is:
       | size  | capacity | hits  | misses | evictions |
-      | Int 1 | Int 100  | Int 2 | Int 1  | Int 0     |
+      | Int 1 | Int 100  | Int 1 | Int 1  | Int 0     |
 
   Scenario: A cached read too big for a short call runs again on the compute pool, many rows on sqlite
     Given a "sqlite" database
@@ -105,7 +105,46 @@ Feature: SQLite statement cache and batches
     When I read the statement cache
     Then the result is:
       | size  | capacity | hits  | misses | evictions |
-      | Int 1 | Int 100  | Int 2 | Int 1  | Int 0     |
+      | Int 1 | Int 100  | Int 1 | Int 1  | Int 0     |
+
+  # A short call never waits for SQLite's mutex of the connection: while another task's statement holds it, a cached
+  # read goes to the compute pool and the scheduler goes on.
+  Scenario: A cached read beside a long statement never stops the scheduler on sqlite
+    Given the environment variable "AGENTICA_SCHEDULERS" is "1"
+    And a "sqlite" database
+    When I open "sqlite::memory:"
+    And I query "select 1 as x"
+    And another task runs "with recursive c(x) as (select 1 union all select x + 1 from c limit 8000000) select max(x) as n from c" while I query "select 1 as x", and no scheduler stops for 500 ms
+    Then the result is:
+      | x     |
+      | Int 1 |
+
+  # SQLite prepares a cached statement again when the schema changed, and its columns change with it. A read of 150
+  # rows is past what a short call reads, so the short call stops and the compute pool reads it, and a write with
+  # RETURNING never runs in a short call.
+  Scenario Outline: A cached statement reads the columns that the table has now: <sql>, <count> row(s) on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:"
+    And I execute "create table t (a integer)"
+    And I execute "insert into t with recursive c(v) as (select 1 union all select v + 1 from c where v < <count>) select v from c"
+    And I query "<sql>"
+    And I query "<sql>"
+    And I execute "alter table t add column b integer default 7"
+    And I query "<sql>"
+    Then the result has <count> rows, the last being:
+      | a           | b     |
+      | Int <count> | Int 7 |
+    When I execute "alter table t drop column b"
+    And I query "<sql>"
+    Then the result has <count> rows, the last being:
+      | a           |
+      | Int <count> |
+
+    Examples:
+      | sql                            | count |
+      | select * from t order by a     | 1     |
+      | select * from t order by a     | 150   |
+      | update t set a = a returning * | 1     |
 
   # Changing a WAL database to another journal mode needs every other connection to it closed: a cached statement
   # that was not finalized would keep the first connection open.

@@ -108,13 +108,15 @@ export def execute(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[
   return ok(done.changes)
 end
 
-# The calls that only this file makes. A Cursor holds the statement of one query between its fetch calls; closing it
-# (or the end of the task, for a query that was cancelled) gives the statement back to the cache.
+# The calls that only this file makes. A Cursor holds the statement of one query between its fetch calls; the last
+# fetch gives the statement back to the cache, and so does `finish` for a query that stops at a lock (on the compute
+# pool: the reset waits for SQLite's mutex) or closing the cursor (the end of the task, for one that was cancelled).
 extern module "db_sqlite"
   resource Cursor
   compute def connect(path: String, flags: Int, cache: Int) -> Result[Conn]
   def cursor(conn: Conn) -> Cursor
   compute def fetch(conn: Conn, cursor: Cursor, sql: String, params: List[Value], options: Fetch) -> Batch
+  compute def finish(conn: Conn, cursor: Cursor) -> Void
   def quick(conn: Conn, sql: String, params: List[Value], options: Fetch) -> Optional[Batch]
 end
 
@@ -159,6 +161,7 @@ def run(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], opt
       end
 
       if batch.upgrade or not SqliteWait.lock_wait?(wait, batch.code, batch.extended, started)
+        finish(conn, cur)
         Native.close(cur)
         return error(batch.failure)
       end
