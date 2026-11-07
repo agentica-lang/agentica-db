@@ -516,6 +516,8 @@ static void conn_free(void *state) {
   for (int i = 0; i < c->capacity; i++) {
     entry *e = &c->entries[i];
     if (!e->sql || e->busy) continue;
+    /* The finalize ends what the reset of a dirty entry would. */
+    if (e->dirty) c->pending--;
     (void)sq.finalize(e->stmt);
     free(e->sql);
     *e = (entry){0};
