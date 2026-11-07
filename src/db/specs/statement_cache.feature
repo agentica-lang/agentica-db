@@ -119,6 +119,52 @@ Feature: SQLite statement cache and batches
       | x     |
       | Int 1 |
 
+  # Cancelling a task frees its cursor at once, under a lock of the VM. A free never waits for SQLite's mutex, which
+  # the long statement holds: the write's statement goes back unreset (cached) or is left for the next fetch to
+  # finalize (no cache), and the write runs again after it.
+  Scenario Outline: A cancelled write that waits for a lock never stops the schedulers, statement_cache=<cache> on sqlite
+    Given the environment variable "AGENTICA_SCHEDULERS" is "4"
+    And a "sqlite" database
+    When I open "sqlite:[SCRATCH]/cancel.db?statement_cache=<cache>"
+    And I execute "create table t (a integer)"
+    And the write "insert into t values (1)" that waits for "sqlite:[SCRATCH]/cancel.db" is cancelled beside "with recursive c(x) as (select 1 union all select x + 1 from c limit 8000000) select max(x) as n from c" within 500 ms
+    Then the changed row count is 1
+
+    Examples:
+      | cache |
+      | 100   |
+      | 0     |
+
+  # Big bound data can make one SQLite instruction long (a JSON function reads it whole), so a short call takes at
+  # most 256 KiB of it; this list is 40 MB.
+  Scenario: A cached read with big bound data runs on the compute pool on sqlite
+    Given the environment variable "AGENTICA_SCHEDULERS" is "1"
+    And a "sqlite" database
+    When I open "sqlite::memory:"
+    And I query "select json_array_length(?) as n" with:
+      | value   |
+      | Text [] |
+    And I query "select json_array_length(?) as n" with a JSON list of 20000000 numbers, and no scheduler stops for 150 ms
+    Then the result is:
+      | n            |
+      | Int 20000000 |
+
+  # A write with RETURNING has run by its first row; when its result repeats a name after the table changed, it runs
+  # to its end and the error says that it ran.
+  Scenario: A cached write whose result repeats a name after the table changed runs and says so on sqlite
+    Given a "sqlite" database
+    When I open "sqlite::memory:"
+    And I execute "create table t (a integer)"
+    And I execute "insert into t values (1)"
+    And I query "update t set a = a + 1 returning *, 0 as b"
+    And I query "update t set a = a + 1 returning *, 0 as b"
+    And I execute "alter table t add column b integer default 7"
+    And I query "update t set a = a + 1 returning *, 0 as b"
+    Then it fails with "sqlite error: the statement ran, but the result has the column b twice"
+    And the query "select a from t" returns:
+      | a     |
+      | Int 4 |
+
   # SQLite prepares a cached statement again when the schema changed, and its columns change with it. A read of 150
   # rows is past what a short call reads, so the short call stops and the compute pool reads it, and a write with
   # RETURNING never runs in a short call.

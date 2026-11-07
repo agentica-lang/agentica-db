@@ -63,6 +63,9 @@ LONG_START_MS = 100
 TICKER_START_MS = 20
 TICKER_MS = 600
 PAUSE_TICK_MS = 5
+# `cancel_beside_long` cancels the write this soon after the long statement starts: the write sleeps between its tries
+# (25 ms), and only a cancel in its sleep frees its cursor at once; once it tries again it waits in its own call.
+CANCEL_AFTER_MS = 5
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 
@@ -270,6 +273,8 @@ def act(state: State, req: Request) -> Handled
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
     "query_together" -> return reply_ok(query_together(state, req))
     "query_beside_long" -> return reply_ok(query_beside_long(state, req))
+    "cancel_beside_long" -> return reply_ok(cancel_beside_long(state, req))
+    "query_big_json" -> return reply_ok(query_big_json(state, req))
     "statement_cache" -> return reply_ok(statement_cache(state))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
@@ -1352,6 +1357,52 @@ def query_beside_long(state: State, req: Request) -> State
     pause = Task.await(ticker)
     _ = Task.await(long)
     return beside_rows(state, rows, pause, req.number)
+  end
+end
+
+# A write on the connection that waits for the lock of another connection (at `req.text`) is cancelled while another
+# task runs a long statement there; then the write runs again, as its count. It fails when the scheduler stopped for
+# `req.number` ms or more: the cancel frees the write's cursor, which must not wait for the long statement.
+def cancel_beside_long(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    case Db.open(expand(state, req.text))
+      error(message) -> return failed(state, message)
+      ok(other) -> return cancel_with_lock(state, conn, other, req)
+    end
+  end
+end
+
+def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, req: Request) -> State
+  write = Cells.expand(req.cells[0])
+  _ = Db.execute(other, "begin immediate", [])
+  writer = Task.spawn(&run_job, Job(conn: conn, sql: write))
+  Task.sleep(LONG_START_MS)
+  ticker = Task.spawn(&longest_pause, TICKER_MS)
+  Task.sleep(TICKER_START_MS)
+  long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[1])))
+  Task.sleep(CANCEL_AFTER_MS)
+  Task.cancel(writer)
+  pause = Task.await(ticker)
+  _ = Task.await(long)
+  _ = Db.execute(other, "rollback", [])
+  Db.close(other)
+  case pause
+    error(message) -> return failed(state, message)
+    ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
+    ok(_) -> return counted(state, Db.execute(conn, write, []))
+  end
+end
+
+# The rows of `req.text` with one parameter, a JSON list of `req.number` ones, unless the scheduler stopped for
+# `req.cells[0]` ms or more meanwhile: a short call must not take big bound data.
+def query_big_json(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    list = "[#{"1," * (req.number - 1)}1]"
+    ticker = Task.spawn(&longest_pause, TICKER_MS)
+    Task.sleep(TICKER_START_MS)
+    rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text(list)])
+    pause = Task.await(ticker)
+    return beside_rows(state, rows, pause, req.cells[0].to_i!)
   end
 end
 
