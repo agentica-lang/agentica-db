@@ -370,19 +370,20 @@ Feature: SQLite
     Then it fails with a timeout
 
   # SQLite does all the work of a write with RETURNING in the first step, and rolls it back when it is interrupted
-  # while the rows are read; the adapter must not return early on a later step and leave the write behind.
+  # while the rows are read; the adapter must not return early on a later step and leave the write behind. The rows are
+  # many so that the native driver, which reads about a row per 2 microseconds, is still at it when the time ends.
   Scenario: A write with RETURNING that times out is rolled back, in autocommit and in a transaction on sqlite
     Given a "sqlite" database
-    When I open "sqlite::memory:?timeout_ms=400"
+    When I open "sqlite::memory:?timeout_ms=200"
     And I execute "create table t (x integer)"
-    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 300000) select x from c returning x"
+    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 1000000) select x from c returning x"
     Then it fails with a timeout
     And the connection is not in a transaction
     And the query "select count(*) as n from t" returns:
       | n     |
       | Int 0 |
     When I execute "begin"
-    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 300000) select x from c returning x"
+    And I query "insert into t(x) with recursive c(x) as (select 1 union all select x + 1 from c limit 1000000) select x from c returning x"
     Then it fails with a timeout
     And the connection is not in a transaction
     And the query "select count(*) as n from t" returns:
