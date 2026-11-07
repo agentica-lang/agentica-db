@@ -160,6 +160,56 @@ Feature: Pooling
       | v     |
       | Int 1 |
 
+  # The writers of one pool wait in line at Db.transaction and get their turn in the order they came: a channel serves
+  # the tasks that wait for it first come, first served. Each writer comes 50 ms after the one before and holds its
+  # transaction 150 ms; without the line they would try BEGIN again in any order.
+  Scenario: The writers of a pool take turns at their transactions in the order they came on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/pool.db" with:
+      | option | value |
+      | size   | 4     |
+    And I execute "create table notes (id integer primary key, writer integer not null)" in the pool
+    And 4 writers of the pool come in turn, each holding its transaction
+    Then it succeeds
+    When I query "select writer from notes order by id" in the pool
+    Then the result is:
+      | writer |
+      | Int 1  |
+      | Int 2  |
+      | Int 3  |
+      | Int 4  |
+
+  # A block that crashes or runs past lease_ms inside its transaction holds the turn, which the pool gives back when it
+  # checks the connection in. A turn left taken would hold the next writer for its whole wait: busy_timeout, at most
+  # half of lease_ms, so 1000 ms here.
+  Scenario Outline: A block that <ends> in its transaction gives the turn back to the pool on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=3000" with:
+      | option   | value |
+      | size     | 2     |
+      | lease_ms | 2000  |
+    And I execute "create table notes (writer integer not null)" in the pool
+    And a block of the pool "<ends>" in its transaction, then a writer takes less than 500 ms
+    Then the changed row count is 1
+
+    Examples:
+      | ends               |
+      | crashes            |
+      | outlasts its lease |
+
+  # A block that checks out a second connection inside its transaction and starts one there waits behind its own turn:
+  # the wait ends after busy_timeout, and the BEGIN fails at once as SQLite's lock makes it (it does not wait for the
+  # lock again), long before the lease ends: under 1.5 times busy_timeout in all.
+  Scenario: A transaction on a second connection inside a transaction of the pool fails as locked on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=500" with:
+      | option   | value |
+      | size     | 2     |
+      | lease_ms | 3000  |
+    And I execute "create table notes (writer integer not null)" in the pool
+    And a block of the pool starts a transaction on a second connection, all within 750 ms
+    Then it fails with "sqlite error 5: database is locked"
+
   Scenario Outline: A pool of a private in-memory database cannot have more than one connection on sqlite
     Given a "sqlite" database
     When I start a pool on "<url>" with:

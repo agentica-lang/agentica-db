@@ -70,6 +70,11 @@ CANCEL_AFTER_MS = 5
 OTHER_QUERY = 1
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
+# `pool_writers_in_turn`: the time between two writers that come to the line, and how long each holds its transaction.
+ARRIVAL_MS = 50
+TURN_HOLD_MS = 150
+# `pool_turn_after`: a block that sleeps this long in its transaction runs past its lease.
+STALL_MS = 10_000
 
 # The struct of the Orm scenarios: the table `people`, whose age is a value or NULL.
 struct Person
@@ -174,6 +179,12 @@ struct Writer
   rows: List[List[String]]
 end
 
+# The writer number `writer`, which borrows its connection from the pool and writes its number.
+struct TurnWriter
+  pool: DbPool.Pool
+  writer: Int
+end
+
 # A statement run in a task on a connection of its own.
 struct Fresh
   url: String
@@ -267,6 +278,9 @@ def act(state: State, req: Request) -> Handled
     "read_only" -> return reply_ok(set_access(state, expand(state, req.text), false))
     "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
     "write_together" -> return reply_ok(write_together(state, req))
+    "pool_writers_in_turn" -> return reply_ok(pool_writers_in_turn(state, req))
+    "pool_turn_after" -> return reply_ok(pool_turn_after(state, req))
+    "pool_nested_transaction" -> return reply_ok(pool_nested_transaction(state, req))
     "execute_waiting" -> return execute_waiting(state, req)
     "query_until_commit" -> return query_until_commit(state, req)
     "write_while_blocked" -> return write_while_blocked(state, req)
@@ -485,7 +499,8 @@ end
 # A block that crashes (`to_i!` of a text that is not a number halts the task of the block).
 def pool_crash(state: State) -> State
   return with_pool(state) do |pool|
-    found = DbPool.with(pool) do |_conn| ok("not a number".to_i!) end
+    # The crash is inside a transaction, which holds the turn of the writers of a SQLite pool.
+    found = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| ok("not a number".to_i!) end end
     case found
       error(message) -> return failed(state, message)
       ok(_) -> return recorded(state, Outcome.Done)
@@ -1083,6 +1098,90 @@ def write_in_task(job: Writer) -> Result[Void]
   done = Db.transaction(conn) do |tx| run_rows(tx, job.rows) end
   Db.close(conn)
   return done
+end
+
+# `req.number` writers come to the line of the pool one after another, ARRIVAL_MS apart; each writes its number into
+# `notes` and holds its transaction TURN_HOLD_MS.
+def pool_writers_in_turn(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    tasks: List[Task[Result[Void]]] = []
+    for writer in 1..req.number
+      tasks = tasks.push(Task.spawn(&write_in_turn, TurnWriter(pool: pool, writer: writer)))
+      Task.sleep(ARRIVAL_MS)
+    end
+
+    for task in tasks
+      done = Task.await(task)
+      if not done.ok?
+        return failed(state, done.message)
+      end
+    end
+
+    return recorded(state, Outcome.Done)
+  end
+end
+
+def write_in_turn(job: TurnWriter) -> Result[Void]
+  return DbPool.with(job.pool) do |conn| Db.transaction(conn) do |tx| hold_turn(tx, job.writer) end end
+end
+
+def hold_turn(tx: Db.Connection, writer: Int) -> Result[Void]
+  try Db.execute(tx, "insert into notes (writer) values (?)", [Db.Value.Int(writer)])
+  Task.sleep(TURN_HOLD_MS)
+  return ok()
+end
+
+# A block of the pool that crashes (`req.text` "crashes") or sleeps past its lease in its transaction, then a writer of
+# the pool; it fails when the writer took `req.number` ms or more, the wait of a turn that was not given back.
+def pool_turn_after(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    first = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| stall(req.text) end end
+    if first.ok?
+      return failed(state, "the first block succeeded")
+    end
+
+    started = Time.monotonic_ms()
+    second = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| write_note(tx) end end
+    took = Time.monotonic_ms() - started
+    if took >= req.number
+      return failed(state, "the next writer waited #{took} ms")
+    end
+
+    return counted(state, second)
+  end
+end
+
+# A crash (`to_i!` of a text that is not a number halts the task), or a sleep that the lease ends.
+def stall(kind: String) -> Result[Int]
+  if kind == "crashes"
+    return ok("not a number".to_i!)
+  end
+
+  Task.sleep(STALL_MS)
+  return ok(0)
+end
+
+def write_note(tx: Db.Connection) -> Result[Int]
+  return Db.execute(tx, "insert into notes (writer) values (1)", [])
+end
+
+# A block of the pool that checks out a second connection inside its transaction and starts a transaction there; it
+# fails when that took `req.number` ms or more.
+def pool_nested_transaction(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    started = Time.monotonic_ms()
+    done = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| inner_write(pool) end end
+    took = Time.monotonic_ms() - started
+    if took >= req.number
+      return failed(state, "the nested transaction took #{took} ms")
+    end
+
+    return counted(state, done)
+  end
+end
+
+def inner_write(pool: DbPool.Pool) -> Result[Int]
+  return DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| write_note(tx) end end
 end
 
 def run_rows(tx: Db.Connection, rows: List[List[String]]) -> Result[Void]

@@ -12,6 +12,9 @@ Needs Agentica 0.26.0 or later (native modules).
   connection, a cached read run whole in one short call, and many rows per call. A one-row query and each row cost
   about a tenth of the FFI driver's. A project that holds the package in place (a workspace member or a `path`
   dependency) builds it with the system C compiler at the first run; a fetched package runs the FFI driver, as before.
+- The SQLite writers of a `DbPool` take turns at `Db.transaction`, in the order they came, instead of retrying
+  `BEGIN IMMEDIATE` every few milliseconds; a writer waits for its turn up to `busy_timeout` (at most half of
+  `lease_ms`).
 - SQLite url parameters `statement_cache` (statements per connection, 100 by default, 0 for none), `batch_rows` and
   `batch_bytes` (what one call of the native driver gives); `AGENTICA_DB_SQLITE_DRIVER=native` or `ffi` picks the
   driver.
@@ -19,6 +22,8 @@ Needs Agentica 0.26.0 or later (native modules).
 ### Changed
 
 - **Breaking:** needs Agentica 0.26.0 or later.
+- **Breaking:** `DbPool.Pool` is a pool of a private config, no longer `Pool[String, Db.Connection]` of `pkg/pool`:
+  name it `DbPool.Pool`.
 
 ## [0.5.0] - 2026-11-06
 

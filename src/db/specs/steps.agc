@@ -71,6 +71,15 @@ def main() -> Void
     BDD.step("{int} tasks each run these statements in a transaction on {string}:") do |ctx, args|
       send(ctx, Request(op: "write_together", number: args[0].to_i!, text: args[1], table: BDD.table(ctx)))
     end,
+    BDD.step("{int} writers of the pool come in turn, each holding its transaction") do |ctx, args|
+      send(ctx, Request(op: "pool_writers_in_turn", number: args[0].to_i!))
+    end,
+    BDD.step("a block of the pool {string} in its transaction, then a writer takes less than {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_turn_after", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("a block of the pool starts a transaction on a second connection, all within {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_nested_transaction", number: args[0].to_i!))
+    end,
     BDD.step("I migrate with:") do |ctx, _args| send(ctx, Request(op: "migrate", table: BDD.table(ctx))) end,
     BDD.step("I migrate the table {string} with:") do |ctx, args|
       send(ctx, Request(op: "migrate", text: args[0], table: BDD.table(ctx)))
