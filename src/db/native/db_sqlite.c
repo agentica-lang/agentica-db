@@ -290,7 +290,8 @@ typedef struct orphan {
 } orphan;
 
 /* The C state of a connection, shared by its Conn and its Cursors, and freed when the last of them is (`refs`).
-   `lock` guards refs, closed, the entries, the orphans and the counters. quick_left and quick_over belong to the
+   `lock` guards refs, closed, the entries, the orphans, `pending` (the dirty entries and the orphans) and the
+   counters. quick_left and quick_over belong to the
    quick call that holds SQLite's mutex of the database, the only place they are written, so the progress handler
    (which runs inside sqlite3_step, under that mutex) reads them safely. */
 typedef struct {
@@ -301,6 +302,7 @@ typedef struct {
   entry *entries;
   int capacity;
   orphan *orphans;
+  int pending;
   uint64_t tick, hits, misses, evictions;
   int64_t quick_left;
   bool quick_over;
@@ -345,13 +347,18 @@ static void finalize_orphans(conn *c) {
   orphan *list = c->orphans;
   c->orphans = NULL;
   lock_drop(&c->lock);
+  int count = 0;
   while (list) {
     orphan *next = list->next;
     /* finalize gives the error of the statement's last step, which no one asks for. */
     (void)sq.finalize(list->stmt);
     free(list);
     list = next;
+    count++;
   }
+  lock_take(&c->lock);
+  c->pending -= count;
+  lock_drop(&c->lock);
 }
 
 static void conn_unref(conn *c) {
@@ -469,6 +476,8 @@ static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite
     *evicted = slot->stmt;
     free(slot->sql);
     c->evictions++;
+    /* Its finalize, which the caller makes, ends what its reset would. */
+    if (slot->dirty) c->pending--;
   }
   *slot = (entry){copy, len, hash, stmt, ++c->tick, true, false, false, -1};
   return slot;
@@ -538,6 +547,7 @@ static void give_back(conn *c, sqlite3_stmt *stmt, entry *e) {
   if (kept) {
     e->busy = false;
     e->dirty = !reset;
+    if (!reset) c->pending++;
   } else {
     if (e) {
       free(e->sql);
@@ -547,11 +557,49 @@ static void give_back(conn *c, sqlite3_stmt *stmt, entry *e) {
     if (node) {
       *node = (orphan){stmt, c->orphans};
       c->orphans = node;
+      c->pending++;
     }
   }
   lock_drop(&c->lock);
   /* Out of memory for the node: the one case that waits rather than leaks. */
   if (!kept && !node) (void)sq.finalize(stmt);
+}
+
+/* Settles what the free functions left: resets the dirty entries and finalizes the orphans. A statement that a lock
+   stopped in its first step still counts as a running write for SQLite, which then commits nothing else on the
+   connection until it is reset (and that reset rolls back what came after it), and an orphan holds a read snapshot.
+   So every fetch settles them before it runs, the short call does not run while any are left, and the adapter's
+   in_transaction? settles first. It waits for SQLite's mutex: only a call on the compute pool makes it. */
+static void settle(conn *c) {
+  lock_take(&c->lock);
+  bool any = c->pending > 0;
+  lock_drop(&c->lock);
+  if (!any) return;
+  finalize_orphans(c);
+  for (;;) {
+    entry *e = NULL;
+    lock_take(&c->lock);
+    for (int i = 0; i < c->capacity && !e; i++) {
+      entry *at = &c->entries[i];
+      if (at->sql && !at->busy && at->dirty) e = at;
+    }
+    if (e) {
+      e->busy = true;
+      e->dirty = false;
+    }
+    lock_drop(&c->lock);
+    if (!e) return;
+    sqlite3_mutex *m = sq.db_mutex(c->db);
+    sq.mutex_enter(m);
+    /* The error of the statement's last step, which its query read already. */
+    (void)sq.reset(e->stmt);
+    (void)sq.clear_bindings(e->stmt);
+    sq.mutex_leave(m);
+    lock_take(&c->lock);
+    c->pending--;
+    lock_drop(&c->lock);
+    release(c, e->stmt, e, false, false);
+  }
 }
 
 static void cursor_free(void *state) {
@@ -936,6 +984,9 @@ static sqlite3_stmt *acquire(conn *c, const char *sql, size_t len, bool cache, e
       (void)sq.reset(stmt);
       (void)sq.clear_bindings(stmt);
       sq.mutex_leave(m);
+      lock_take(&c->lock);
+      c->pending--;
+      lock_drop(&c->lock);
     }
   } else {
     stmt = prepare(c, sql, len, o);
@@ -1105,8 +1156,8 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
   if (!an_get_resource(env, argv[1], CURSOR, (void **)&cur) || cur->c != c) return an_badarg(env, 1);
   if (!an_get_string(env, argv[2], &sql, &len)) return an_badarg(env, 2);
   if (!read_options(env, argv[4], &opt)) return an_badarg(env, 4);
-  /* The statements that free functions could not finalize go here, on the compute pool. */
-  finalize_orphans(c);
+  /* What the free functions left is settled here, on the compute pool, before this statement runs. */
+  settle(c);
   an_list_begin(env, &rows, 0);
   o.readonly = true;
   if (!cur->stmt) {
@@ -1201,7 +1252,8 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   if (!an_get_string(env, argv[1], &sql, &len)) return an_badarg(env, 1);
   if (!read_options(env, argv[3], &opt)) return an_badarg(env, 3);
   if (!opt.cache || opt.quick_steps <= 0 || opt.quick_rows <= 0 || !lock_try(&c->lock)) return an_none(env);
-  entry *e = find_idle(c, sql, len, hash_text(sql, len));
+  /* What a free function left needs a fetch first (settle), which may wait. */
+  entry *e = c->pending > 0 ? NULL : find_idle(c, sql, len, hash_text(sql, len));
   /* A dirty entry needs its reset, which may wait: fetch makes it. */
   if (e && (!e->quick || e->dirty)) {
     e->busy = false;
@@ -1217,7 +1269,9 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
     return an_none(env);
   }
   if (sq.stmt_status(stmt, SQLITE_STMTSTATUS_REPREPARE, 0) != e->checked) {
-    /* SQLite prepared it again since its plan was read: fetch reads the plan again. */
+    /* SQLite prepared it again since its plan was read: fetch reads the plan again. A schema change that lands in
+       this call's own step prepares it there, with a plan not read yet: that one run may meet a long instruction,
+       and the next call falls back here. */
     sq.mutex_leave(m);
     release(c, stmt, e, false, false);
     return an_none(env);
@@ -1275,6 +1329,26 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   return an_some(env, batch(env, &o, list));
 }
 
+/* pending?(conn): whether free functions left statements to settle. */
+static an_term fn_pending(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  conn *c = conn_of(env, argv[0]);
+  if (!c) return an_badarg(env, 0);
+  lock_take(&c->lock);
+  bool any = c->pending > 0;
+  lock_drop(&c->lock);
+  return an_bool(env, any);
+}
+
+/* tidy(conn): settles them, on the compute pool. */
+static an_term fn_tidy(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  conn *c = conn_of(env, argv[0]);
+  if (!c) return an_badarg(env, 0);
+  settle(c);
+  return an_void(env);
+}
+
 static an_term fn_interrupt(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   conn *c = conn_of(env, argv[0]);
@@ -1323,6 +1397,8 @@ static const an_function functions[] = {
   {"cursor", "(Conn) -> Cursor", fn_cursor, AN_SHORT},
   {"fetch", "(Conn, Cursor, String, List[Value], Fetch) -> Batch", fn_fetch, AN_DIRTY},
   {"finish", "(Conn, Cursor) -> Void", fn_finish, AN_DIRTY},
+  {"pending?", "(Conn) -> Bool", fn_pending, AN_SHORT},
+  {"tidy", "(Conn) -> Void", fn_tidy, AN_DIRTY},
   {"quick", "(Conn, String, List[Value], Fetch) -> Optional[Batch]", fn_quick, AN_SHORT},
   {"interrupt", "(Conn) -> Void", fn_interrupt, AN_SHORT},
   {"autocommit?", "(Conn) -> Bool", fn_autocommit, AN_SHORT},

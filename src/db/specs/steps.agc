@@ -109,6 +109,12 @@ def main() -> Void
     BDD.step("the write {string} that waits for {string} is cancelled beside {string} within {int} ms") do |ctx, args|
       send(ctx, Request(op: "cancel_beside_long", text: args[1], cells: [args[0], args[2]], number: args[3].to_i!))
     end,
+    BDD.step("a connection of its own to {string} queries {string}") do |ctx, args|
+      send(ctx, Request(op: "on_other", text: args[0], cells: [args[1]], number: 1))
+    end,
+    BDD.step("a connection of its own to {string} executes {string}") do |ctx, args|
+      send(ctx, Request(op: "on_other", text: args[0], cells: [args[1]], number: 0))
+    end,
     BDD.step("I query {string} with a JSON list of {int} numbers, and no scheduler stops for {int} ms") do |ctx, args|
       send(ctx, Request(op: "query_big_json", text: args[0], number: args[1].to_i!, cells: [args[2]]))
     end,

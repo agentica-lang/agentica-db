@@ -66,6 +66,8 @@ PAUSE_TICK_MS = 5
 # `cancel_beside_long` cancels the write this soon after the long statement starts: the write sleeps between its tries
 # (25 ms), and only a cancel in its sleep frees its cursor at once; once it tries again it waits in its own call.
 CANCEL_AFTER_MS = 5
+# The `number` of an `on_other` request that queries; any other executes.
+OTHER_QUERY = 1
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 
@@ -274,6 +276,7 @@ def act(state: State, req: Request) -> Handled
     "query_together" -> return reply_ok(query_together(state, req))
     "query_beside_long" -> return reply_ok(query_beside_long(state, req))
     "cancel_beside_long" -> return reply_ok(cancel_beside_long(state, req))
+    "on_other" -> return reply_ok(on_other(state, req))
     "query_big_json" -> return reply_ok(query_big_json(state, req))
     "statement_cache" -> return reply_ok(statement_cache(state))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
@@ -1361,8 +1364,8 @@ def query_beside_long(state: State, req: Request) -> State
 end
 
 # A write on the connection that waits for the lock of another connection (at `req.text`) is cancelled while another
-# task runs a long statement there; then the write runs again, as its count. It fails when the scheduler stopped for
-# `req.number` ms or more: the cancel frees the write's cursor, which must not wait for the long statement.
+# task runs a long statement there. It fails when the scheduler stopped for `req.number` ms or more: the cancel frees
+# the write's cursor, which must not wait for the long statement.
 def cancel_beside_long(state: State, req: Request) -> State
   return with_conn(state) do |conn|
     case Db.open(expand(state, req.text))
@@ -1389,7 +1392,25 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   case pause
     error(message) -> return failed(state, message)
     ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
-    ok(_) -> return counted(state, Db.execute(conn, write, []))
+    ok(_) -> return recorded(state, Outcome.Done)
+  end
+end
+
+# A statement on a connection of its own to `req.text`, closed after it: its rows, or its count for `execute`.
+def on_other(state: State, req: Request) -> State
+  case Db.open(expand(state, req.text))
+    error(message) -> return failed(state, message)
+    ok(other) ->
+      sql = Cells.expand(req.cells[0])
+      if req.number == OTHER_QUERY
+        rows = Db.query(other, sql, [])
+        Db.close(other)
+        return recorded_rows(state, rows)
+      end
+
+      count = Db.execute(other, sql, [])
+      Db.close(other)
+      return counted(state, count)
   end
 end
 

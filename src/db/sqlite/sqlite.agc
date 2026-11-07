@@ -124,7 +124,10 @@ export def in_transaction?(conn: Connection) -> Bool
   end
 
   case conn.link
-    Link.Native(native, _) -> return not SqliteNative.autocommit?(native)
+    Link.Native(native, _) ->
+      # A cancelled query may have left a write that SQLite never ended, a transaction that autocommit does not show.
+      SqliteNative.settle(native)
+      return not SqliteNative.autocommit?(native)
     Link.Ffi(handle) -> return SqliteFfi.sqlite3_get_autocommit(handle) == 0
   end
 end
