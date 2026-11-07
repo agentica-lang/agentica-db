@@ -187,6 +187,8 @@ export def enter_gate(conn: Connection) -> Connection
     some(gate) ->
       case gate.turn.recv(gate.wait_ms)
         ok(_) ->
+          # A cancel that lands between the recv and this send loses the token: later writers then wait `wait_ms`
+          # and go on to SQLite's lock, which is right but slow. Neither call parks, so it can land only there.
           _ = gate.held.send(1, 0)
           return conn
         error(_) -> return conn.with(busy_timeout: 0)
@@ -201,6 +203,7 @@ export def leave_gate(conn: Connection) -> Void
     none -> return
     some(gate) ->
       if gate.held.recv(0).ok?
+        # The same window as in enter_gate: a cancel that lands here loses the token, and later writers wait `wait_ms`.
         _ = gate.turn.send(1, 0)
       end
   end

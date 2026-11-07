@@ -77,7 +77,9 @@ def main() -> Void
     BDD.step("a block of the pool {string} in its transaction, then a writer takes less than {int} ms") do |ctx, args|
       send(ctx, Request(op: "pool_turn_after", text: args[0], number: args[1].to_i!))
     end,
-    plain_step("a block of the pool starts a transaction on a second connection", "pool_nested_transaction"),
+    BDD.step("a block of the pool starts a transaction on a second connection, all within {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_nested_transaction", number: args[0].to_i!))
+    end,
     BDD.step("I migrate with:") do |ctx, _args| send(ctx, Request(op: "migrate", table: BDD.table(ctx))) end,
     BDD.step("I migrate the table {string} with:") do |ctx, args|
       send(ctx, Request(op: "migrate", text: args[0], table: BDD.table(ctx)))

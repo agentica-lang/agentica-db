@@ -198,7 +198,8 @@ Feature: Pooling
       | outlasts its lease |
 
   # A block that checks out a second connection inside its transaction and starts one there waits behind its own turn:
-  # the wait ends after busy_timeout, and the BEGIN fails as SQLite's lock makes it, long before the lease ends.
+  # the wait ends after busy_timeout, and the BEGIN fails at once as SQLite's lock makes it (it does not wait for the
+  # lock again), long before the lease ends: under 1.5 times busy_timeout in all.
   Scenario: A transaction on a second connection inside a transaction of the pool fails as locked on sqlite
     Given a "sqlite" database
     When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=500" with:
@@ -206,7 +207,7 @@ Feature: Pooling
       | size     | 2     |
       | lease_ms | 3000  |
     And I execute "create table notes (writer integer not null)" in the pool
-    And a block of the pool starts a transaction on a second connection
+    And a block of the pool starts a transaction on a second connection, all within 750 ms
     Then it fails with "sqlite error 5: database is locked"
 
   Scenario Outline: A pool of a private in-memory database cannot have more than one connection on sqlite

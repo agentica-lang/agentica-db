@@ -278,7 +278,7 @@ def act(state: State, req: Request) -> Handled
     "write_together" -> return reply_ok(write_together(state, req))
     "pool_writers_in_turn" -> return reply_ok(pool_writers_in_turn(state, req))
     "pool_turn_after" -> return reply_ok(pool_turn_after(state, req))
-    "pool_nested_transaction" -> return reply_ok(pool_nested_transaction(state))
+    "pool_nested_transaction" -> return reply_ok(pool_nested_transaction(state, req))
     "execute_waiting" -> return execute_waiting(state, req)
     "query_until_commit" -> return query_until_commit(state, req)
     "write_while_blocked" -> return write_while_blocked(state, req)
@@ -1162,10 +1162,18 @@ def write_note(tx: Db.Connection) -> Result[Int]
   return Db.execute(tx, "insert into notes (writer) values (1)", [])
 end
 
-# A block of the pool that checks out a second connection inside its transaction and starts a transaction there.
-def pool_nested_transaction(state: State) -> State
+# A block of the pool that checks out a second connection inside its transaction and starts a transaction there; it
+# fails when that took `req.number` ms or more.
+def pool_nested_transaction(state: State, req: Request) -> State
   return with_pool(state) do |pool|
-    return counted(state, DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| inner_write(pool) end end)
+    started = Time.monotonic_ms()
+    done = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| inner_write(pool) end end
+    took = Time.monotonic_ms() - started
+    if took >= req.number
+      return failed(state, "the nested transaction took #{took} ms")
+    end
+
+    return counted(state, done)
   end
 end
 

@@ -14,7 +14,7 @@ Needs Agentica 0.26.0 or later (native modules).
   dependency) builds it with the system C compiler at the first run; a fetched package runs the FFI driver, as before.
 - The SQLite writers of a `DbPool` take turns at `Db.transaction`, in the order they came, instead of retrying
   `BEGIN IMMEDIATE` every few milliseconds; a writer waits for its turn up to `busy_timeout` (at most half of
-  `lease_ms`). `DbPool.Pool` now names a pool of a private config: write `DbPool.Pool`, not `Pool[String, ...]`.
+  `lease_ms`).
 - SQLite url parameters `statement_cache` (statements per connection, 100 by default, 0 for none), `batch_rows` and
   `batch_bytes` (what one call of the native driver gives); `AGENTICA_DB_SQLITE_DRIVER=native` or `ffi` picks the
   driver.
@@ -22,6 +22,8 @@ Needs Agentica 0.26.0 or later (native modules).
 ### Changed
 
 - **Breaking:** needs Agentica 0.26.0 or later.
+- **Breaking:** `DbPool.Pool` is a pool of a private config, no longer `Pool[String, Db.Connection]` of `pkg/pool`:
+  name it `DbPool.Pool`.
 
 ## [0.5.0] - 2026-11-06
 
