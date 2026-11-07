@@ -1,6 +1,5 @@
-# Agentica built from a commit of agentica-lang/agentica, until a release has what the package needs (native modules
-# come in 0.26.0): then go back to the pinned release archive and its sha256. The binary is cached by runner and
-# commit, so only the first run of a commit builds it. It also leaves a C compiler on PATH, which the native SQLite
+# Agentica built from a commit of agentica-lang/agentica (ci.yml pins the one of a release tag). The binary is cached
+# by runner and commit, so only the first run of a commit builds it. It also leaves a C compiler on PATH, which the native SQLite
 # driver needs: the system one on Linux and macOS, the UCRT64 gcc of MSYS2 on Windows.
 name: Agentica from source
 description: Builds agentica at a commit and puts it on PATH.
