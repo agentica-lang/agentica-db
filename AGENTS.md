@@ -18,7 +18,8 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                url.agc (the parameters of the url), lock.agc (the lock rule)
   native/      db_sqlite.c and db_postgres.c, the native modules ([native.db_sqlite] and [native.db_postgres]
                build): each opens the system library itself (dlopen), so a build needs only a C compiler;
-               specs/statement_cache.feature and specs/postgres_native.feature (tag @native)
+               specs/statement_cache.feature, specs/sqlite_writes.feature (short writes, the checkpointer of a
+               pool) and specs/postgres_native.feature (tag @native)
   postgres/    postgres.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module),
                ffi.agc (the driver over extern calls), statement.agc (the checks both drivers make), sql.agc (the
                placeholder scanner), url.agc (it takes the parameters of the adapter out of the url before libpq

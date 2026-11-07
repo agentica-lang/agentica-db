@@ -52,6 +52,7 @@ Start the pool once, in a task that lives as long as it does, such as `main`: it
 - `max_age_ms` (0): a connection this old is closed and replaced when it is idle. 0 turns it off.
 - `idle_ms` (0): a connection unused this long is closed. It needs `lazy: true`, which opens connections only when callers need them (default `false`: always connected).
 - `health_ms` (5000): how often the idle connections are pinged and `max_age_ms` and `idle_ms` applied. 0 turns the check off, and then those two must be 0.
+- `checkpoint_frames` (1000), `checkpoint_ms` (1000) and `checkpoint_cap` (0): the checkpoints of a SQLite file in WAL mode, see [below](#sqlite-checkpoints). Other databases ignore them.
 
 The url is anything `Db.open` takes, `timeout_ms` included: every statement of the pooled connections is then bounded, and the `timeout_ms` argument of `Db.query` and `Db.execute` works as on any connection.
 
@@ -74,6 +75,14 @@ State that belongs to one connection (a temporary table, `SET` on the session, a
 SQLite has one writer at a time. The connections of a SQLite pool wait in line at `Db.transaction`: a writer waits for the one before it to commit, and they get their turn in the order they came, instead of each trying its `BEGIN IMMEDIATE` again every few milliseconds until the lock is free. A writer waits for its turn up to `busy_timeout`, and at most half of `lease_ms`; then its `BEGIN` takes the lock if it is free and fails with `sqlite error 5: database is locked` if not, as it would without the line. A block that crashes or runs past `lease_ms` inside its transaction gives the turn back when the pool takes its connection back. A statement outside `Db.transaction` does not wait in line, and `busy_timeout` stays its wait for the writers of other pools and processes.
 
 Do not start a transaction on a second connection of the pool inside a transaction: it waits for the turn that the first one holds, and fails after `busy_timeout` with `sqlite error 5: database is locked`.
+
+## SQLite checkpoints
+
+In WAL mode a commit appends its pages to the `-wal` file, and a checkpoint copies them into the database file. By default SQLite checkpoints in the `COMMIT` that brings the WAL past 1000 pages, so that one commit pays for the copy of many. A pool of a SQLite file with the native driver takes the checkpoints off the commits: its connections turn SQLite's automatic checkpoint off, and a checkpointer task of the pool, with a connection of its own, runs `PRAGMA wal_checkpoint(PASSIVE)` on the compute pool when a commit leaves `checkpoint_frames` pages or more in the WAL, and every `checkpoint_ms` in any case. A passive checkpoint never waits for a reader or a writer, so it copies what it can and leaves the rest for the next one.
+
+If the checkpointer falls behind, a commit that leaves `checkpoint_cap` pages or more checkpoints itself, as SQLite would, so the WAL stays bounded. 0 means four times `checkpoint_frames`. `checkpoint_frames` 0 turns the checkpointer off and leaves the checkpoints to SQLite. `DbPool.close` stops the checkpointer and closes its connection. A value below 0 (below 1 for `checkpoint_ms`) does not start the pool: `db error: checkpoint_ms must be 1 or more, got 0`.
+
+Since its `COMMIT` no longer checkpoints, the `COMMIT` of a transaction of short writes runs in a short call on the scheduler (see [the drivers](/databases/sqlite/#drivers)) when `synchronous` is `normal` (the default in WAL) or `off`: with `full` or `extra` a commit waits for the disk and runs on the compute pool. The `COMMIT` of a transaction that ran a write on the compute pool, or more than 64 short ones, runs on the compute pool too. An in-memory database, the FFI driver, `checkpoint_frames` 0 and a connection outside a pool keep SQLite's automatic checkpoint.
 
 ## Errors and timeouts
 

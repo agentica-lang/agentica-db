@@ -27,6 +27,15 @@
 ## if not, as without the line. So a block that checks out a second connection inside its transaction and starts a
 ## transaction on it fails after that wait, as before. A block that crashes or runs past `lease_ms` in its
 ## transaction gives the turn back when its connection is checked in.
+##
+## A pool of a SQLite file in WAL mode on the native driver takes the checkpoints of the WAL off the writers. Its
+## connections run with SQLite's autocheckpoint off, which would copy the WAL into the database inside a COMMIT, now
+## and then for many milliseconds while the writer holds the turn. A checkpointer task with a connection of its own
+## runs a PASSIVE checkpoint on the compute pool when a commit leaves `checkpoint_frames` frames in the WAL, and every
+## `checkpoint_ms`. A commit that leaves `checkpoint_cap` frames checkpoints at once on its own connection, so the WAL
+## stays bounded when the checkpointer lags. A COMMIT then never checkpoints, and runs in a short call on the scheduler
+## after the cheap writes of its transaction (see `sqlite/sqlite.agc`). `close` stops the checkpointer. With the FFI
+## driver, or `checkpoint_frames` 0, each connection checkpoints as SQLite does by itself.
 
 import Db from "db"
 import P from "pkg/pool/pool"
@@ -39,16 +48,34 @@ SQLITE_SIZE = 4
 SERVER_SIZE = 10
 # Every connection of a private in-memory database is a database of its own.
 MEMORY_SIZE = 1
+# A `checkpoint_cap` of 0 is this many times `checkpoint_frames`.
+CAP_FACTOR = 4
 
 ## A pool of connections.
 export type Pool = P.Pool[Config, Db.Connection]
 
 # What each connection of the pool is opened with: the url, and the line that the SQLite writers of the pool share
-# (`gate` holds one token) with the lease of a block, which bounds the wait in it.
+# (`gate` holds one token) with the lease of a block, which bounds the wait in it, and the checkpointer of a
+# SQLite file.
 struct Config
   url: String
   gate: Channel[Int]
   lease_ms: Int
+  checkpointer: Optional[Checkpointer]
+end
+
+# The task that checkpoints the WAL of the pool's database, and how the commits of the pool reach it (`plan.nudge`).
+struct Checkpointer
+  plan: Sqlite.Checkpoints
+  task: Task[Result[Void]]
+end
+
+# What the checkpointer task needs: the url of its own connection, the channel that wakes it (closed: stop), and the
+# time between two checkpoints when nothing wakes it.
+struct Watch
+  url: String
+  nudge: Channel[Int]
+  every_ms: Int
 end
 
 ## How to open a pool. `url` is anything `Db.open` takes. `size` 0 takes the size of the database: 4 for SQLite (1 for
@@ -57,6 +84,11 @@ end
 ## block may run, both in milliseconds; `max_age_ms` closes a connection that old and `idle_ms` one unused that long
 ## (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check that pings the idle connections
 ## and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0).
+##
+## The last three are the checkpoints of a SQLite file in WAL mode (see the top of this file): a commit that leaves
+## `checkpoint_frames` frames (pages) in the WAL wakes the checkpointer, which also runs every `checkpoint_ms`, and a
+## commit that leaves `checkpoint_cap` frames checkpoints itself (0: four times `checkpoint_frames`). A
+## `checkpoint_frames` of 0 leaves the checkpoints to SQLite (its autocheckpoint, at 1000 frames, inside a COMMIT).
 export struct Options
   url: String
   size: Int = 0
@@ -68,12 +100,16 @@ export struct Options
   idle_ms: Int = 0
   lazy: Bool = false
   health_ms: Int = 5_000
+  checkpoint_frames: Int = 1_000
+  checkpoint_ms: Int = 1_000
+  checkpoint_cap: Int = 0
 end
 
 ## Opens the connections and starts the pool. A url that does not open, or a pool that is not valid (a `size` below 1),
 ## is an `error`; so is more than one connection to a private in-memory SQLite database (`sqlite::memory:`,
 ## `sqlite:file::memory:`, a `file:` name with `mode=memory`), each of which would be an empty database of its
-## own. With `cache=shared` in the name the database is one to all, and the size is free.
+## own. With `cache=shared` in the name the database is one to all, and the size is free. A checkpoint option below
+## 0, or a `checkpoint_ms` of 0, is an error too.
 export def start(options: Options) -> Result[Pool]
   size = options.size
   if size == 0
@@ -84,10 +120,12 @@ export def start(options: Options) -> Result[Pool]
     return error("db error: a pool of a private in-memory database can have one connection only: each is its own")
   end
 
+  try check_checkpoints(options)
   gate: Channel[Int] = Channel.new(1)
   _ = gate.send(1, 0)
+  checkpointer = start_checkpointer(options)
   spec = P.Spec(
-    config: Config(url: options.url, gate: gate, lease_ms: options.lease_ms),
+    config: Config(url: options.url, gate: gate, lease_ms: options.lease_ms, checkpointer: checkpointer),
     init: &connect,
     checkin: &check_in,
     terminate: &Db.close,
@@ -103,7 +141,12 @@ export def start(options: Options) -> Result[Pool]
     health_ms: options.health_ms,
   )
 
-  return P.start(spec)
+  started = P.start(spec)
+  if not started.ok?
+    stop_checkpointer(checkpointer)
+  end
+
+  return started
 end
 
 ## Runs the block with a connection of the pool and gives its result. The block runs in a task of the pool: a crash in
@@ -117,9 +160,11 @@ export def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R]
 end
 
 ## Refuses new callers, lets the blocks that run and the callers in line finish for up to `drain_ms`, fails the rest
-## with `pool error: closed`, closes every connection and stops the pool.
+## with `pool error: closed`, closes every connection and stops the pool, then its checkpointer, which ends its
+## checkpoint, if one runs, and closes its connection before `close` returns.
 export def close(pool: Pool, drain_ms: Int) -> Void
   P.close(pool, drain_ms)
+  stop_checkpointer(pool.spec.config.checkpointer)
 end
 
 ## True for a failure that ran out of time: a caller that waited too long for a connection or a block that ran too
@@ -159,9 +204,99 @@ def connect(config: Config) -> Result[Db.Connection]
   conn = try Db.open(config.url)
   case conn
     Db.Connection.Sqlite(sqlite) ->
-      return ok(Db.Connection.Sqlite(Sqlite.with_gate(sqlite, config.gate, config.lease_ms)))
+      return ok(Db.Connection.Sqlite(own_checkpoints(Sqlite.with_gate(sqlite, config.gate, config.lease_ms), config)))
     _ -> return ok(conn)
   end
+end
+
+def own_checkpoints(sqlite: Sqlite.Connection, config: Config) -> Sqlite.Connection
+  case config.checkpointer
+    some(checkpointer) -> return Sqlite.own_checkpoints(sqlite, checkpointer.plan)
+    none -> return sqlite
+  end
+end
+
+def check_checkpoints(options: Options) -> Result[Void]
+  if options.checkpoint_frames < 0
+    return error("db error: checkpoint_frames must be 0 or more, got #{options.checkpoint_frames}")
+  end
+
+  if options.checkpoint_cap < 0
+    return error("db error: checkpoint_cap must be 0 or more, got #{options.checkpoint_cap}")
+  end
+
+  if options.checkpoint_ms < 1
+    return error("db error: checkpoint_ms must be 1 or more, got #{options.checkpoint_ms}")
+  end
+
+  return ok()
+end
+
+# The checkpointer of a pool of a SQLite file, none for any other url or with `checkpoint_frames` 0. It starts before
+# the connections, so that none of them runs without it.
+def start_checkpointer(options: Options) -> Optional[Checkpointer]
+  if options.checkpoint_frames == 0 or not sqlite_file?(options.url)
+    return none
+  end
+
+  cap = options.checkpoint_cap
+  if cap == 0
+    cap = options.checkpoint_frames * CAP_FACTOR
+  end
+
+  nudge: Channel[Int] = Channel.new(1)
+  plan = Sqlite.Checkpoints(nudge: nudge, frames: options.checkpoint_frames, cap: cap)
+  task = Task.spawn(&checkpoints, Watch(url: options.url, nudge: nudge, every_ms: options.checkpoint_ms))
+  return some(Checkpointer(plan: plan, task: task))
+end
+
+# Closing the channel stops the task at its next wake-up, after the checkpoint that runs, if any; it closes its
+# connection before it ends.
+def stop_checkpointer(checkpointer: Optional[Checkpointer]) -> Void
+  case checkpointer
+    none -> return
+    some(running) ->
+      running.plan.nudge.close
+      _ = Task.await(running.task)
+  end
+end
+
+# The checkpointer task: a PASSIVE checkpoint on a connection of its own (the compute pool runs it) each time a commit
+# wakes it, and every `every_ms`, until the channel closes. A connection that the pool cannot checkpoint (the FFI
+# driver, not WAL) ends it at once, and so does one that does not open: the commits then checkpoint at the cap.
+def checkpoints(watch: Watch) -> Result[Void]
+  conn = try Db.open(watch.url)
+  case conn
+    Db.Connection.Sqlite(sqlite) if Sqlite.checkpointable?(sqlite) -> checkpoint_loop(sqlite, watch)
+    _ -> return close_with(conn)
+  end
+
+  return close_with(conn)
+end
+
+def checkpoint_loop(sqlite: Sqlite.Connection, watch: Watch) -> Void
+  while true
+    _ = watch.nudge.recv(watch.every_ms)
+    if watch.nudge.closed?
+      return
+    end
+
+    _ = Sqlite.checkpoint(sqlite)
+  end
+end
+
+def close_with(conn: Db.Connection) -> Result[Void]
+  Db.close(conn)
+  return ok()
+end
+
+# A SQLite url of a file: not a private in-memory database, nor a shared one (`mode=memory`, `:memory:`).
+def sqlite_file?(url: String) -> Bool
+  if not url.start_with?(SQLITE_PREFIX) or private_memory?(url)
+    return false
+  end
+
+  return not url.include?(":memory:") and not url.include?("mode=memory")
 end
 
 # Gets a connection back after a block. A connection the block closed or lost is not reused (`Db.connected?`, no round
