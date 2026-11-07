@@ -61,6 +61,8 @@ enum {
   SQLITE_BLOB = 4,
   SQLITE_UTF8 = 1,
   SQLITE_TXN_READ = 1,
+  SQLITE_OPEN_NOMUTEX = 0x8000,
+  SQLITE_OPEN_FULLMUTEX = 0x10000,
 };
 /* sqlite3_txn_state came in 3.34.0; an older library does not have it, and a write is then waited for. */
 #define TXN_STATE_VERSION 3034000
@@ -855,8 +857,19 @@ static an_term fn_connect(an_env *env, int argc, const an_term *argv) {
   memcpy(name, path, len);
   name[len] = '\0';
   sqlite3 *db = NULL;
-  int rc = sq.open_v2(name, &db, (int)flags, NULL);
+  /* Serialized whatever the build's default (macOS ships SQLITE_THREADSAFE=2, whose connections have no mutex): the
+     tasks of one connection run on several threads, and the cache and the short calls rely on the db mutex. */
+  int open_flags = ((int)flags & ~SQLITE_OPEN_NOMUTEX) | SQLITE_OPEN_FULLMUTEX;
+  int rc = sq.open_v2(name, &db, open_flags, NULL);
   free(name);
+  if (rc == SQLITE_OK && !sq.db_mutex(db)) {
+    /* SQLITE_THREADSAFE=0: no mutex at all, so one connection cannot be shared by threads. */
+    (void)sq.close_v2(db);
+    free(c);
+    free(entries);
+    static const char NO_THREADS[] = "sqlite error: this SQLite was built without threads (SQLITE_THREADSAFE=0)";
+    return an_error(env, NO_THREADS, sizeof NO_THREADS - 1);
+  }
   if (rc != SQLITE_OK) {
     /* The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code. */
     if (db) (void)sq.close_v2(db);
