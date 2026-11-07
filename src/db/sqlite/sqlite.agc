@@ -14,13 +14,18 @@
 ## default `wal` that a read-only database refuses is skipped (for a `file:` name, one that SQLite will not set is
 ## skipped too); an explicit one is an error.
 ##
+## Two drivers run the statements. The native one (`native.agc`, a native module built from `native/db_sqlite.c`)
+## keeps a cache of prepared statements per connection (`statement_cache`, 100 by default) and reads many rows per
+## call (`batch_rows`, `batch_bytes`); the FFI one (`ffi.agc`) prepares each statement and steps it row by row. `open`
+## takes the native driver when its library loads and the FFI one otherwise, as in a fetched package, which does not
+## build native code; `AGENTICA_DB_SQLITE_DRIVER=native` or `ffi` chooses one (with `native`, a library that does not
+## load is an error).
+##
 ## A statement that finds a lock held by another connection (SQLITE_BUSY, or SQLITE_LOCKED for a table of a shared
-## cache) is tried again after a short sleep until `busy_timeout` is over, then fails with that error; 0 fails at once.
-## The wait is made here and not by SQLite (SQLite's busy timeout stays 0): a `compute def` call that sleeps in
-## SQLite's busy handler holds one of the threads of the compute pool, which has one per scheduler, so the writers that
-## wait would keep the writer that holds the lock from finishing. A write in a transaction that has read (a plain
-## `BEGIN`, a read, then the write) is not waited for: SQLite does not wait there either, since the connection that
-## holds the lock may be waiting for this one to let go of its read lock. It fails at once.
+## cache) is tried again after a short sleep until `busy_timeout` is over, then fails with that error; 0 fails at once
+## (`wait.agc` says why the wait is not SQLite's). A write in a transaction that has read (a plain `BEGIN`, a read,
+## then the write) is not waited for: SQLite does not wait there either, since the connection that holds the lock may
+## be waiting for this one to let go of its read lock. It fails at once.
 ##
 ## `timeout_ms` (a url parameter, and an argument of `query` and `execute`; none by default) bounds a statement. A
 ## watchdog task calls `sqlite3_interrupt` when the time is over, and the statement fails with `sqlite error 9:
@@ -31,95 +36,43 @@
 ##
 ## An engine failure is `sqlite error <code>: <message>`; a bad input is `sqlite error: <message>`.
 
+import SqliteFfi from "ffi"
 import SqliteLock from "lock"
+import SqliteNative from "native"
 import SqliteUrl from "url"
+import SqliteWait from "wait"
 import {Row, Value} from "../support/value"
 
 ## The statement that starts a transaction: IMMEDIATE takes the write lock at once, so a busy database fails at
 ## BEGIN, not in the middle of the body.
 export BEGIN_SQL = "BEGIN IMMEDIATE"
-SQLITE_OK = 0
-SQLITE_ROW = 100
-SQLITE_DONE = 101
-SQLITE_INTEGER = 1
-SQLITE_FLOAT = 2
-SQLITE_TEXT = 3
-SQLITE_BLOB = 4
 # SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI: the URI flag makes `file:` names work the same on
 # every build, whatever its default.
 OPEN_FLAGS = 70
 SQLITE_READONLY = 8
-SQLITE_LOCKED = 6
-SQLITE_INTERRUPT = 9
-# The state of a connection with a read transaction open, for `sqlite3_txn_state`, which SQLite has since 3.34.0
-# (3034000 for `sqlite3_libversion_number`). A system library that is older never says it, and the write is waited for.
-SQLITE_TXN_READ = 1
-TXN_STATE_VERSION = 3_034_000
-# The sleep between two tries starts at 1 ms, grows with the time already waited and stops at 25 ms.
-MAX_PAUSE_MS = 25
-# The length argument that means "up to the NUL" for the sql.
-NUL_TERMINATED = -1
-# The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
-TRANSIENT_DESTRUCTOR = -1
+DRIVER_VARIABLE = "AGENTICA_DB_SQLITE_DRIVER"
+NUL_SQL = "sqlite error: the sql contains a NUL character"
 
-## An open database, the time its statements wait for a lock, and the limit of a statement (0: none). `handle` is
+## An open database, the time its statements wait for a lock, and the limit of a statement (0: none). `link` is
 ## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
 ## opaque and pass the `Connection` around. `deadline` is set only on the copy that a bounded call works with.
 export struct Connection
-  handle: Handle
+  link: Link
   busy_timeout: Int
   timeout_ms: Int = 0
   deadline: Int = 0
 end
 
+# The connection of the driver that runs it, with what a call of the native one may give at once.
+enum Link
+  Native(SqliteNative.Conn, SqliteNative.Fetch)
+  Ffi(SqliteFfi.Handle)
+end
+
 # What the watchdog of a bounded call needs.
 struct Watch
-  handle: Handle
+  link: Link
   ms: Int
-end
-
-# The code of a step and whether it waited for a lock before: a statement that writes and was run again by SQLite
-# gives its rows from the start.
-struct Stepped
-  code: Int
-  waited: Bool
-end
-
-extern "sqlite3"
-  resource Handle, free: sqlite3_close_v2
-  resource Stmt, free: sqlite3_finalize
-  compute def sqlite3_open_v2(filename: C.String, out db: Handle, flags: C.Int32, vfs: C.Pointer) -> C.Int32
-  def sqlite3_extended_errcode(db: Handle) -> C.Int32
-  def sqlite3_errmsg(db: Handle) -> C.String
-  def sqlite3_errstr(code: C.Int32) -> C.String
-  def sqlite3_interrupt(db: Handle) -> Void
-  def sqlite3_get_autocommit(db: Handle) -> C.Int32
-  def sqlite3_changes(db: Handle) -> C.Int32
-  def sqlite3_total_changes(db: Handle) -> C.Int32
-  # Prepare is compute too: a big schema makes it slow. The probe is the same C function with an out pointer.
-  compute def sqlite3_prepare_v2(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: Stmt,
-                                 out tail: C.Pointer) -> C.Int32
-  compute def sqlite3_probe(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
-                            out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
-  compute def sqlite3_step(stmt: Stmt) -> C.Int32
-  def sqlite3_stmt_readonly(stmt: Stmt) -> C.Int32
-  def sqlite3_libversion_number() -> C.Int32
-  def sqlite3_txn_state(db: Handle, schema: C.Pointer) -> C.Int32
-  def sqlite3_bind_parameter_count(stmt: Stmt) -> C.Int32
-  def sqlite3_bind_null(stmt: Stmt, index: C.Int32) -> C.Int32
-  def sqlite3_bind_int64(stmt: Stmt, index: C.Int32, value: C.Int64) -> C.Int32
-  def sqlite3_bind_double(stmt: Stmt, index: C.Int32, value: C.Double) -> C.Int32
-  def sqlite3_bind_text(stmt: Stmt, index: C.Int32, text: C.Pointer, bytes: C.Int32, destructor: C.Pointer) -> C.Int32
-  def sqlite3_bind_blob(stmt: Stmt, index: C.Int32, blob: C.Bytes, bytes: C.Int32, destructor: C.Pointer) -> C.Int32
-  def sqlite3_bind_zeroblob(stmt: Stmt, index: C.Int32, bytes: C.Int32) -> C.Int32
-  def sqlite3_column_count(stmt: Stmt) -> C.Int32
-  def sqlite3_column_name(stmt: Stmt, col: C.Int32) -> C.String
-  def sqlite3_column_type(stmt: Stmt, col: C.Int32) -> C.Int32
-  def sqlite3_column_int64(stmt: Stmt, col: C.Int32) -> C.Int64
-  def sqlite3_column_double(stmt: Stmt, col: C.Int32) -> C.Double
-  def sqlite3_column_text(stmt: Stmt, col: C.Int32) -> C.Pointer
-  def sqlite3_column_blob(stmt: Stmt, col: C.Int32) -> C.Pointer
-  def sqlite3_column_bytes(stmt: Stmt, col: C.Int32) -> C.Int32
 end
 
 ## Opens a database file, or `:memory:`; the file is created when it does not exist. A `?` ends the path and starts
@@ -131,25 +84,13 @@ export def open(path: String) -> Result[Connection]
   end
 
   target = try SqliteUrl.parse(path)
-  try load_library()
-  opened = sqlite3_open_v2(target.path, OPEN_FLAGS, Native.pointer(0))
-  if opened.result != SQLITE_OK
-    # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
-    Native.close(opened.db)
-    return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
-  end
-
-  conn = Connection(
-    handle: opened.db,
-    busy_timeout: target.settings.busy_timeout,
-    timeout_ms: target.settings.timeout_ms,
-  )
-
-  configured = configure(conn, target.settings)
+  link = try connect(target)
+  conn = Connection(link: link, busy_timeout: target.settings.busy_timeout, timeout_ms: target.settings.timeout_ms)
+  configured = configure(uncached(conn), target.settings)
   case configured
     ok(_) -> return ok(conn)
     error(message) ->
-      Native.close(opened.db)
+      close(conn)
       return error(message)
   end
 end
@@ -157,7 +98,10 @@ end
 ## Closes the connection; closing it again does nothing. Closing the last connection of a WAL database checkpoints
 ## it, which can take a while: this call blocks the task meanwhile.
 export def close(conn: Connection) -> Void
-  Native.close(conn.handle)
+  case conn.link
+    Link.Native(native, _) -> Native.close(native)
+    Link.Ffi(handle) -> Native.close(handle)
+  end
 end
 
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
@@ -175,58 +119,121 @@ end
 
 ## Whether a transaction is open, which SQLite knows without asking the database. A closed connection is not in one.
 export def in_transaction?(conn: Connection) -> Bool
-  if Native.closed?(conn.handle)
+  if closed?(conn.link)
     return false
   end
 
-  return sqlite3_get_autocommit(conn.handle) == 0
+  case conn.link
+    Link.Native(native, _) ->
+      # A cancelled query may have left a write that SQLite never ended, a transaction that autocommit does not show.
+      SqliteNative.settle(native)
+      return not SqliteNative.autocommit?(native)
+    Link.Ffi(handle) -> return SqliteFfi.sqlite3_get_autocommit(handle) == 0
+  end
 end
 
 ## Whether the connection is open. SQLite has no link that can be lost, so a closed handle is all there is to know
 ## without running a statement.
 export def connected?(conn: Connection) -> Bool
-  return not Native.closed?(conn.handle)
+  return not closed?(conn.link)
 end
 
 ## Stops the statement that is running on the connection, if any, which then fails with `sqlite error 9: interrupted`.
-## A pool calls it when a block outlives its lease: `close` waits for a running `sqlite3_step`, and this lets it end.
+## A pool calls it when a block outlives its lease: `close` waits for a running statement, and this lets it end.
 ## An interrupt while no statement runs does nothing. Not for `Db`: only the pool reaches it.
 export def interrupt(conn: Connection) -> Void
-  if not Native.closed?(conn.handle)
-    sqlite3_interrupt(conn.handle)
+  if not closed?(conn.link)
+    interrupt_link(conn.link)
   end
 end
 
 ## Whether the connection works: it is open and answers `SELECT 1`.
 export def healthy?(conn: Connection) -> Bool
-  if Native.closed?(conn.handle)
+  if closed?(conn.link)
     return false
   end
 
   return run_query(conn, "SELECT 1", []).ok?
 end
 
-def run_query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
-  stmt = try prepare(conn, sql, params)
-  names = column_names(stmt)
-  if names.uniq.size != names.size
-    Native.close(stmt)
-    return error("sqlite error: the result has the column #{repeated_name(names)} twice, alias one of them")
+## The statement cache of a connection of the native driver; none for the FFI driver, which has none.
+export def statement_cache(conn: Connection) -> Optional[SqliteNative.CacheStats]
+  case conn.link
+    Link.Native(native, _) -> return some(SqliteNative.cache_stats(native))
+    Link.Ffi(_) -> return none
+  end
+end
+
+# The driver that the variable names, else the native one when its library loads, else the FFI one.
+def connect(target: SqliteUrl.Target) -> Result[Link]
+  choice = System.env(DRIVER_VARIABLE).unwrap_or("")
+  if choice == "ffi" or (choice == "" and not SqliteNative.available?())
+    handle = try SqliteFfi.open(target.path, OPEN_FLAGS)
+    return ok(Link.Ffi(handle))
   end
 
-  rows = collect(conn, stmt, names, true)
-  Native.close(stmt)
-  return rows
+  if choice != "" and choice != "native"
+    return error("sqlite error: #{DRIVER_VARIABLE} is #{choice}, expected native or ffi")
+  end
+
+  if not SqliteNative.available?()
+    return error("sqlite error: the native driver is not built (#{DRIVER_VARIABLE}=native)")
+  end
+
+  settings = target.settings
+  native = try SqliteNative.open(target.path, OPEN_FLAGS, settings.statement_cache)
+  fetch = SqliteNative.Fetch(rows: settings.batch_rows, bytes: settings.batch_bytes)
+  return ok(Link.Native(native, fetch))
+end
+
+# The connection with a native driver that does not cache the statements it runs: the pragmas of `open` run once.
+def uncached(conn: Connection) -> Connection
+  case conn.link
+    Link.Native(native, fetch) -> return conn.with(link: Link.Native(native, fetch.with(cache: false)))
+    Link.Ffi(_) -> return conn
+  end
+end
+
+def closed?(link: Link) -> Bool
+  case link
+    Link.Native(native, _) -> return Native.closed?(native)
+    Link.Ffi(handle) -> return Native.closed?(handle)
+  end
+end
+
+def interrupt_link(link: Link) -> Void
+  case link
+    Link.Native(native, _) -> SqliteNative.interrupt(native)
+    Link.Ffi(handle) -> SqliteFfi.sqlite3_interrupt(handle)
+  end
+end
+
+def run_query(conn: Connection, sql: String, params: List[Value]) -> Result[List[Row]]
+  if has_nul?(sql)
+    return error(NUL_SQL)
+  end
+
+  wait = wait_of(conn)
+  case conn.link
+    Link.Native(native, fetch) -> return SqliteNative.query(native, wait, sql, params, fetch)
+    Link.Ffi(handle) -> return SqliteFfi.query(handle, wait, sql, params)
+  end
 end
 
 def run_execute(conn: Connection, sql: String, params: List[Value]) -> Result[Int]
-  stmt = try prepare(conn, sql, params)
-  before = sqlite3_total_changes(conn.handle)
-  # A statement that returns rows is run for its effect: its rows are stepped over, not read.
-  ran = collect(conn, stmt, [], false)
-  Native.close(stmt)
-  try ran
-  return ok(changes_since(conn, before))
+  if has_nul?(sql)
+    return error(NUL_SQL)
+  end
+
+  wait = wait_of(conn)
+  case conn.link
+    Link.Native(native, fetch) -> return SqliteNative.execute(native, wait, sql, params, fetch)
+    Link.Ffi(handle) -> return SqliteFfi.execute(handle, wait, sql, params)
+  end
+end
+
+def wait_of(conn: Connection) -> SqliteWait.Wait
+  return SqliteWait.Wait(busy_timeout: conn.busy_timeout, deadline: conn.deadline)
 end
 
 # Runs `body` with the limit of the call. With a limit, a watchdog task interrupts the statement when the time is over
@@ -244,7 +251,7 @@ def bounded[R](conn: Connection, timeout_ms: Int, body: Fn[Connection, Result[R]
   end
 
   deadline = Time.monotonic_ms() + limit
-  watchdog_task = Task.spawn(&watchdog, Watch(handle: conn.handle, ms: limit))
+  watchdog_task = Task.spawn(&watchdog, Watch(link: conn.link, ms: limit))
   done = body.call(conn.with(deadline: deadline))
   Task.cancel(watchdog_task)
   _ = Task.await(watchdog_task)
@@ -253,7 +260,7 @@ end
 
 def watchdog(watch: Watch) -> Result[Void]
   Task.sleep(watch.ms)
-  sqlite3_interrupt(watch.handle)
+  interrupt_link(watch.link)
   return ok()
 end
 
@@ -263,11 +270,9 @@ def timed_out[R](done: Result[R], limit: Int, deadline: Int) -> Result[R]
     ok(_) -> return done
     error(message) ->
       busy = message.start_with?("sqlite error #{SqliteLock.SQLITE_BUSY}:")
-      locked = busy or message.start_with?("sqlite error #{SQLITE_LOCKED}:")
+      locked = busy or message.start_with?("sqlite error #{SqliteWait.SQLITE_LOCKED}:")
       if locked and Time.monotonic_ms() >= deadline
-        return error(
-          "sqlite error #{SQLITE_INTERRUPT}: interrupted, the timeout of #{limit} ms ended while waiting for a lock",
-        )
+        return error("#{SqliteWait.INTERRUPTED}, the timeout of #{limit} ms ended while waiting for a lock")
       end
 
       return done
@@ -361,352 +366,8 @@ def fts5?(conn: Connection) -> Bool
   return true
 end
 
-# A library that is missing is an error here, not a stop of the program at the first call.
-def load_library() -> Result[Void]
-  case Native.load("sqlite3")
-    error(message) -> return error("sqlite error: cannot load the SQLite library: #{message}")
-    ok(_) -> return ok()
-  end
-end
-
-def repeated_name(names: List[String]) -> String
-  counts = names.tally
-  return names.find do |name| counts[name] > 1 end.unwrap_or("")
-end
-
-def changes_since(conn: Connection, before: Int) -> Int
-  # sqlite3_changes keeps the count of the last row-changing statement, so a statement that changed nothing
-  # (a CREATE TABLE after an INSERT) must not report it.
-  if sqlite3_total_changes(conn.handle) == before
-    return 0
-  end
-
-  return sqlite3_changes(conn.handle)
-end
-
-def prepare(conn: Connection, sql: String, params: List[Value]) -> Result[Stmt]
-  if has_nul?(sql)
-    return error("sqlite error: the sql contains a NUL character")
-  end
-
-  # The sql goes through an owned buffer, not a C.String: SQLite points `tail` into its copy, and a C.String copy
-  # lives only during the call.
-  made: Result[Stmt] = Native.from_string(sql) do |buf| prepare_buffer(conn, buf) end
-  stmt = try made
-  bound = bind_all(conn, stmt, params)
-  case bound
-    ok(_) -> return ok(stmt)
-    error(message) ->
-      Native.close(stmt)
-      return error(message)
-  end
-end
-
-# Prepares the first statement in the buffer, waiting for a lock like a step does, and refuses a second one. SQLite
-# gives a NULL statement for sql that holds only whitespace and comments, which an out resource shows as a closed one.
-def prepare_buffer(conn: Connection, buf: C.Pointer) -> Result[Stmt]
-  prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-  if lock_code?(prepared.result)
-    started = Time.monotonic_ms()
-    while lock_wait?(conn, prepared.result, started)
-      pause(conn, started)
-      prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-    end
-  end
-
-  if prepared.result != SQLITE_OK
-    return error(failure(conn, prepared.result))
-  end
-
-  if Native.closed?(prepared.stmt)
-    return error("sqlite error: the sql has no statement")
-  end
-
-  stmt = prepared.stmt
-  more = no_more_statements(conn, prepared.tail)
-  case more
-    ok(_) -> return ok(stmt)
-    error(message) ->
-      Native.close(stmt)
-      return error(message)
-  end
-end
-
-# The text after the first statement must hold none. It is tried with an out pointer, where NULL can be told, and the
-# probe is finalized by hand right after its call. The call is a compute def: if the task is cancelled during the
-# parse, the C call still finishes but its result is dropped, so that one probe statement is never finalized (an out
-# C.Pointer is not freed on cancel, unlike an out resource). It is freed when the connection closes.
-def no_more_statements(conn: Connection, tail: C.Pointer) -> Result[Void]
-  if Native.get_string(tail, 0) == ""
-    return ok()
-  end
-
-  more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
-  if lock_code?(more.result)
-    started = Time.monotonic_ms()
-    while lock_wait?(conn, more.result, started)
-      pause(conn, started)
-      more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
-    end
-  end
-
-  # Text after the first statement that is only comments gives a NULL statement: still one statement.
-  if more.result == SQLITE_OK and Native.null?(more.stmt)
-    return ok()
-  end
-
-  if more.result == SQLITE_OK
-    sqlite3_finalize_pointer(more.stmt)
-  end
-
-  return error("sqlite error: the sql has more than one statement")
-end
-
-def bind_all(conn: Connection, stmt: Stmt, params: List[Value]) -> Result[Void]
-  wanted = sqlite3_bind_parameter_count(stmt)
-  if wanted != params.size
-    return error("sqlite error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
-  end
-
-  index = 1
-  for param in params
-    code = bind_value(stmt, index, param)
-    if code != SQLITE_OK
-      return error(failure(conn, code))
-    end
-
-    index += 1
-  end
-
-  return ok()
-end
-
-def noun(count: Int) -> String
-  if count == 1
-    return "parameter"
-  end
-
-  return "parameters"
-end
-
-def bind_value(stmt: Stmt, index: Int, value: Value) -> Int
-  case value
-    Value.Null -> return sqlite3_bind_null(stmt, index)
-    Value.Int(n) -> return sqlite3_bind_int64(stmt, index, n)
-    Value.Float(x) -> return sqlite3_bind_double(stmt, index, x)
-    Value.Text(text) -> return bind_text(stmt, index, text)
-    Value.Blob(bytes) -> return bind_blob(stmt, index, bytes)
-    Value.Bool(flag) -> return sqlite3_bind_int64(stmt, index, bool_int(flag))
-  end
-end
-
-# The text goes with its length, so a NUL inside it is kept; SQLite copies it (transient) before the buffer is freed.
-def bind_text(stmt: Stmt, index: Int, text: String) -> Int
-  code: Int = Native.from_string(text) do |buf| sqlite3_bind_text(stmt, index, buf, text.bytesize, transient()) end
-
-  return code
-end
-
-def bind_blob(stmt: Stmt, index: Int, bytes: Bytes) -> Int
-  # Binding a NULL pointer would store NULL, so an empty blob has its own call.
-  if bytes.empty?
-    return sqlite3_bind_zeroblob(stmt, index, 0)
-  end
-
-  return sqlite3_bind_blob(stmt, index, bytes, bytes.size, transient())
-end
-
-def transient() -> C.Pointer
-  return Native.pointer(TRANSIENT_DESTRUCTOR)
-end
-
-def bool_int(flag: Bool) -> Int
-  if flag
-    return 1
-  end
-
-  return 0
-end
-
-# The shared step loop: every row read with the given column names, or none when `keep` is false. A step that gives a
-# row costs one comparison here; the clock and the lock rules are for the step that finds a lock.
-def collect(conn: Connection, stmt: Stmt, names: List[String], keep: Bool) -> Result[List[Row]]
-  # An interrupt that came between the prepare and the first step is lost (SQLite ignores one while no statement
-  # runs), so the deadline is read here. Later steps are left to the interrupt: a statement that SQLite stopped is
-  # rolled back by SQLite, which a return from here would skip (a write with RETURNING does its work in the
-  # first step).
-  if conn.deadline > 0 and Time.monotonic_ms() >= conn.deadline
-    return error(failure(conn, SQLITE_INTERRUPT))
-  end
-
-  rows: List[Row] = []
-  while true
-    code = sqlite3_step(stmt)
-    # Written out here, not as a call: the check runs once per row, and a row fails its first comparison. Keep it in
-    # sync with `lock_code?`.
-    if code != SQLITE_ROW and (code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED)
-      stepped = step_after_lock(conn, stmt, code)
-      code = stepped.code
-      # SQLite rolls a write back and runs it again after a wait (a commit refused in a rollback journal), so the
-      # rows of the first run are dropped; a read goes on from where it stopped.
-      if stepped.waited and sqlite3_stmt_readonly(stmt) == 0
-        rows = []
-      end
-    end
-
-    if code == SQLITE_ROW
-      if keep
-        rows = rows.push(read_row(stmt, names))
-      end
-    elsif code == SQLITE_DONE
-      return ok(rows)
-    else
-      return error(failure(conn, code))
-    end
-  end
-
-  return ok(rows)
-end
-
-# What is left of a step that found a lock (`code`), tried again while the database stays locked. SQLite documents a
-# retry for a COMMIT, which stays open after SQLITE_BUSY, and for a statement outside a transaction. A write that a
-# read transaction of this connection asks for is not tried again (`upgrade?`). The wait is counted from here, after
-# the first refusal, which SQLite gives at once (its own busy timeout is 0), so the clock is read only on this path.
-def step_after_lock(conn: Connection, stmt: Stmt, code: Int) -> Stepped
-  started = Time.monotonic_ms()
-  current = code
-  waited = false
-  while lock_wait?(conn, current, started) and not upgrade?(conn, stmt)
-    pause(conn, started)
-    waited = true
-    current = sqlite3_step(stmt)
-  end
-
-  return Stepped(code: current, waited: waited)
-end
-
-# A statement that writes, in a connection that holds a read lock: SQLite does not wait for the lock of the writer
-# (its busy handler is skipped, since the holder of the write lock may be waiting for our read lock, which we keep
-# until the write is done), so waiting here would stall the other connection's COMMIT until `busy_timeout` is over,
-# and then fail with the same error. `Db.transaction` begins with BEGIN IMMEDIATE, so its statements never get here.
-def upgrade?(conn: Connection, stmt: Stmt) -> Bool
-  if sqlite3_stmt_readonly(stmt) != 0 or sqlite3_libversion_number() < TXN_STATE_VERSION
-    return false
-  end
-
-  # Only SQLITE_BUSY itself is that refusal: a table lock of a shared cache (262) or a WAL being recovered (261) goes
-  # away without this connection letting go of anything.
-  if not SqliteLock.plain_busy?(sqlite3_extended_errcode(conn.handle))
-    return false
-  end
-
-  return sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_READ
-end
-
-# Whether a result code is SQLITE_BUSY or SQLITE_LOCKED, the two that can be a lock of another connection.
-def lock_code?(code: Int) -> Bool
-  return code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED
-end
-
-# True when `code` says that another connection holds a lock and the wait that began at `started` is not over, so
-# the caller pauses and tries again. The codes are checked first, so a call that succeeded asks nothing of SQLite.
-def lock_wait?(conn: Connection, code: Int, started: Int) -> Bool
-  if not lock_code?(code)
-    return false
-  end
-
-  if not SqliteLock.waitable?(sqlite3_extended_errcode(conn.handle))
-    return false
-  end
-
-  now = Time.monotonic_ms()
-  if conn.deadline > 0 and now >= conn.deadline
-    return false
-  end
-
-  return now - started < conn.busy_timeout
-end
-
-# Sleeps a little: the task parks, so its thread of the compute pool is free for the connection that holds the lock.
-# The sleep never goes past the end of the wait, nor the deadline of the call.
-def pause(conn: Connection, started: Int) -> Void
-  now = Time.monotonic_ms()
-  waited = now - started
-  length = waited / 4 + 1
-  if length > MAX_PAUSE_MS
-    length = MAX_PAUSE_MS
-  end
-
-  left = conn.busy_timeout - waited
-  if conn.deadline > 0 and conn.deadline - now < left
-    left = conn.deadline - now
-  end
-
-  if length > left
-    length = left
-  end
-
-  if length < 1
-    length = 1
-  end
-
-  Task.sleep(length)
-end
-
-def column_names(stmt: Stmt) -> List[String]
-  names: List[String] = []
-  count = sqlite3_column_count(stmt)
-  for col in 0...count
-    names = names.push(sqlite3_column_name(stmt, col))
-  end
-
-  return names
-end
-
-# The type of each value is asked of SQLite every time, since a column of one statement can hold a different type in
-# each row. The value is read in this loop, not in a function, because it runs for every column of every row.
-def read_row(stmt: Stmt, names: List[String]) -> Row
-  row: Row = {}
-  col = 0
-  for name in names
-    kind = sqlite3_column_type(stmt, col)
-    if kind == SQLITE_INTEGER
-      row = row.put(name, Value.Int(sqlite3_column_int64(stmt, col)))
-    elsif kind == SQLITE_TEXT
-      # The pointer first, then its length: sqlite3_column_bytes is only right after the conversion.
-      text = sqlite3_column_text(stmt, col)
-      row = row.put(name, Value.Text(Native.get_string(text, 0, sqlite3_column_bytes(stmt, col))))
-    elsif kind == SQLITE_FLOAT
-      row = row.put(name, Value.Float(sqlite3_column_double(stmt, col)))
-    elsif kind == SQLITE_BLOB
-      blob = sqlite3_column_blob(stmt, col)
-      row = row.put(name, Value.Blob(Native.get_bytes(blob, 0, sqlite3_column_bytes(stmt, col))))
-    else
-      row = row.put(name, Value.Null)
-    end
-
-    col += 1
-  end
-
-  return row
-end
-
-# The code is the one the failed call returned; the text is SQLite's own message.
-def failure(conn: Connection, code: Int) -> String
-  if code == SQLITE_INTERRUPT
-    return "sqlite error #{SQLITE_INTERRUPT}: interrupted"
-  end
-
-  return "sqlite error #{code}: #{sqlite3_errmsg(conn.handle)}"
-end
-
-# A NUL ends a C.String early, and the VM stops the program at the call (RUNTIME-INVALID-CHARACTER).
+# A NUL ends a C.String early, and the VM stops the program at the call (RUNTIME-INVALID-CHARACTER); SQLite would read
+# the native driver's sql only up to it.
 def has_nul?(text: String) -> Bool
   return text.include?(String.from_code(0))
-end
-
-# A second block, because a probe statement is finalized through its pointer and the free function of the first
-# block's Stmt cannot be declared there. The probe is finalized once, here, and never becomes a resource.
-extern "sqlite3"
-  def sqlite3_finalize_pointer(stmt: C.Pointer) -> C.Int32 = "sqlite3_finalize"
 end

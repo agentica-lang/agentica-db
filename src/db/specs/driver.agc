@@ -10,6 +10,8 @@ import Migrate from "../migrate"
 import Orm from "../orm"
 import Protocol from "protocol"
 import {Request} from "protocol"
+import Sqlite from "../sqlite/sqlite"
+import SqliteNative from "../sqlite/native"
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
@@ -53,6 +55,19 @@ PROBE_SQL = "select count(*) as n from sqlite_master"
 NO_DATABASE = "no database is open"
 NO_POOL = "no pool is started"
 POOL_DRAIN_MS = 1_000
+# The runs of the query in each task of `query_together`.
+QUERY_REPEATS = 50
+# `query_beside_long`: the time the long statement needs to start its step, the time the ticker needs to start, how
+# long it ticks and the sleep between its ticks.
+LONG_START_MS = 100
+TICKER_START_MS = 20
+TICKER_MS = 600
+PAUSE_TICK_MS = 5
+# `cancel_beside_long` cancels the write this soon after the long statement starts: the write sleeps between its tries
+# (25 ms), and only a cancel in its sleep frees its cursor at once; once it tries again it waits in its own call.
+CANCEL_AFTER_MS = 5
+# The `number` of an `on_other` request that queries; any other executes.
+OTHER_QUERY = 1
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 
@@ -258,6 +273,12 @@ def act(state: State, req: Request) -> Handled
     "query_while_locked" -> return query_while_locked(state, req)
     "open_while_locked" -> return open_while_locked(state, req)
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
+    "query_together" -> return reply_ok(query_together(state, req))
+    "query_beside_long" -> return reply_ok(query_beside_long(state, req))
+    "cancel_beside_long" -> return reply_ok(cancel_beside_long(state, req))
+    "on_other" -> return reply_ok(on_other(state, req))
+    "query_big_json" -> return reply_ok(query_big_json(state, req))
+    "statement_cache" -> return reply_ok(statement_cache(state))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
@@ -1313,6 +1334,183 @@ def execute_in_task(state: State, sql: String) -> State
       error(message) -> return failed(state, message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
+  end
+end
+
+# `req.number` tasks each run the query QUERY_REPEATS times on the one connection, at once; the rows when every run
+# gave the same.
+def query_together(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    job = Job(conn: conn, sql: Cells.expand(req.text))
+    tasks = (0...req.number).to_a.map do |_| Task.spawn(&query_repeated, job) end
+    results = tasks.map do |task| Task.await(task) end
+    return same_rows(state, results)
+  end
+end
+
+# The rows of a query on the connection while another task runs a long statement there, unless the scheduler stopped
+# meanwhile for `req.number` ms or more: a short call that waited for the other task's statement stops it.
+def query_beside_long(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    Task.sleep(LONG_START_MS)
+    ticker = Task.spawn(&longest_pause, TICKER_MS)
+    Task.sleep(TICKER_START_MS)
+    rows = Db.query(conn, Cells.expand(req.cells[0]), [])
+    pause = Task.await(ticker)
+    _ = Task.await(long)
+    return beside_rows(state, rows, pause, req.number)
+  end
+end
+
+# A write on the connection that waits for the lock of another connection (at `req.text`) is cancelled while another
+# task runs a long statement there. It fails when the scheduler stopped for `req.number` ms or more: the cancel frees
+# the write's cursor, which must not wait for the long statement.
+def cancel_beside_long(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    case Db.open(expand(state, req.text))
+      error(message) -> return failed(state, message)
+      ok(other) -> return cancel_with_lock(state, conn, other, req)
+    end
+  end
+end
+
+def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, req: Request) -> State
+  write = Cells.expand(req.cells[0])
+  _ = Db.execute(other, "begin immediate", [])
+  writer = Task.spawn(&run_job, Job(conn: conn, sql: write))
+  Task.sleep(LONG_START_MS)
+  ticker = Task.spawn(&longest_pause, TICKER_MS)
+  Task.sleep(TICKER_START_MS)
+  long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[1])))
+  Task.sleep(CANCEL_AFTER_MS)
+  Task.cancel(writer)
+  pause = Task.await(ticker)
+  _ = Task.await(long)
+  _ = Db.execute(other, "rollback", [])
+  Db.close(other)
+  case pause
+    error(message) -> return failed(state, message)
+    ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
+    ok(_) -> return recorded(state, Outcome.Done)
+  end
+end
+
+# A statement on a connection of its own to `req.text`, closed after it: its rows, or its count for `execute`.
+def on_other(state: State, req: Request) -> State
+  case Db.open(expand(state, req.text))
+    error(message) -> return failed(state, message)
+    ok(other) ->
+      sql = Cells.expand(req.cells[0])
+      if req.number == OTHER_QUERY
+        rows = Db.query(other, sql, [])
+        Db.close(other)
+        return recorded_rows(state, rows)
+      end
+
+      count = Db.execute(other, sql, [])
+      Db.close(other)
+      return counted(state, count)
+  end
+end
+
+# The rows of `req.text` with one parameter, a JSON list of `req.number` ones, unless the scheduler stopped for
+# `req.cells[0]` ms or more meanwhile: a short call must not take big bound data.
+def query_big_json(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    list = "[#{"1," * (req.number - 1)}1]"
+    ticker = Task.spawn(&longest_pause, TICKER_MS)
+    Task.sleep(TICKER_START_MS)
+    rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text(list)])
+    pause = Task.await(ticker)
+    return beside_rows(state, rows, pause, req.cells[0].to_i!)
+  end
+end
+
+def beside_rows(state: State, rows: Result[List[Db.Row]], pause: Result[Int], limit: Int) -> State
+  case pause
+    error(message) -> return failed(state, message)
+    ok(ms) if ms >= limit -> return failed(state, "the scheduler stopped for #{ms} ms")
+    ok(_) -> return recorded_rows(state, rows)
+  end
+end
+
+def recorded_rows(state: State, rows: Result[List[Db.Row]]) -> State
+  case rows
+    error(message) -> return failed(state, message)
+    ok(found) -> return recorded(state, Outcome.Rows(found))
+  end
+end
+
+# The longest time between two ticks in `ms` milliseconds: about PAUSE_TICK_MS while the scheduler runs freely.
+def longest_pause(ms: Int) -> Result[Int]
+  started = Time.monotonic_ms()
+  last = started
+  longest = 0
+  while last - started < ms
+    Task.sleep(PAUSE_TICK_MS)
+    now = Time.monotonic_ms()
+    if now - last > longest
+      longest = now - last
+    end
+
+    last = now
+  end
+
+  return ok(longest)
+end
+
+def same_rows(state: State, results: List[Result[List[Db.Row]]]) -> State
+  found: List[List[Db.Row]] = []
+  for result in results
+    case result
+      error(message) -> return failed(state, message)
+      ok(rows) -> found = found.push(rows)
+    end
+  end
+
+  if found.any? do |rows| rows != found[0] end
+    return failed(state, "the tasks got different rows: #{found}")
+  end
+
+  return recorded(state, Outcome.Rows(found[0]))
+end
+
+def query_repeated(job: Job) -> Result[List[Db.Row]]
+  first = try Db.query(job.conn, job.sql, [])
+  for _ in 1...QUERY_REPEATS
+    again = try Db.query(job.conn, job.sql, [])
+    if again != first
+      return error("a run of the query gave other rows: #{again}")
+    end
+  end
+
+  return ok(first)
+end
+
+# The counters of the statement cache of the SQLite connection, as one row.
+def statement_cache(state: State) -> State
+  return with_conn(state) do |conn|
+    case conn
+      Db.Connection.Sqlite(sqlite) -> return cache_row(state, Sqlite.statement_cache(sqlite))
+      _ -> return failed(state, "only a SQLite connection has a statement cache")
+    end
+  end
+end
+
+def cache_row(state: State, found: Optional[SqliteNative.CacheStats]) -> State
+  case found
+    none -> return failed(state, "the FFI driver has no statement cache")
+    some(stats) ->
+      row = {
+        "size": Db.Value.Int(stats.size),
+        "capacity": Db.Value.Int(stats.capacity),
+        "hits": Db.Value.Int(stats.hits),
+        "misses": Db.Value.Int(stats.misses),
+        "evictions": Db.Value.Int(stats.evictions),
+      }
+
+      return recorded(state, Outcome.Rows([row]))
   end
 end
 

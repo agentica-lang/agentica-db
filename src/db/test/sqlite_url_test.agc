@@ -62,7 +62,7 @@ def main() -> Void
       return refused(
         "a.db?color=red",
         "unknown url parameter color, expected journal_mode, foreign_keys, busy_timeout, timeout_ms, synchronous, " +
-        "mmap_size, cache_size, journal_size_limit or fts5",
+        "mmap_size, cache_size, journal_size_limit, fts5, statement_cache, batch_rows or batch_bytes",
       )
     end,
     Test.test("names and values are lowercase and case-sensitive, and nothing is percent-decoded") do
@@ -70,7 +70,7 @@ def main() -> Void
       try refused(
         "a.db?Foreign_Keys=on",
         "unknown url parameter Foreign_Keys, expected journal_mode, foreign_keys, busy_timeout, timeout_ms, " +
-        "synchronous, mmap_size, cache_size, journal_size_limit or fts5",
+        "synchronous, mmap_size, cache_size, journal_size_limit, fts5, statement_cache, batch_rows or batch_bytes",
       )
 
       try refused("a.db?foreign_keys=ON", "the url parameter foreign_keys has a value that is not allowed: ON")
@@ -97,6 +97,17 @@ def main() -> Void
       try refused("a.db?cache_size=-", "the url cache_size is not a whole number")
       try refused("a.db?journal_size_limit=1k", "the url journal_size_limit is not a whole number")
       return refused("a.db?mmap_size=1234567890123456", "the url mmap_size is not a whole number")
+    end,
+    Test.test("the statement cache is 0 to 10000 statements, and a batch at least one row and one byte") do
+      settings = target_of("a.db").settings
+      try Test.eq([settings.statement_cache, settings.batch_rows, settings.batch_bytes], [100, 1000, 4_194_304])
+      chosen = target_of("a.db?statement_cache=0&batch_rows=1&batch_bytes=1").settings
+      try Test.eq([chosen.statement_cache, chosen.batch_rows, chosen.batch_bytes], [0, 1, 1])
+      try Test.eq(target_of("a.db?statement_cache=10000").settings.statement_cache, 10_000)
+      try refused("a.db?statement_cache=10001", "the url statement_cache is over 10000: 10001")
+      try refused("a.db?batch_rows=0", "the url batch_rows is below 1: 0")
+      try refused("a.db?batch_bytes=0", "the url batch_bytes is below 1: 0")
+      return refused("a.db?statement_cache=-1", "the url statement_cache is not a whole number")
     end,
   ])
 end

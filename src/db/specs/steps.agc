@@ -100,6 +100,25 @@ def main() -> Void
       send(ctx, Request(op: "execute_waiting", text: args[0], cells: [args[1]], number: args[2].to_i!))
     end,
     text_step("another task opens its own connection and queries {string}", "query_in_new_task"),
+    BDD.step("{int} tasks each query {string} on the connection at once") do |ctx, args|
+      send(ctx, Request(op: "query_together", number: args[0].to_i!, text: args[1]))
+    end,
+    BDD.step("another task runs {string} while I query {string}, and no scheduler stops for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "query_beside_long", text: args[0], cells: [args[1]], number: args[2].to_i!))
+    end,
+    BDD.step("the write {string} that waits for {string} is cancelled beside {string} within {int} ms") do |ctx, args|
+      send(ctx, Request(op: "cancel_beside_long", text: args[1], cells: [args[0], args[2]], number: args[3].to_i!))
+    end,
+    BDD.step("a connection of its own to {string} queries {string}") do |ctx, args|
+      send(ctx, Request(op: "on_other", text: args[0], cells: [args[1]], number: 1))
+    end,
+    BDD.step("a connection of its own to {string} executes {string}") do |ctx, args|
+      send(ctx, Request(op: "on_other", text: args[0], cells: [args[1]], number: 0))
+    end,
+    BDD.step("I query {string} with a JSON list of {int} numbers, and no scheduler stops for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "query_big_json", text: args[0], number: args[1].to_i!, cells: [args[2]]))
+    end,
+    plain_step("I read the statement cache", "statement_cache"),
     text_step("I read people with {string}", "orm_query"),
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
     BDD.step("I read partial people with {string}") do |ctx, args|
