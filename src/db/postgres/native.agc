@@ -8,6 +8,7 @@
 ## another's, and every call on the connection is made under it. A task that is cancelled in the middle of one leaves
 ## it on the connection, and the next query drains it first, after a cancel request to the server.
 
+import PostgresSql from "sql"
 import PostgresStatement from "statement"
 import {Row, Value} from "../support/value"
 
@@ -33,6 +34,8 @@ TIMED_OUT = "native: timed out"
 # schema, after which the cache lets every statement go: a cached plan may no longer fit the tables.
 CACHED_VERBS = Set.new(["select", "insert", "update", "delete", "with", "values", "merge", "table"])
 FLUSH_VERBS = Set.new(["create", "alter", "drop", "import"])
+# The verbs of `DEALLOCATE [PREPARE] ALL` and `DISCARD ALL`, which drop every prepared statement of the session.
+DROP_ALL_VERBS = Set.new(["deallocate", "discard"])
 # PQstatus CONNECTION_BAD and PQtransactionStatus UNKNOWN, as `link_status` gives them: what a closed connection is.
 CLOSED_STATUS = 1 * 16 + 4
 CLOSED = "postgres error: the connection is closed"
@@ -199,7 +202,7 @@ def plan_of(session: Session, sql: String, params: List[Value], keep: Bool) -> R
     count: translated.count,
     cache: CACHED_VERBS.include?(verb),
     flush: FLUSH_VERBS.include?(verb),
-    forgot: drops_all?(translated.words),
+    forgot: DROP_ALL_VERBS.include?(verb) and drops_all?(PostgresSql.first_words(sql, 3)),
     keep: keep,
   )
 

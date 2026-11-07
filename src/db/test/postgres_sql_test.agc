@@ -23,9 +23,7 @@ def verb_of(sql: String, verb: String) -> Result[Void]
 end
 
 def words_of(sql: String, words: List[String]) -> Result[Void]
-  done = PostgresSql.translate(sql)
-  try Test.ok?(done)
-  return Test.eq(done.unwrap!.words, words)
+  return Test.eq(PostgresSql.first_words(sql, 3), words)
 end
 
 def refused(sql: String, message: String) -> Result[Void]
@@ -130,7 +128,8 @@ def main() -> Void
       try words_of("discard all;", ["discard", "all"])
       try words_of("deallocate mine /* all of it */", ["deallocate", "mine"])
       try words_of("deallocate \"all\" -- all", ["deallocate"])
-      return words_of("select a1, 'b' from t where x_y = 2", ["select", "a1", "from"])
+      try words_of("select a1, 'b' from t where x_y = 2", ["select", "a1", "from"])
+      return words_of("SELECT ÉTÉ, x", ["select", "été", "x"])
     end,
   ])
 end

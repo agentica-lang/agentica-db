@@ -30,17 +30,13 @@ LOWER_A = 97
 LOWER_E = 101
 LOWER_Z = 122
 FIRST_NON_ASCII = 128
-# Enough for `DEALLOCATE PREPARE ALL`.
-WORDS_KEPT = 3
 
 ## The sql with `$n` placeholders, how many there are, and its first word in lower case (`begin`, `commit`,
-## `select`; empty when the statement starts with something else), read after any whitespace and comments. `words`
-## are its first WORDS_KEPT bare words in lower case, outside literals, quoted names and comments.
+## `select`; empty when the statement starts with something else), read after any whitespace and comments.
 export struct Translated
   sql: String
   count: Int
   verb: String
-  words: List[String] = []
 end
 
 # The state of the walk: the parts of the translated sql so far, the start of the bytes not copied yet (they are
@@ -55,7 +51,6 @@ struct Scan
   ended: Bool
   content: Bool
   verb: String
-  words: List[String]
 end
 
 ## Translates `?` to `$1..$n`. An error is `postgres error: <message>` for a NUL, a second statement, no statement
@@ -66,7 +61,7 @@ export def translate(sql: String) -> Result[Translated]
   end
 
   bytes = sql.bytes
-  scan = Scan(parts: [], from: 0, at: 0, count: 0, depth: 0, ended: false, content: false, verb: "", words: [])
+  scan = Scan(parts: [], from: 0, at: 0, count: 0, depth: 0, ended: false, content: false, verb: "")
   while scan.at < bytes.size
     scan = try step(bytes, scan)
   end
@@ -76,7 +71,31 @@ export def translate(sql: String) -> Result[Translated]
   end
 
   translated = try String.from_bytes(Bytes.concat(scan.parts.push(bytes.drop(scan.from))))
-  return ok(Translated(sql: translated, count: scan.count, verb: scan.verb, words: scan.words))
+  return ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
+end
+
+## The first `limit` bare words of the sql in lower case, outside literals, quoted names and comments (`deallocate
+## mine /* all */` gives `["deallocate", "mine"]`). A scan of its own, apart from `translate`, so that only the
+## statements that need it pay for it.
+export def first_words(sql: String, limit: Int) -> List[String]
+  bytes = sql.bytes
+  words: List[String] = []
+  at = 0
+  while at < bytes.size and words.size < limit
+    byte = bytes[at]
+    stop = span_end(bytes, at)
+    if stop > at
+      at = stop
+    elsif (letter?(byte) or byte >= FIRST_NON_ASCII) and not word_before?(bytes, at)
+      word = bare_word_at(bytes, at)
+      words = words.push(word.downcase)
+      at = word_end(bytes, at)
+    else
+      at += 1
+    end
+  end
+
+  return words
 end
 
 # Reads one literal, comment, placeholder or byte.
@@ -122,10 +141,6 @@ def other(bytes: Bytes, scan: Scan) -> Result[Scan]
     return error("postgres error: write ? for a parameter, not a $n placeholder")
   end
 
-  if letter?(byte) and not word_before?(bytes, at) and seen.words.size < WORDS_KEPT
-    seen = seen.with(words: seen.words.push(bare_word_at(bytes, at)))
-  end
-
   return ok(seen.with(at: at + 1, depth: next_depth(seen.depth, byte)))
 end
 
@@ -152,14 +167,18 @@ def word_at(bytes: Bytes, at: Int) -> String
   return String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
 end
 
-# A word of an identifier or keyword, in lower case; its bytes outside ASCII come whole, so it is valid UTF-8.
-def bare_word_at(bytes: Bytes, at: Int) -> String
+def word_end(bytes: Bytes, at: Int) -> Int
   stop = at
   while stop < bytes.size and word_byte?(bytes[stop])
     stop += 1
   end
 
-  return String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
+  return stop
+end
+
+# A word of an identifier or keyword; its bytes outside ASCII come whole, so it is valid UTF-8.
+def bare_word_at(bytes: Bytes, at: Int) -> String
+  return String.from_bytes(bytes.slice(at, word_end(bytes, at) - at)).unwrap_or("")
 end
 
 def more_than_one() -> String
