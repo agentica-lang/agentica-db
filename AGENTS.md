@@ -1,8 +1,8 @@
 # agentica-db
 
 One database API for Agentica and one adapter per database, through the C FFI, and for SQLite also a native module of
-ours (`src/db/native/db_sqlite.c`, the only C code of the repository; the FFI driver stays for a fetched package, which
-Agentica does not build). The repository
+ours (`src/db/native/db_sqlite.c`, the only C code of the repository, which Agentica builds at the first run; the FFI
+driver stays for a run without the built library). The repository
 is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
 
 ```text

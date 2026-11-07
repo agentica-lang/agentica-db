@@ -4,14 +4,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Needs Agentica 0.26.1 or later (native modules).
+## [0.6.0] - 2026-11-07
+
+Needs Agentica 0.26.1 or later (native modules), and a C compiler where the package is first run or compiled.
 
 ### Added
 
 - A native SQLite driver (`src/db/native/db_sqlite.c`, an Agentica native module): a cache of prepared statements per
   connection, a cached read run whole in one short call, and many rows per call. A one-row query and each row cost
-  about a tenth of the FFI driver's. A project that holds the package in place (a workspace member or a `path`
-  dependency) builds it with the system C compiler at the first run; a fetched package runs the FFI driver, as before.
+  about a tenth of the FFI driver's. It is the default for SQLite urls. Agentica builds it with the system C compiler
+  (`cc`, or `CC`; no SQLite headers) at the first run or `agentica compile` of a program that imports the package, a
+  fetched package too, and keeps it in its package cache.
 - The SQLite writers of a `DbPool` take turns at `Db.transaction`, in the order they came, instead of retrying
   `BEGIN IMMEDIATE` every few milliseconds; a writer waits for its turn up to `busy_timeout` (at most half of
   `lease_ms`).
@@ -22,6 +25,9 @@ Needs Agentica 0.26.1 or later (native modules).
 ### Changed
 
 - **Breaking:** needs Agentica 0.26.1 or later.
+- **Breaking:** a program that imports `pkg/db/db` needs a C compiler (on Debian `gcc` and `libc6-dev`) at its first
+  run or `agentica compile`, whether it uses SQLite or not: without one it fails with `PKG-NATIVE-BUILD`. Bytecode from
+  `agentica compile` runs without a compiler, and with the FFI driver when the built library is gone.
 - **Breaking:** `DbPool.Pool` is a pool of a private config, no longer `Pool[String, Db.Connection]` of `pkg/pool`:
   name it `DbPool.Pool`.
 
@@ -163,7 +169,8 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.5.0...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/agentica-lang/agentica-db/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/agentica-lang/agentica-db/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/agentica-lang/agentica-db/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/agentica-lang/agentica-db/compare/0.2.0...0.3.0

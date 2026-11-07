@@ -6,14 +6,14 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.25.0 or later. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.26.1 or later, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports the package first runs or is compiled: Agentica builds the native SQLite driver then (see [SQLite](/databases/sqlite/#drivers)). agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.5.0", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.6.0", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.5.0 --subdir src/db`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.6.0 --subdir src/db`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
 
 The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release after 0.3.0 and for `ref = "COMMIT"` (a commit of `main`). The releases up to 0.3.0 have the package at the root of the repository: with those tags leave `subdir` out. The imports are the same in both.
 
