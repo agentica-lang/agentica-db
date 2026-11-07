@@ -103,6 +103,9 @@ def main() -> Void
     BDD.step("{int} tasks each query {string} on the connection at once") do |ctx, args|
       send(ctx, Request(op: "query_together", number: args[0].to_i!, text: args[1]))
     end,
+    BDD.step("another task runs {string} while I query {string}, and no scheduler stops for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "query_beside_long", text: args[0], cells: [args[1]], number: args[2].to_i!))
+    end,
     plain_step("I read the statement cache", "statement_cache"),
     text_step("I read people with {string}", "orm_query"),
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,
