@@ -1,6 +1,7 @@
 ## The FFI driver of the SQLite adapter: the system libsqlite3 through `extern` calls, one call per C function and a
-## compute call per step. The adapter runs it where the native driver (`native.agc`) is not built, as in a fetched
-## package. Each statement is prepared at its call and finalized after it.
+## compute call per step. The adapter runs it where the library of the native driver (`native.agc`) does not load, as
+## in compiled bytecode run where the built library is gone. Each statement is prepared at its call and finalized after
+## it.
 
 import SqliteLock from "lock"
 import SqliteWait from "wait"
