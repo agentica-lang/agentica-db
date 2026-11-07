@@ -163,6 +163,12 @@ struct Writer
   rows: List[List[String]]
 end
 
+# A writer that borrows its connection from the pool.
+struct PoolWriter
+  pool: DbPool.Pool
+  rows: List[List[String]]
+end
+
 # A statement run in a task on a connection of its own.
 struct Fresh
   url: String
@@ -256,6 +262,7 @@ def act(state: State, req: Request) -> Handled
     "read_only" -> return reply_ok(set_access(state, expand(state, req.text), false))
     "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
     "write_together" -> return reply_ok(write_together(state, req))
+    "pool_write_together" -> return reply_ok(pool_write_together(state, req))
     "execute_waiting" -> return execute_waiting(state, req)
     "query_until_commit" -> return query_until_commit(state, req)
     "write_while_blocked" -> return write_while_blocked(state, req)
@@ -470,7 +477,8 @@ end
 # A block that crashes (`to_i!` of a text that is not a number halts the task of the block).
 def pool_crash(state: State) -> State
   return with_pool(state) do |pool|
-    found = DbPool.with(pool) do |_conn| ok("not a number".to_i!) end
+    # The crash is inside a transaction, which holds the turn of the writers of a SQLite pool.
+    found = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| ok("not a number".to_i!) end end
     case found
       error(message) -> return failed(state, message)
       ok(_) -> return recorded(state, Outcome.Done)
@@ -1068,6 +1076,28 @@ def write_in_task(job: Writer) -> Result[Void]
   done = Db.transaction(conn) do |tx| run_rows(tx, job.rows) end
   Db.close(conn)
   return done
+end
+
+def pool_write_in_task(job: PoolWriter) -> Result[Void]
+  return DbPool.with(job.pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, job.rows) end end
+end
+
+# As write_together, with the connections of the pool: every task starts before the first is awaited.
+def pool_write_together(state: State, req: Request) -> State
+  if state.pools.empty?
+    return failed(state, NO_POOL)
+  end
+
+  job = PoolWriter(pool: state.pools[0], rows: req.table.drop(1))
+  tasks = (0...req.number).to_a.map do |_| Task.spawn(&pool_write_in_task, job) end
+  for task in tasks
+    done = Task.await(task)
+    if not done.ok?
+      return failed(state, done.message)
+    end
+  end
+
+  return recorded(state, Outcome.Done)
 end
 
 def run_rows(tx: Db.Connection, rows: List[List[String]]) -> Result[Void]

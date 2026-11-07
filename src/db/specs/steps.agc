@@ -71,6 +71,9 @@ def main() -> Void
     BDD.step("{int} tasks each run these statements in a transaction on {string}:") do |ctx, args|
       send(ctx, Request(op: "write_together", number: args[0].to_i!, text: args[1], table: BDD.table(ctx)))
     end,
+    BDD.step("{int} tasks each run these statements in a transaction in the pool:") do |ctx, args|
+      send(ctx, Request(op: "pool_write_together", number: args[0].to_i!, table: BDD.table(ctx)))
+    end,
     BDD.step("I migrate with:") do |ctx, _args| send(ctx, Request(op: "migrate", table: BDD.table(ctx))) end,
     BDD.step("I migrate the table {string} with:") do |ctx, args|
       send(ctx, Request(op: "migrate", text: args[0], table: BDD.table(ctx)))

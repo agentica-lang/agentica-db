@@ -69,6 +69,10 @@ The connection goes back to the pool, whatever the block did:
 
 State that belongs to one connection (a temporary table, `SET` on the session, a prepared statement) is not safe to count on between two blocks: the next block may get another connection. The pool undoes only an open transaction: other session state that the block leaves (an advisory lock, `SET autocommit=0` on MySQL, a changed `search_path`) reaches the next caller, and so does a `conn` the block keeps after it ends, which then belongs to someone else. Use `conn` only inside the block, and undo what you set.
 
+## SQLite writers take turns
+
+SQLite has one writer at a time. The connections of a SQLite pool wait in line at `Db.transaction`: a writer waits for the one before it to commit, and they go in order, instead of each trying its `BEGIN IMMEDIATE` again every few milliseconds until the lock is free. `busy_timeout` stays the wait for the writers of other pools and other processes. The line is only an order: a writer that waits longer than `lease_ms` goes on to SQLite's lock, and a block that crashes or runs past `lease_ms` inside its transaction lets the next writer go. A statement outside `Db.transaction` does not wait in line.
+
 ## Errors and timeouts
 
 - `pool error: checkout timed out after N ms`: every connection was busy for `checkout_ms`.

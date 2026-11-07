@@ -183,6 +183,33 @@ end
 ## Transactions do not nest. A runtime error in the block stops the task and leaves the transaction open; closing the
 ## connection rolls it back (for MySQL only `close` or the end of the process does).
 export def transaction[R](conn: Connection, body: Fn[Connection, Result[R]]) -> Result[R]
+  # A nested call is refused by the BEGIN; it must not wait in line behind its own transaction.
+  if in_transaction?(conn)
+    return run_transaction(conn, body)
+  end
+
+  enter_gate(conn)
+  done = run_transaction(conn, body)
+  leave_gate(conn)
+  return done
+end
+
+# A SQLite connection of a pool waits for its turn among the writers of the pool (see db_pool.agc).
+def enter_gate(conn: Connection) -> Void
+  case conn
+    Connection.Sqlite(handle) -> Sqlite.enter_gate(handle)
+    _ -> return
+  end
+end
+
+def leave_gate(conn: Connection) -> Void
+  case conn
+    Connection.Sqlite(handle) -> Sqlite.leave_gate(handle)
+    _ -> return
+  end
+end
+
+def run_transaction[R](conn: Connection, body: Fn[Connection, Result[R]]) -> Result[R]
   try execute(conn, begin_sql(conn), [])
   done = body.call(conn)
   case done

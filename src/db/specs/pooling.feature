@@ -160,6 +160,41 @@ Feature: Pooling
       | v     |
       | Int 1 |
 
+  # The writers of one pool wait in line for each other at Db.transaction, so they need no busy_timeout: with 0, a
+  # writer that tried BEGIN IMMEDIATE while another held the lock would fail at once.
+  Scenario: The writers of a pool take turns at their transactions on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=0" with:
+      | option | value |
+      | size   | 4     |
+    And I execute "create table notes (id integer primary key, writer integer not null)" in the pool
+    And 8 tasks each run these statements in a transaction in the pool:
+      | sql                                   |
+      | insert into notes (writer) values (1) |
+      | insert into notes (writer) values (2) |
+      | insert into notes (writer) values (3) |
+    Then it succeeds
+    When I query "select count(*) as n from notes" in the pool
+    Then the result is:
+      | n      |
+      | Int 24 |
+
+  # The block that crashed held the turn of the writers, which the pool gives back: the next writers do not wait
+  # lease_ms for it.
+  Scenario: A writer that crashes in its transaction lets the next writers of the pool go on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=0" with:
+      | option   | value  |
+      | size     | 2      |
+      | lease_ms | 600000 |
+    And I execute "create table notes (writer integer not null)" in the pool
+    And I run a block that crashes in the pool
+    Then it fails with "task crashed"
+    When 2 tasks each run these statements in a transaction in the pool:
+      | sql                                   |
+      | insert into notes (writer) values (1) |
+    Then it succeeds
+
   Scenario Outline: A pool of a private in-memory database cannot have more than one connection on sqlite
     Given a "sqlite" database
     When I start a pool on "<url>" with:

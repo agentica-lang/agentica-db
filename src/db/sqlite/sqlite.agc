@@ -56,11 +56,14 @@ NUL_SQL = "sqlite error: the sql contains a NUL character"
 ## An open database, the time its statements wait for a lock, and the limit of a statement (0: none). `link` is
 ## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
 ## opaque and pass the `Connection` around. `deadline` is set only on the copy that a bounded call works with.
+## `gate` is the line of the writers of a pool (`with_gate`), which waits up to `gate_ms`.
 export struct Connection
   link: Link
   busy_timeout: Int
   timeout_ms: Int = 0
   deadline: Int = 0
+  gate: Optional[Channel[Int]] = none
+  gate_ms: Int = 0
 end
 
 # The connection of the driver that runs it, with what a call of the native one may give at once.
@@ -151,6 +154,29 @@ export def healthy?(conn: Connection) -> Bool
   end
 
   return run_query(conn, "SELECT 1", []).ok?
+end
+
+## The connection with a line of writers, a channel that holds one token, which `enter_gate` takes for up to `ms`
+## milliseconds and `leave_gate` gives back. A pool gives one line to its connections.
+export def with_gate(conn: Connection, gate: Channel[Int], ms: Int) -> Connection
+  return conn.with(gate: some(gate), gate_ms: ms)
+end
+
+## Waits for the turn of this writer. A wait that ends without the token goes on all the same: the line is a hint, and
+## SQLite's lock (with `busy_timeout`) stays the rule.
+export def enter_gate(conn: Connection) -> Void
+  case conn.gate
+    some(gate) -> _ = gate.recv(conn.gate_ms)
+    none -> return
+  end
+end
+
+## Gives the token back; a full line (a writer that waited in vain took none) keeps the one it has.
+export def leave_gate(conn: Connection) -> Void
+  case conn.gate
+    some(gate) -> _ = gate.send(1, 0)
+    none -> return
+  end
 end
 
 ## The statement cache of a connection of the native driver; none for the FFI driver, which has none.

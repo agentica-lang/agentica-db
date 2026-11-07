@@ -19,6 +19,11 @@
 ## The size follows poolboy: `size` connections, and up to `max_overflow` more in a spike, ended after
 ## `overflow_idle_ms` of idleness. They are opened at the start (`lazy: false`), so a wrong url or a down server fails
 ## `start`. `timeout_ms` of the url bounds each statement, as on a connection of `Db.open` (see `Db`).
+##
+## The SQLite connections of a pool take turns at `Db.transaction`: a writer waits in line for the one before it to
+## commit, in order, instead of trying its `BEGIN IMMEDIATE` again every few milliseconds (`busy_timeout` stays the
+## wait for the writers of other pools and processes). The line is a hint and SQLite's lock stays the rule: a block
+## that crashes or runs past `lease_ms` in a transaction lets the next writer go.
 
 import Db from "db"
 import P from "pkg/pool/pool"
@@ -33,7 +38,15 @@ SERVER_SIZE = 10
 MEMORY_SIZE = 1
 
 ## A pool of connections.
-export type Pool = P.Pool[String, Db.Connection]
+export type Pool = P.Pool[Config, Db.Connection]
+
+## What each connection of the pool is opened with: the url, and the line that the SQLite writers of the pool share
+## (`gate` holds one token; `lease_ms` is the longest a writer waits in it).
+export struct Config
+  url: String
+  gate: Channel[Int]
+  lease_ms: Int
+end
 
 ## How to open a pool. `url` is anything `Db.open` takes. `size` 0 takes the size of the database: 4 for SQLite (1 for
 ## a private in-memory database), 10 for PostgreSQL and MySQL. The other fields are the ones of the generic pool (see
@@ -68,8 +81,10 @@ export def start(options: Options) -> Result[Pool]
     return error("db error: a pool of a private in-memory database can have one connection only: each is its own")
   end
 
+  gate: Channel[Int] = Channel.new(1)
+  _ = gate.send(1, 0)
   spec = P.Spec(
-    config: options.url,
+    config: Config(url: options.url, gate: gate, lease_ms: options.lease_ms),
     init: &connect,
     checkin: &check_in,
     terminate: &Db.close,
@@ -137,8 +152,13 @@ def private_memory?(url: String) -> Bool
   return url.include?(":memory:") or url.include?("mode=memory")
 end
 
-def connect(url: String) -> Result[Db.Connection]
-  return Db.open(url)
+def connect(config: Config) -> Result[Db.Connection]
+  conn = try Db.open(config.url)
+  case conn
+    Db.Connection.Sqlite(sqlite) ->
+      return ok(Db.Connection.Sqlite(Sqlite.with_gate(sqlite, config.gate, config.lease_ms)))
+    _ -> return ok(conn)
+  end
 end
 
 # Gets a connection back after a block. A connection the block closed or lost is not reused (`Db.connected?`, no round
@@ -152,9 +172,11 @@ def check_in(conn: Db.Connection, outcome: P.Outcome) -> Result[Void]
   case outcome
     P.Outcome.TimedOut ->
       interrupt(conn)
+      reopen_gate(conn)
       return error("db pool: the block ran past lease_ms")
     P.Outcome.Crashed ->
       _ = roll_back(conn)
+      reopen_gate(conn)
       return error("db pool: the block crashed")
     P.Outcome.Done -> return reset(conn)
   end
@@ -185,6 +207,16 @@ end
 def interrupt(conn: Db.Connection) -> Void
   case conn
     Db.Connection.Sqlite(handle) -> Sqlite.interrupt(handle)
+    _ -> return
+  end
+end
+
+# A block that ended inside Db.transaction may hold the token of the line of writers, which it will never give back.
+# One goes back now; when the block held none, the line has one more token for a while (two writers at once, which
+# SQLite's lock orders), and the line keeps one again as soon as every holder gives its token back to the full channel.
+def reopen_gate(conn: Db.Connection) -> Void
+  case conn
+    Db.Connection.Sqlite(handle) -> Sqlite.leave_gate(handle)
     _ -> return
   end
 end
