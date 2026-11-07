@@ -68,6 +68,10 @@ PAUSE_TICK_MS = 5
 CANCEL_AFTER_MS = 5
 # The `number` of an `on_other` request that queries; any other executes.
 OTHER_QUERY = 1
+# `cache_beside_big` reads the statement cache this many times, a millisecond apart, while the big query runs.
+CACHE_READS = 200
+# `close_beside_queries`: the time the first statement needs to start, so that the second waits for it.
+QUEUE_START_MS = 20
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 # `pool_writers_in_turn`: the time between two writers that come to the line, and how long each holds its transaction.
@@ -295,6 +299,8 @@ def act(state: State, req: Request) -> Handled
     "statement_cache" -> return reply_ok(statement_cache(state))
     "cancel_task" -> return reply_ok(cancel_task(state, req))
     "query_each" -> return reply_ok(query_each(state, req))
+    "cache_beside_big" -> return reply_ok(cache_beside_big(state, req))
+    "close_beside_queries" -> return reply_ok(close_beside_queries(state, req))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
@@ -1640,11 +1646,11 @@ def cancel_task(state: State, req: Request) -> State
   end
 end
 
-# Queries `req.text` with `[N]` replaced by each number from 1 to `req.number`; the rows of the last.
+# Queries `req.text` with `[N]` replaced by each number from `req.cells[0]` to `req.number`; the rows of the last.
 def query_each(state: State, req: Request) -> State
   return with_conn(state) do |conn|
     rows: Result[List[Db.Row]] = ok([])
-    for n in 1..req.number
+    for n in req.cells[0].to_i!..req.number
       rows = Db.query(conn, Cells.expand(req.text.replace("[N]", n.to_s)), [])
       if not rows.ok?
         return recorded_rows(state, rows)
@@ -1652,6 +1658,49 @@ def query_each(state: State, req: Request) -> State
     end
 
     return recorded_rows(state, rows)
+  end
+end
+
+# Queries `req.text` with a text of `req.number` characters while another task reads the statement cache of the
+# connection: the reads wait for the query instead of failing its calls.
+def cache_beside_big(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    reader = Task.spawn(&read_cache, conn)
+    rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text("x" * req.number)])
+    case Task.await(reader)
+      error(message) -> return failed(state, message)
+      ok(_) -> return recorded_rows(state, rows)
+    end
+  end
+end
+
+def read_cache(conn: Db.Connection) -> Result[Int]
+  case conn
+    Db.Connection.Postgres(postgres) ->
+      for _ in 0...CACHE_READS
+        _ = Postgres.statement_cache(postgres)
+        Task.sleep(1)
+      end
+
+      return ok(CACHE_READS)
+    _ -> return error("only a PostgreSQL connection is read here")
+  end
+end
+
+# A task executes `req.text` on the connection, a second one executes `req.cells[0]` there, which waits for the first,
+# and this task closes the connection after `req.number` ms: the outcome of the second.
+def close_beside_queries(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    first = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    Task.sleep(QUEUE_START_MS)
+    second = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
+    Task.sleep(req.number)
+    Db.close(conn)
+    _ = Task.await(first)
+    case Task.await(second)
+      error(message) -> return failed(state, message)
+      ok(count) -> return recorded(state, Outcome.Counted(count))
+    end
   end
 end
 

@@ -5,8 +5,8 @@
 ## prepared statements in a cache keyed by the sql text, and a result comes in batches of rows, one call per batch.
 ##
 ## A query holds the mutex of its connection from its first call to its last: the calls of a query must not mix with
-## another's. A task that is cancelled in the middle of one leaves it on the connection, and the next query drains it
-## first, after a cancel request to the server.
+## another's, and every call on the connection is made under it. A task that is cancelled in the middle of one leaves
+## it on the connection, and the next query drains it first, after a cancel request to the server.
 
 import PostgresStatement from "statement"
 import {Row, Value} from "../support/value"
@@ -33,6 +33,11 @@ TIMED_OUT = "native: timed out"
 # schema, after which the cache lets every statement go: a cached plan may no longer fit the tables.
 CACHED_VERBS = Set.new(["select", "insert", "update", "delete", "with", "values", "merge", "table"])
 FLUSH_VERBS = Set.new(["create", "alter", "drop", "import"])
+# `DEALLOCATE ALL` and `DISCARD ALL` drop every prepared statement of the session, the cached ones too.
+DROP_ALL_VERBS = Set.new(["deallocate", "discard"])
+# PQstatus CONNECTION_BAD and PQtransactionStatus UNKNOWN, as `link_status` gives them: what a closed connection is.
+CLOSED_STATUS = 1 * 16 + 4
+CLOSED = "postgres error: the connection is closed"
 
 ## What a call may give at once: up to `rows` rows or about `bytes` bytes of values; a longer result takes more calls.
 export struct Options
@@ -41,14 +46,15 @@ export struct Options
 end
 
 # What the adapter read of a statement that is not cached: its translation (`sql`, `count` placeholders), whether to
-# cache it, whether it changes the schema, and whether its rows are wanted (`keep`, false for `execute`). A Plan that
-# is not `known` runs a cached statement only.
+# cache it, whether it changes the schema, whether it drops every prepared statement (`forgot`), and whether its rows
+# are wanted (`keep`, false for `execute`). A Plan that is not `known` runs a cached statement only.
 struct Plan
   known: Bool = false
   sql: String = ""
   count: Int = 0
   cache: Bool = false
   flush: Bool = false
+  forgot: Bool = false
   keep: Bool = true
 end
 
@@ -96,7 +102,6 @@ end
 extern module "db_postgres"
   ## A connection; `Native.close` ends it (PQfinish).
   export resource Conn
-  export def cache_stats(conn: Conn) -> CacheStats
 end
 
 ## Whether the module opens: false where the built library does not load, and the FFI driver runs.
@@ -133,6 +138,17 @@ export def closed?(session: Session) -> Bool
   return Native.closed?(session.conn)
 end
 
+## What the statement cache holds and has done; none once the connection is closed.
+export def stats(session: Session) -> Optional[CacheStats]
+  return session.lock.synchronize do
+    if Native.closed?(session.conn)
+      return none
+    end
+
+    return some(cache_stats(session.conn))
+  end
+end
+
 # The calls that only this file makes. A connection runs one query at a time, from `start` (or `drain`) to the step
 # that ends it.
 extern module "db_postgres"
@@ -145,11 +161,16 @@ extern module "db_postgres"
   def left?(conn: Conn) -> Bool
   compute def cancel(conn: Conn) -> Void
   def status(conn: Conn) -> Int
+  def cache_stats(conn: Conn) -> CacheStats
 end
 
-# A cached statement runs at once; any other is translated and checked here first, then sent. The adapter has checked
-# that the connection is open.
+# A cached statement runs at once; any other is translated and checked here first, then sent. The adapter checked
+# that the connection was open, but another task may have closed it while this one waited for the mutex.
 def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Result[Done]
+  if Native.closed?(session.conn)
+    return error(CLOSED)
+  end
+
   plan = Plan(keep: keep)
   step = start(session.conn, sql, params, plan, session.options)
   verb = ""
@@ -169,8 +190,10 @@ def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Resul
   return ok(done)
 end
 
+# The transaction status that the check of a BEGIN reads is the one after a query that a cancelled task left.
 def plan_of(session: Session, sql: String, params: List[Value], keep: Bool) -> Result[Planned]
-  translated = try PostgresStatement.check_sql(sql, params.size, status(session.conn) % 16)
+  transaction = settled_status(session) % 16
+  translated = try PostgresStatement.check_sql(sql, params.size, transaction)
   verb = translated.verb
   plan = Plan(
     known: true,
@@ -178,6 +201,7 @@ def plan_of(session: Session, sql: String, params: List[Value], keep: Bool) -> R
     count: translated.count,
     cache: CACHED_VERBS.include?(verb),
     flush: FLUSH_VERBS.include?(verb),
+    forgot: DROP_ALL_VERBS.include?(verb) and drops_all?(sql),
     keep: keep,
   )
 
@@ -206,7 +230,7 @@ def finish(session: Session, first: Step) -> Result[Done]
 
     # Another task may close the connection meanwhile.
     if Native.closed?(session.conn)
-      return error("postgres error: the connection is closed")
+      return error(CLOSED)
     end
 
     if step.state == S_BIG
@@ -243,9 +267,27 @@ def wait(session: Session, step: Step) -> Result[Void]
 end
 
 def settled_status(session: Session) -> Int
+  if Native.closed?(session.conn)
+    return CLOSED_STATUS
+  end
+
   if left?(session.conn)
     _ = finish(session, drain(session.conn))
+    if Native.closed?(session.conn)
+      return CLOSED_STATUS
+    end
   end
 
   return status(session.conn)
+end
+
+# Whether a DEALLOCATE or DISCARD names ALL (`DEALLOCATE PREPARE ALL` too). A statement named `all` must be quoted,
+# so a bare word is the keyword.
+def drops_all?(sql: String) -> Bool
+  text = sql.downcase
+  for blank in [";", "\t", "\r", "\n"]
+    text = text.replace(blank, " ")
+  end
+
+  return text.split(" ").include?("all")
 end

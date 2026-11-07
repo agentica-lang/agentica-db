@@ -81,6 +81,16 @@ def main() -> Void
 
       try Test.eq(PostgresUrl.parse("host=h batch_rows=0").message, "postgres error: the url batch_rows is below 1: 0")
       try Test.eq(
+        PostgresUrl.parse("host=h batch_rows=1001").message,
+        "postgres error: the url batch_rows is over 1000: 1001",
+      )
+
+      try Test.eq(
+        PostgresUrl.parse("host=h batch_bytes=262145").message,
+        "postgres error: the url batch_bytes is over 262144: 262145",
+      )
+
+      try Test.eq(
         PostgresUrl.parse("postgres://h/app?batch_bytes=-1").message,
         "postgres error: the url batch_bytes is not a whole number",
       )

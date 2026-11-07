@@ -145,10 +145,11 @@ export def healthy?(conn: Connection) -> Bool
   return run_query(conn.link, "SELECT 1", []).ok?
 end
 
-## The statement cache of a connection of the native driver; none for the FFI driver, which has none.
+## The statement cache of a connection of the native driver; none for the FFI driver, which has none, and for a closed
+## connection.
 export def statement_cache(conn: Connection) -> Optional[PostgresNative.CacheStats]
   case conn.link
-    Link.Native(session) -> return some(PostgresNative.cache_stats(session.conn))
+    Link.Native(session) -> return PostgresNative.stats(session)
     Link.Ffi(_) -> return none
   end
 end

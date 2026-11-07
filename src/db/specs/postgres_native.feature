@@ -83,7 +83,7 @@ Feature: PostgreSQL native driver
       | 2     | 2    | 262144  |
       | 5     | 2    | 262144  |
       | 4     | 100  | 1       |
-      | 2500  | 1000 | 4194304 |
+      | 2500  | 1000 | 262144  |
 
   # The server sends the rows before the failure, and the driver reads the whole result before it gives a row.
   Scenario: A statement that fails after some rows gives its error alone on postgres
@@ -195,6 +195,34 @@ Feature: PostgreSQL native driver
       | Int 1 |
       | Int 2 |
       | Int 3 |
+      | Int 4 |
+
+  # Every call on a connection is made under its mutex: a read of the statement cache waits for the query that runs.
+  Scenario: The statement cache can be read while a query runs on postgres
+    Given a "postgres" database
+    When I query "select length(?) as n" with 30000000 characters of text while the statement cache is read
+    Then the result is:
+      | n            |
+      | Int 30000000 |
+
+  # The second statement waits for the mutex while the first runs; the close comes meanwhile.
+  Scenario: A statement that waits for the connection while it is closed fails on postgres
+    Given a "postgres" database
+    When a task executes "select pg_sleep(0.3)", another executes "select 1", and I close the connection after 100 ms
+    Then it fails with exactly "postgres error: the connection is closed"
+
+  # A DEALLOCATE ALL drops the statements that wait to be deallocated too: the next batch of DEALLOCATEs does not
+  # name them, so it does not fail at the first and leave the rest on the server. Of the 36 statements after it (the
+  # count too), 34 went out of the cache of 2: 32 were deallocated, and the server holds the 2 that wait and the 2
+  # cached.
+  Scenario: The statements let go after a DEALLOCATE ALL are deallocated on postgres
+    Given a "postgres" database
+    When I open "[URL]&statement_cache=2"
+    And I query "select [N] as n" for each [N] from 1 to 10
+    And I execute "deallocate all"
+    And I query "select [N] as n" for each [N] from 11 to 45
+    Then the query "select count(*) as n from pg_prepared_statements" returns:
+      | n     |
       | Int 4 |
 
   Scenario: AGENTICA_DB_POSTGRES_DRIVER=ffi runs the FFI driver on postgres

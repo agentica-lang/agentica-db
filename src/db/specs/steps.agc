@@ -136,8 +136,16 @@ def main() -> Void
     ) do |ctx, args|
       send(ctx, Request(op: "cancel_task", text: args[0], number: args[1].to_i!, cells: [args[2], args[3]]))
     end,
-    BDD.step("I query {string} for each [N] from 1 to {int}") do |ctx, args|
-      send(ctx, Request(op: "query_each", text: args[0], number: args[1].to_i!))
+    BDD.step("I query {string} for each [N] from {int} to {int}") do |ctx, args|
+      send(ctx, Request(op: "query_each", text: args[0], cells: [args[1]], number: args[2].to_i!))
+    end,
+    BDD.step("I query {string} with {int} characters of text while the statement cache is read") do |ctx, args|
+      send(ctx, Request(op: "cache_beside_big", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step(
+      "a task executes {string}, another executes {string}, and I close the connection after {int} ms",
+    ) do |ctx, args|
+      send(ctx, Request(op: "close_beside_queries", text: args[0], cells: [args[1]], number: args[2].to_i!))
     end,
     text_step("I read people with {string}", "orm_query"),
     BDD.step("I read people with {string} and:") do |ctx, args| send(ctx, with_params("orm_query", args[0], ctx)) end,

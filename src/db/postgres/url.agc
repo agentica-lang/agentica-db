@@ -1,6 +1,6 @@
 ## Takes the parameters of the adapter out of a PostgreSQL url or conninfo string before libpq sees it, since libpq
 ## refuses a parameter it does not know: `timeout_ms`, and for the native driver `statement_cache` (statements, at most
-## 10000, 0 for none), `batch_rows` and `batch_bytes` (at least 1).
+## 10000, 0 for none), `batch_rows` (1 to 1000) and `batch_bytes` (1 to 262144).
 ##
 ## `postgres://user@host/app?sslmode=disable&timeout_ms=2000` and `host=localhost dbname=app timeout_ms=2000` (the
 ## value may be quoted, as in libpq) give the milliseconds and the text without the parameter. Every other parameter is
@@ -14,6 +14,10 @@ PARAMETER = "timeout_ms"
 PARAMETERS = Set.new([PARAMETER, "statement_cache", "batch_rows", "batch_bytes"])
 BLANKS = Set.new([" ", "\t", "\n", "\r"])
 MAX_STATEMENT_CACHE = 10_000
+# The most that one short call of the native driver turns into values (QUICK_ROWS and QUICK_BYTES of the module): a
+# bigger batch would hold the scheduler longer.
+MAX_BATCH_ROWS = 1_000
+MAX_BATCH_BYTES = 262_144
 # At most nine digits, far from the limit of an Int.
 MAX_DIGITS = 9
 DIGIT_ZERO = 48
@@ -100,13 +104,13 @@ def apply(target: Target, key: String, value: String) -> Result[Target]
   elsif key == "statement_cache"
     return ok(target.with(statement_cache: try read_bounded(value, key, 0, MAX_STATEMENT_CACHE)))
   elsif key == "batch_rows"
-    return ok(target.with(batch_rows: try read_bounded(value, key, 1, 0)))
+    return ok(target.with(batch_rows: try read_bounded(value, key, 1, MAX_BATCH_ROWS)))
   end
 
-  return ok(target.with(batch_bytes: try read_bounded(value, key, 1, 0)))
+  return ok(target.with(batch_bytes: try read_bounded(value, key, 1, MAX_BATCH_BYTES)))
 end
 
-# A whole number of up to MAX_DIGITS digits from `low` to `high` (no bound when `high` is 0).
+# A whole number of up to MAX_DIGITS digits from `low` to `high`.
 def read_bounded(text: String, name: String, low: Int, high: Int) -> Result[Int]
   bytes = text.bytes.to_a
   not_digits = bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end
@@ -119,7 +123,7 @@ def read_bounded(text: String, name: String, low: Int, high: Int) -> Result[Int]
     return error("postgres error: the url #{name} is below #{low}: #{n}")
   end
 
-  if high > 0 and n > high
+  if n > high
     return error("postgres error: the url #{name} is over #{high}: #{n}")
   end
 

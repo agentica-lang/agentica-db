@@ -46,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "agentica_native.h"
 
@@ -53,6 +54,7 @@
 typedef struct pg_conn PGconn;
 typedef struct pg_result PGresult;
 typedef struct pg_cancel PGcancel;
+typedef struct pg_cancel_conn PGcancelConn;
 typedef unsigned int Oid;
 
 enum {
@@ -68,6 +70,9 @@ enum {
   PQTRANS_UNKNOWN = 4,
   PG_DIAG_SQLSTATE = 'C',
   PG_DIAG_MESSAGE_PRIMARY = 'M',
+  PG_DIAG_SOURCE_FUNCTION = 'R',
+  PGRES_POLLING_FAILED = 0,
+  PGRES_POLLING_OK = 3,
 };
 
 /* The type oids of pg_type.h that have a Value variant; every other type comes back as text. */
@@ -121,6 +126,16 @@ typedef struct {
 } pq_api;
 
 static pq_api pq;
+/* The cancel requests of libpq 17 (PQcancelCreate and the rest), which can give up after a while: PQcancel, the one
+   of older versions, waits as long as the system lets a connect wait. Loaded when the library has them. */
+typedef struct {
+  PGcancelConn *(*create)(PGconn *);
+  int (*start)(PGcancelConn *);
+  int (*poll)(PGcancelConn *);
+  void (*finish)(PGcancelConn *);
+} pq_cancel_api;
+
+static pq_cancel_api pq_cancel;
 
 #define SYM(NAME, FIELD) {NAME, offsetof(pq_api, FIELD)}
 static const struct {
@@ -164,6 +179,8 @@ static const struct {
   SYM("PQfreeCancel", free_cancel),
 };
 #define SYMBOL_COUNT (sizeof SYMBOLS / sizeof SYMBOLS[0])
+/* load_symbols fills pq field by field: SYMBOLS must name every field, and each field is a function pointer. */
+_Static_assert(sizeof(pq_api) == SYMBOL_COUNT * sizeof(void (*)(void)), "SYMBOLS names every field of pq_api");
 
 /* ---- The system: the library loader and a lock. ---- */
 
@@ -281,6 +298,15 @@ static bool load_symbols(void) {
     /* POSIX and Windows give a function's address as an object pointer; every field is a function pointer. */
     memcpy((char *)&pq + SYMBOLS[i].offset, &p, sizeof p);
   }
+  /* All four or none: a library without them sends the cancel with PQcancel. */
+  void *create = symbol("PQcancelCreate"), *start = symbol("PQcancelStart"), *poll = symbol("PQcancelPoll"),
+       *finish = symbol("PQcancelFinish");
+  if (create && start && poll && finish) {
+    memcpy(&pq_cancel.create, &create, sizeof create);
+    memcpy(&pq_cancel.start, &start, sizeof start);
+    memcpy(&pq_cancel.poll, &poll, sizeof poll);
+    memcpy(&pq_cancel.finish, &finish, sizeof finish);
+  }
   return true;
 }
 
@@ -322,10 +348,11 @@ typedef struct {
 
 /* The query that runs on a connection, from `start` to its last rows. `slot` is its cache entry (-1: none, or not
    prepared yet), `hit` that it came from the cache (the one case a refusal of the server is tried again), `idle` that
-   no transaction was open when it was sent. */
+   no transaction was open when it was sent, `replan` that the server refused it because its result type changed,
+   `forgot` that it drops every prepared statement of the session (DEALLOCATE ALL, DISCARD ALL). */
 typedef struct {
   int phase;
-  bool keep, cache, flush, hit, retried, idle, cancelled, drain_only, dirty, big, prepared;
+  bool keep, cache, flush, forgot, hit, retried, idle, cancelled, drain_only, dirty, big, prepared, replan;
   char *sql;
   size_t len;
   uint64_t hash;
@@ -382,8 +409,10 @@ typedef struct {
 #define CHORE_BATCH 16
 /* The bytes that a value costs besides its text or bytea, for the byte cap of a batch. */
 #define VALUE_COST 16
-/* The most that a short call copies: bigger parameters, or a bigger row, go to the compute pool. */
+/* The most that a short call copies: bigger parameters, or a bigger row, go to the compute pool. A short call also
+   turns at most QUICK_ROWS rows and QUICK_BYTES bytes into values, whatever batch_rows and batch_bytes say. */
 #define QUICK_BYTES 262144
+#define QUICK_ROWS 1000
 
 static uint64_t hash_text(const char *s, size_t n) {
   uint64_t h = 14695981039346656037ull;
@@ -424,6 +453,14 @@ static void forget(conn *c, int slot, bool on_server) {
 static void forget_all(conn *c) {
   for (int i = 0; i < c->capacity; i++)
     if (c->entries[i].sql) forget(c, i, true);
+}
+
+/* Lets go of every cached statement and of the names that wait for a CHORE: the server dropped them all. A CHORE
+   that named one would fail at it and leave the names after it on the server. */
+static void forget_dropped(conn *c) {
+  for (int i = 0; i < c->capacity; i++)
+    if (c->entries[i].sql) forget(c, i, false);
+  c->gone.size = 0;
 }
 
 /* Caches a statement that the server prepared as NAME, in a free slot or the one used least long ago (evicted). */
@@ -484,7 +521,7 @@ static void end_query(query *q) {
 enum { VALUE, PLAN, OPTIONS, STEP, CACHE_STATS };
 enum { V_NULL, V_INT, V_FLOAT, V_TEXT, V_BLOB, V_BOOL };
 enum { CONN };
-enum { PL_KNOWN, PL_TEXT, PL_COUNT, PL_CACHE, PL_FLUSH, PL_KEEP };
+enum { PL_KNOWN, PL_TEXT, PL_COUNT, PL_CACHE, PL_FLUSH, PL_FORGOT, PL_KEEP, PLAN_FIELDS };
 enum { O_ROWS, O_BYTES };
 /* What `Step.state` asks of the adapter. */
 enum { S_READ = 1, S_WRITE, S_ROWS, S_DONE, S_FAILED, S_PLAN, S_CANCEL, S_BIG_START, S_BIG };
@@ -570,6 +607,9 @@ static void fail_result(query *cur, conn *c, const PGresult *res) {
     fail_conn(cur, c);
     return;
   }
+  /* 0A000 is "feature not supported" too: only the one of the plan cache is about the statement's result type. */
+  const char *routine = pq.result_error_field(res, PG_DIAG_SOURCE_FUNCTION);
+  cur->replan = strcmp(code, "0A000") == 0 && routine && strcmp(routine, "RevalidateCachedQuery") == 0;
   snprintf(cur->failure, sizeof cur->failure, "postgres error %s: %s", code, message ? message : "");
 }
 
@@ -778,17 +818,35 @@ static an_term read_row(an_env *env, const PGresult *res, int row, columns *cols
   return map;
 }
 
-/* False with the failure in CUR when two columns of the result have one name. */
+static int compare_names(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* False with the failure in CUR when two columns of the result have one name. A narrow result compares each pair; a
+   wide one (up to 1664 columns) sorts the names, so that a short call stays short. */
 static bool check_names(query *cur, const PGresult *res) {
   int n = pq.nfields(res);
-  for (int i = 0; i < n; i++)
-    for (int j = i + 1; j < n; j++)
-      if (strcmp(pq.fname(res, i), pq.fname(res, j)) == 0) {
-        snprintf(cur->failure, sizeof cur->failure,
-                 "postgres error: the result has the column %.900s twice, alias one of them", pq.fname(res, i));
-        return false;
-      }
-  return true;
+  const char *twice = NULL;
+  if (n <= 32) {
+    for (int i = 0; i < n && !twice; i++)
+      for (int j = i + 1; j < n && !twice; j++)
+        if (strcmp(pq.fname(res, i), pq.fname(res, j)) == 0) twice = pq.fname(res, i);
+  } else {
+    const char **names = malloc((size_t)n * sizeof *names);
+    if (!names) {
+      snprintf(cur->failure, sizeof cur->failure, "postgres error: out of memory");
+      return false;
+    }
+    for (int i = 0; i < n; i++) names[i] = pq.fname(res, i);
+    qsort(names, (size_t)n, sizeof *names, compare_names);
+    for (int i = 1; i < n && !twice; i++)
+      if (strcmp(names[i - 1], names[i]) == 0) twice = names[i];
+    free(names);
+  }
+  if (!twice) return true;
+  snprintf(cur->failure, sizeof cur->failure,
+           "postgres error: the result has the column %.900s twice, alias one of them", twice);
+  return false;
 }
 
 /* The rows an INSERT, UPDATE, DELETE or MERGE changed; anything else changed none. */
@@ -918,18 +976,19 @@ static bool send_statement(conn *c, query *cur) {
   if (cur->cache && c->capacity > 0) {
     snprintf(cur->name, sizeof cur->name, "agentica_%" PRIu64, ++c->serial);
     cur->phase = P_PREPARE;
+    if (!sent(c, cur, pq.send_prepare(c->pg, cur->name, cur->text, 0, NULL))) return false;
     memcpy(c->preparing, cur->name, sizeof c->preparing);
-    return sent(c, cur, pq.send_prepare(c->pg, cur->name, cur->text, 0, NULL));
+    return true;
   }
   cur->phase = P_EXEC;
   return sent(c, cur, pq.send_query_params(c->pg, cur->text, cur->bound.count, NULL, values, NULL, NULL, 0));
 }
 
 /* Whether a failure of a cached statement is one that a new prepare fixes: its result type changed with its table
-   (0A000), or the server does not hold it (26000, after a DISCARD or a DEALLOCATE of the user). */
-static bool stale(const char *failure, bool *on_server) {
-  *on_server = strncmp(failure, "postgres error 0A000:", 21) == 0;
-  return *on_server || strncmp(failure, "postgres error 26000:", 21) == 0;
+   (0A000 of the plan cache), or the server does not hold it (26000, after a DISCARD or a DEALLOCATE of the user). */
+static bool stale(const query *cur, bool *on_server) {
+  *on_server = cur->replan;
+  return cur->replan || strncmp(cur->failure, "postgres error 26000:", 21) == 0;
 }
 
 /* The bytes of row ROW as the byte cap counts them, without reading it. */
@@ -946,6 +1005,11 @@ static an_term rows_step(an_env *env, conn *c, query *cur, int64_t max_rows, int
   PGresult *res = cur->res;
   int total = res && cur->keep ? pq.ntuples(res) : 0;
   int64_t count = 0, bytes = 0;
+  if (!cur->dirty) {
+    /* A short call holds the scheduler while it runs. */
+    if (max_rows > QUICK_ROWS) max_rows = QUICK_ROWS;
+    if (max_bytes > QUICK_BYTES) max_bytes = QUICK_BYTES;
+  }
   an_list_begin(env, &rows, 0);
   if (total > cur->row) {
     columns cols;
@@ -1021,6 +1085,12 @@ static an_term advance(an_env *env, conn *c, query *cur, int64_t max_rows, int64
     if (got == PUMP_RESULT) {
       int status = pq.result_status(r);
       bool good = status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
+      if (cur->phase == P_DRAIN && c->preparing[0] && status == PGRES_COMMAND_OK) {
+        /* The PREPARE that a cancelled task left went through: its name goes at a CHORE. One that failed left no
+           statement, and a DEALLOCATE of it would fail the CHORE. */
+        drop_name(c, c->preparing);
+        c->preparing[0] = '\0';
+      }
       if (cur->phase == P_EXEC && good && !cur->res && !cur->failure[0]) {
         cur->res = r;
         continue;
@@ -1038,7 +1108,6 @@ static an_term advance(an_env *env, conn *c, query *cur, int64_t max_rows, int64
       /* The failures of the query drained belong to the task that sent it; this one starts clean. A statement that
          it prepared and never cached goes at a CHORE. */
       cur->failure[0] = '\0';
-      if (c->preparing[0]) drop_name(c, c->preparing);
       c->preparing[0] = '\0';
       cur->phase = cur->drain_only ? P_DONE : P_CHORE;
       if (cur->drain_only) return step_state(env, c, S_DONE);
@@ -1057,13 +1126,14 @@ static an_term advance(an_env *env, conn *c, query *cur, int64_t max_rows, int64
       continue;
     } else {
       bool on_server;
-      if (cur->failure[0] && cur->hit && cur->slot >= 0 && stale(cur->failure, &on_server)) {
+      if (cur->failure[0] && cur->hit && cur->slot >= 0 && stale(cur, &on_server)) {
         forget(c, cur->slot, on_server);
         cur->slot = -1;
         if (cur->idle && !cur->retried) {
           /* Nothing ran (the server refused it before it ran), and no transaction was open: prepare it again. */
           cur->retried = true;
           cur->hit = false;
+          cur->replan = false;
           cur->failure[0] = '\0';
           cur->phase = P_SEND;
           continue;
@@ -1077,6 +1147,7 @@ static an_term advance(an_env *env, conn *c, query *cur, int64_t max_rows, int64
       if (cur->keep && pq.result_status(cur->res) == PGRES_TUPLES_OK && !check_names(cur, cur->res))
         return failed_step(env, c, cur);
       if (cur->flush) forget_all(c);
+      if (cur->forgot) forget_dropped(c);
       cur->phase = P_ROWS;
     }
   }
@@ -1170,19 +1241,20 @@ static an_term start(an_env *env, const an_term *argv, bool dirty) {
   const char *sql;
   size_t len;
   int64_t rows, bytes;
-  an_term f[6];
-  bool known, cache, flush, keep;
+  an_term f[PLAN_FIELDS];
+  bool known, cache, flush, forgot, keep;
   int64_t count;
   const char *translated = NULL;
   size_t translated_len = 0;
   conn *c = conn_of(env, argv[0]);
   if (!c) return an_badarg(env, 0);
   if (!an_get_string(env, argv[1], &sql, &len)) return an_badarg(env, 1);
-  for (uint32_t i = 0; i < 6; i++)
+  for (uint32_t i = 0; i < PLAN_FIELDS; i++)
     if (!an_get_field(env, argv[3], PLAN, i, &f[i])) return an_badarg(env, 3);
   if (!an_get_bool(env, f[PL_KNOWN], &known) || !an_get_string(env, f[PL_TEXT], &translated, &translated_len) ||
       !an_get_int(env, f[PL_COUNT], &count) || !an_get_bool(env, f[PL_CACHE], &cache) ||
-      !an_get_bool(env, f[PL_FLUSH], &flush) || !an_get_bool(env, f[PL_KEEP], &keep) || count < 0 || count > 65535)
+      !an_get_bool(env, f[PL_FLUSH], &flush) || !an_get_bool(env, f[PL_FORGOT], &forgot) ||
+      !an_get_bool(env, f[PL_KEEP], &keep) || count < 0 || count > 65535)
     return an_badarg(env, 3);
   if (!read_options(env, argv[4], &rows, &bytes)) return an_badarg(env, 4);
   if (!enter(env, c)) return an_void(env);
@@ -1219,6 +1291,7 @@ static an_term start(an_env *env, const an_term *argv, bool dirty) {
   cur->keep = keep;
   cur->cache = cache || slot >= 0;
   cur->flush = flush;
+  cur->forgot = forgot;
   cur->slot = slot;
   cur->hit = slot >= 0;
   cur->count = (int)count;
@@ -1316,18 +1389,51 @@ static an_term fn_left(an_env *env, int argc, const an_term *argv) {
   return an_bool(env, left);
 }
 
+static void sleep_ms(int ms) {
+#if defined(_WIN32)
+  Sleep((DWORD)ms);
+#else
+  struct timespec pause = {0, (long)ms * 1000000L};
+  (void)nanosleep(&pause, NULL);
+#endif
+}
+
+/* Sends the cancel request with libpq 17's PQcancelStart and PQcancelPoll, and gives up after CANCEL_WAIT_MS: a
+   server that does not answer would hold a thread of the compute pool. It polls every millisecond instead of waiting
+   on the socket, which keeps it the same on every system; it runs only after a task was cancelled in a query. */
+#define CANCEL_WAIT_MS 5000
+
+static void cancel_polled(PGconn *pg) {
+  PGcancelConn *cc = pq_cancel.create(pg);
+  if (!cc) return;
+  if (pq_cancel.start(cc)) {
+    for (int waited = 0; waited < CANCEL_WAIT_MS; waited++) {
+      int state = pq_cancel.poll(cc);
+      if (state == PGRES_POLLING_OK || state == PGRES_POLLING_FAILED) break;
+      sleep_ms(1);
+    }
+  }
+  pq_cancel.finish(cc);
+}
+
 /* cancel(conn): asks the server to stop the statement that runs on the connection (a new connection to the server,
-   so on the compute pool). It fails silently: the drain then waits for the statement to end. */
+   so on the compute pool). It fails silently: the drain then waits for the statement to end. Before libpq 17 it is
+   PQcancel, whose connect has no time limit of its own (the system's, about two minutes for a host that does not
+   answer); the server is one that this connection reached, so that is rare. */
 static an_term fn_cancel(an_env *env, int argc, const an_term *argv) {
   char why[256];
   (void)argc;
   conn *c = conn_of(env, argv[0]);
   if (!c) return an_badarg(env, 0);
   if (!enter(env, c)) return an_void(env);
-  PGcancel *handle = pq.get_cancel(c->pg);
-  if (handle) {
-    (void)pq.cancel(handle, why, (int)sizeof why);
-    pq.free_cancel(handle);
+  if (pq_cancel.create) {
+    cancel_polled(c->pg);
+  } else {
+    PGcancel *handle = pq.get_cancel(c->pg);
+    if (handle) {
+      (void)pq.cancel(handle, why, (int)sizeof why);
+      pq.free_cancel(handle);
+    }
   }
   lock_drop(&c->lock);
   return an_void(env);
@@ -1360,7 +1466,7 @@ static an_term fn_cache_stats(an_env *env, int argc, const an_term *argv) {
 
 static const an_type types[] = {
   {"Value", AN_ENUM, "Null | Int(Int) | Float(Float) | Text(String) | Blob(Bytes) | Bool(Bool)"},
-  {"Plan", AN_STRUCT, "known: Bool, sql: String, count: Int, cache: Bool, flush: Bool, keep: Bool"},
+  {"Plan", AN_STRUCT, "known: Bool, sql: String, count: Int, cache: Bool, flush: Bool, forgot: Bool, keep: Bool"},
   {"Options", AN_STRUCT, "rows: Int, bytes: Int"},
   {"Step", AN_STRUCT,
    "state: Int, fd: Int, failure: String, rows: List[Map[String, Value]], changes: Int, tag: String"},
