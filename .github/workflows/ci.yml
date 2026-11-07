@@ -9,8 +9,10 @@ permissions:
   contents: read
 
 env:
-  AGENTICA_VERSION: 0.25.0
-  AGENTICA_SHA256: 4ecf226a4a8c1ac2573bfe23674c387a40b0cc69f97ecbf408d9a7888ec9da3d
+  # The package needs Agentica 0.26.0 (native modules), not released yet: .github/actions/agentica builds this commit
+  # of agentica-lang/agentica (master and the fix of native resources in a package, agentica PR
+  # native-resource-library) until it is.
+  AGENTICA_COMMIT: 01e52f1d257544fd45b3a80effbc6a1fa5586456
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
@@ -18,7 +20,8 @@ jobs:
   test:
     name: test (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A run that builds Agentica (the first of a commit) takes most of it.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -59,14 +62,10 @@ jobs:
       - name: Install SQLite, libpq and libmariadb
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-0 libpq5 libmariadb3
 
-      - name: Install the pinned Agentica release
-        run: |
-          archive="agentica-${AGENTICA_VERSION}-linux-x86_64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/agentica-lang/agentica/releases/download/${AGENTICA_VERSION}/$archive"
-          echo "${AGENTICA_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/agentica-${AGENTICA_VERSION}-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Agentica
+        uses: ./.github/actions/agentica
+        with:
+          commit: ${{ env.AGENTICA_COMMIT }}
 
       - name: Check
         run: |
@@ -95,51 +94,38 @@ jobs:
           (cd src/db && agentica test --jobs 4)
           (cd src/pool && agentica test --jobs 4)
 
+      # The SQLite scenarios again on the FFI driver, which a fetched package runs; @native are the scenarios of the
+      # statement cache, which only the native driver has.
+      - name: Test the FFI driver
+        env:
+          AGENTICA_DB_SQLITE_DRIVER: ffi
+        run: (cd src/db && agentica test --jobs 4 --only "on sqlite" --tags "not @native")
+
   # The SQLite scenarios on macOS and Windows. A service container runs on Linux only, so the PostgreSQL and MySQL
   # scenarios stay in the job above; here `--only "on sqlite"` keeps the SQLite ones (every one has that in its name).
   # SQLite is the system library: libsqlite3.dylib on macOS, winsqlite3.dll in System32 on Windows.
   sqlite:
     name: sqlite (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    # A run that builds Agentica (the first of a commit) takes most of it.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: macos-arm64
             runner: macos-latest
-            sha256: 2fafbea2eb05130fe6a2fbb2e9832090c834224ecc901f4941fb9e7562e51805
           - name: macos-x86_64
             runner: macos-15-intel
-            sha256: 1a77542a1200107ebbf455d659155168d179011c9e8b7ec7244fada271e3e02c
           - name: windows-x86_64
             runner: windows-latest
-            sha256: c4a656de3792d60d999dff4c8a796f2d69ae0fe3e7631f0a88f87c928251c9ef
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the pinned Agentica release (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          archive="agentica-${AGENTICA_VERSION}-${{ matrix.name }}.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/agentica-lang/agentica/releases/download/${AGENTICA_VERSION}/$archive"
-          echo "${{ matrix.sha256 }}  $RUNNER_TEMP/$archive" | shasum -a 256 -c -
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/agentica-${AGENTICA_VERSION}-${{ matrix.name }}/bin" >> "$GITHUB_PATH"
-
-      - name: Install the pinned Agentica release (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $dir = "agentica-$env:AGENTICA_VERSION-${{ matrix.name }}"
-          $archive = Join-Path $env:RUNNER_TEMP "$dir.zip"
-          $base = "https://github.com/agentica-lang/agentica/releases/download/$env:AGENTICA_VERSION"
-          Invoke-WebRequest -Uri "$base/$dir.zip" -OutFile $archive
-          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
-          if ($hash -ne "${{ matrix.sha256 }}") { throw "sha256 mismatch: $hash" }
-          Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP
-          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:RUNNER_TEMP "$dir\bin")
+      - name: Agentica
+        uses: ./.github/actions/agentica
+        with:
+          commit: ${{ env.AGENTICA_COMMIT }}
 
       - name: Check
         shell: bash

@@ -10,6 +10,8 @@ import Migrate from "../migrate"
 import Orm from "../orm"
 import Protocol from "protocol"
 import {Request} from "protocol"
+import Sqlite from "../sqlite/sqlite"
+import SqliteNative from "../sqlite/native"
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
@@ -53,6 +55,8 @@ PROBE_SQL = "select count(*) as n from sqlite_master"
 NO_DATABASE = "no database is open"
 NO_POOL = "no pool is started"
 POOL_DRAIN_MS = 1_000
+# The runs of the query in each task of `query_together`.
+QUERY_REPEATS = 50
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 
@@ -258,6 +262,8 @@ def act(state: State, req: Request) -> Handled
     "query_while_locked" -> return query_while_locked(state, req)
     "open_while_locked" -> return open_while_locked(state, req)
     "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
+    "query_together" -> return reply_ok(query_together(state, req))
+    "statement_cache" -> return reply_ok(statement_cache(state))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
@@ -1313,6 +1319,71 @@ def execute_in_task(state: State, sql: String) -> State
       error(message) -> return failed(state, message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
+  end
+end
+
+# `req.number` tasks each run the query QUERY_REPEATS times on the one connection, at once; the rows when every run
+# gave the same.
+def query_together(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    job = Job(conn: conn, sql: Cells.expand(req.text))
+    tasks = (0...req.number).to_a.map do |_| Task.spawn(&query_repeated, job) end
+    results = tasks.map do |task| Task.await(task) end
+    return same_rows(state, results)
+  end
+end
+
+def same_rows(state: State, results: List[Result[List[Db.Row]]]) -> State
+  found: List[List[Db.Row]] = []
+  for result in results
+    case result
+      error(message) -> return failed(state, message)
+      ok(rows) -> found = found.push(rows)
+    end
+  end
+
+  if found.any? do |rows| rows != found[0] end
+    return failed(state, "the tasks got different rows: #{found}")
+  end
+
+  return recorded(state, Outcome.Rows(found[0]))
+end
+
+def query_repeated(job: Job) -> Result[List[Db.Row]]
+  first = try Db.query(job.conn, job.sql, [])
+  for _ in 1...QUERY_REPEATS
+    again = try Db.query(job.conn, job.sql, [])
+    if again != first
+      return error("a run of the query gave other rows: #{again}")
+    end
+  end
+
+  return ok(first)
+end
+
+# The counters of the statement cache of the SQLite connection, as one row.
+def statement_cache(state: State) -> State
+  return with_conn(state) do |conn|
+    case conn
+      Db.Connection.Sqlite(sqlite) -> return cache_row(state, Sqlite.statement_cache(sqlite))
+      _ -> return failed(state, "only a SQLite connection has a statement cache")
+    end
+  end
+end
+
+def cache_row(state: State, found: Optional[SqliteNative.CacheStats]) -> State
+  case found
+    none -> return failed(state, "the FFI driver has no statement cache")
+    some(stats) ->
+      row = {
+        "size": Db.Value.Int(stats.size),
+        "capacity": Db.Value.Int(stats.capacity),
+        "hits": Db.Value.Int(stats.hits),
+        "misses": Db.Value.Int(stats.misses),
+        "evictions": Db.Value.Int(stats.evictions),
+      }
+
+      return recorded(state, Outcome.Rows([row]))
   end
 end
 

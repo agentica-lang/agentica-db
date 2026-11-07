@@ -1,6 +1,8 @@
 # agentica-db
 
-One database API for Agentica and one adapter per database, all through the C FFI. No C code of ours. The repository
+One database API for Agentica and one adapter per database, through the C FFI, and for SQLite also a native module of
+ours (`src/db/native/db_sqlite.c`, the only C code of the repository; the FFI driver stays for a fetched package, which
+Agentica does not build). The repository
 is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
 
 ```text
@@ -11,7 +13,11 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
   orm.agc      a typed layer over Db (plain structs in and out, always bound ? parameters); it takes a
                Db.Connection and never touches an adapter
   migrate.agc  the migrations runner (Migrate.up), also over Db
-  sqlite/      sqlite.agc, url.agc (the parameters of the url), lock.agc (the lock rule)
+  sqlite/      sqlite.agc (the adapter: picks a driver, the settings, timeouts), native.agc (the driver over the
+               native module), ffi.agc (the driver over extern calls), wait.agc (the wait for a lock, shared),
+               url.agc (the parameters of the url), lock.agc (the lock rule)
+  native/      db_sqlite.c, the native module ([native.db_sqlite] build): it opens the system SQLite itself
+               (dlopen), so a build needs only a C compiler; specs/statement_cache.feature (tag @native)
   postgres/    postgres.agc, sql.agc (the placeholder scanner), url.agc (it takes timeout_ms out of the url
                before libpq sees it)
   mysql/       mysql.agc, sql.agc (the statement scanner), url.agc
@@ -40,8 +46,12 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 - Binary: the release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
   under `.tools/` (gitignored), never `/tmp`. A version bump changes `AGENTICA_VERSION`, `AGENTICA_SHA256` and the
   three `sha256` of the `sqlite` matrix (macOS and Windows), all from the SHA256SUMS of the Agentica release.
-  Developing and testing the package needs Agentica 0.25.0 or later (`T.codec`, `agentica test --jobs`); the minimum
-  for a project that uses the package is the one in the README.
+  Developing and testing the package needs Agentica 0.26.0 or later (native modules) and a C compiler (`cc`, or
+  `CC`); the minimum for a project that uses the package is the one in the README. Until 0.26.0 is released, CI
+  builds Agentica at the commit `AGENTICA_COMMIT` of `ci.yml` instead (`.github/actions/agentica`).
+- SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
+  sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver (CI does both). A C change: C11, every
+  SQLite return code checked, every statement and connection freed exactly once, also on the error paths.
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
   itself). `make check` (from the root) runs `agentica check *.agc sqlite postgres mysql support orm examples specs
@@ -75,7 +85,8 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 ## Rules
 
 - Search with `rg`.
-- An adapter keeps its `extern` block private and exports only the wrapper (`wrapping` guide of the Agentica
+- An adapter keeps its `extern` block private and exports only the wrapper (SQLite's drivers export their resource
+  and a few calls to `sqlite.agc`, which alone is the adapter) (`wrapping` guide of the Agentica
   site: `library/io-and-system/native/wrapping`). An adapter has the same functions as `db.agc`:
   `open`, `close`, `query`, `execute` (both take a last `timeout_ms`, -1 for the connection's), `in_transaction?`,
   `connected?` and `healthy?` (SQLite also has `interrupt`, for the pool only). `db.agc` dispatches on `Connection`;

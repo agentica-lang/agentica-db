@@ -43,6 +43,9 @@ A connection is set up for a web app. The parameters after a `?` change the sett
 | `cache_size` | pages, or KiB when negative | `2000` pages |
 | `journal_size_limit` | bytes, negative for no limit | `67108864` (64 MiB) |
 | `fts5` | `required` | not checked |
+| `statement_cache` | prepared statements kept per connection, 0 to 10000 | `100` |
+| `batch_rows` | rows that one call of the native driver gives, 1 or more | `1000` |
+| `batch_bytes` | bytes of values that one call gives, about, 1 or more | `4194304` (4 MiB) |
 
 ```agentica
 import Db from "pkg/db/db"
@@ -72,6 +75,15 @@ true
 - `fts5=required` makes `open` fail with `sqlite error: this SQLite was built without FTS5 (fts5=required)` when the system library has no FTS5, instead of failing later at the first `create virtual table`.
 - Names and values are lowercase and case-sensitive (`journal_mode=WAL` is an error, although SQLite itself takes it), and a value is not percent-decoded. A repeated name keeps its last value. A parameter that is not in the table, an empty one (`?&x=1`), one without `=` or a value that is not allowed is `sqlite error: ...`.
 - `sqlite:app.db?journal_mode=delete&foreign_keys=off&synchronous=full&mmap_size=0&cache_size=-2000&journal_size_limit=-1` is SQLite's own behavior before these defaults.
+
+### Drivers
+
+Two drivers run the statements, with the same results and errors:
+
+- The native driver is a small C module of the package (`src/db/native/db_sqlite.c`) that opens the system SQLite itself. Each connection keeps up to `statement_cache` prepared statements, keyed by the sql text: a statement that ran before is not parsed again, and the one used least long ago is finalized when the cache is full. A cached read (`select`, `with`, `values`, or a `PRAGMA` that sets nothing) runs whole in one short call on the scheduler while it stays small (about 100 µs of SQLite work and 100 rows); any other statement runs on the compute pool, one call per `batch_rows` rows or `batch_bytes` bytes. The pragmas that `open` runs are not cached. Closing the connection finalizes its statements.
+- The FFI driver calls `libsqlite3` through `extern` functions: it prepares each statement at its call and steps it one row per call. Each query costs about ten times as much.
+
+`open` takes the native driver when its library loads, else the FFI one. The library is built with the system C compiler (`cc`, or `CC`; no SQLite headers) by the first run of a project that holds the package in place: a workspace member or a `path` dependency (`db = { path = "../agentica-db/src/db" }`). Agentica never builds a fetched package (a `git` dependency), which runs the FFI driver unless a library named `libdb_sqlite.so` (`libdb_sqlite.dylib` on macOS, `db_sqlite.dll` on Windows) is on the loader path. `AGENTICA_DB_SQLITE_DRIVER=native` makes a missing library an error of `open`, and `AGENTICA_DB_SQLITE_DRIVER=ffi` always runs the FFI driver.
 
 ### Timeouts
 

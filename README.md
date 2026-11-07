@@ -1,9 +1,11 @@
 # agentica-db
 
 Database package for [Agentica](https://github.com/agentica-lang/agentica): one API for SQLite, PostgreSQL and MySQL or
-MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI.
+MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI; SQLite also
+has a native driver (a statement cache, many rows per call) that a project built from source uses.
 
-agentica-db 0.5.0 needs Agentica 0.25.0 or later. Documentation: https://agentica-lang.github.io/agentica-db/
+agentica-db 0.5.0 needs Agentica 0.25.0 or later; the next release needs 0.26.0. Documentation:
+https://agentica-lang.github.io/agentica-db/
 
 ## Install
 

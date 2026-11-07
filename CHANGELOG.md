@@ -4,6 +4,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Needs Agentica 0.26.0 or later (native modules).
+
+### Added
+
+- A native SQLite driver (`src/db/native/db_sqlite.c`, an Agentica native module): a cache of prepared statements per
+  connection, a cached read run whole in one short call, and many rows per call. A one-row query and each row cost
+  about a tenth of the FFI driver's. A project that holds the package in place (a workspace member or a `path`
+  dependency) builds it with the system C compiler at the first run; a fetched package runs the FFI driver, as before.
+- SQLite url parameters `statement_cache` (statements per connection, 100 by default, 0 for none), `batch_rows` and
+  `batch_bytes` (what one call of the native driver gives); `AGENTICA_DB_SQLITE_DRIVER=native` or `ffi` picks the
+  driver.
+
+### Changed
+
+- **Breaking:** needs Agentica 0.26.0 or later.
+
 ## [0.5.0] - 2026-11-06
 
 Needs Agentica 0.25.0 or later.

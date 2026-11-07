@@ -1,0 +1,76 @@
+# Agentica built from a commit of agentica-lang/agentica, until a release has what the package needs (native modules
+# come in 0.26.0): then go back to the pinned release archive and its sha256. The binary is cached by runner and
+# commit, so only the first run of a commit builds it. It also leaves a C compiler on PATH, which the native SQLite
+# driver needs: the system one on Linux and macOS, the UCRT64 gcc of MSYS2 on Windows.
+name: Agentica from source
+description: Builds agentica at a commit and puts it on PATH.
+inputs:
+  commit:
+    description: The commit of agentica-lang/agentica.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Restore the binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: .tools/agentica-bin
+        key: agentica-${{ runner.os }}-${{ runner.arch }}-${{ inputs.commit }}
+
+    - name: MSYS2 with gcc (Windows)
+      if: runner.os == 'Windows'
+      id: msys2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        path-type: inherit
+        update: false
+        install: make perl mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-pkgconf
+
+    - name: The UCRT64 gcc first on PATH (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
+
+    - name: Check out Agentica
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: agentica-lang/agentica
+        ref: ${{ inputs.commit }}
+        path: .tools/agentica-src
+        submodules: true
+
+    # Linux links the system OpenSSL and zlib, which the runner has, and the vendored libgc; macOS and Windows link
+    # the vendored OpenSSL, as the release does, so the cached binary needs no package at run time.
+    - name: Build (Linux)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev zlib1g-dev pkg-config
+        make -C .tools/agentica-src -j4 AGENTICA_GC=vendored
+
+    - name: Build (macOS)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install make
+        gmake -C .tools/agentica-src -j4 AGENTICA_OPENSSL=vendored
+
+    - name: Build (Windows)
+      if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+      shell: msys2 {0}
+      run: make -C .tools/agentica-src -j4 AGENTICA_OPENSSL=vendored
+
+    - name: Keep the binary
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p .tools/agentica-bin
+        cp .tools/agentica-src/dist/agentica* .tools/agentica-bin/
+        rm -rf .tools/agentica-src
+
+    - name: Put it on PATH
+      shell: bash
+      run: echo "$GITHUB_WORKSPACE/.tools/agentica-bin" >> "$GITHUB_PATH"

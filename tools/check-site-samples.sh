@@ -27,12 +27,13 @@ for folder in "$db_root"/*/; do
   cp -r "$folder" "$work/deps/db/$(basename "$folder")"
 done
 
-# The hash of the lock (modules.md of the programming skill): for each .agc file (and agentica.toml, which is hashed
-# because it has a [native] table) in bytewise order of its path,
-# the path, a zero byte, the size in decimal, a zero byte and the bytes.
+# The hash of the lock (modules.md of the programming skill): for each .agc file, each file of native/ (the C of the
+# native SQLite driver; not a dotfile) and agentica.toml (hashed because it has a [native] table), in bytewise order of
+# its path, the path, a zero byte, the size in decimal, a zero byte and the bytes.
 hash="$(
   cd "$work/deps/db"
-  find . \( -name '*.agc' -o -name agentica.toml \) | sed 's|^\./||' | LC_ALL=C sort | while read -r file; do
+  find . \( -name '*.agc' -o -name agentica.toml -o \( -path './native/*' -type f ! -name '.*' \) \) | sed 's|^\./||' \
+    | LC_ALL=C sort | while read -r file; do
     printf '%s\0%s\0' "$file" "$(wc -c < "$file")"
     cat "$file"
   done | sha256sum | cut -d' ' -f1
