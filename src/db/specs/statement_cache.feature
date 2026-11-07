@@ -121,14 +121,30 @@ Feature: SQLite statement cache and batches
 
   # Cancelling a task frees its cursor at once, under a lock of the VM. A free never waits for SQLite's mutex, which
   # the long statement holds: the write's statement goes back unreset (cached) or is left for the next fetch to
-  # finalize (no cache), and the write runs again after it.
+  # finalize (no cache). That statement stopped at the lock in its first step and still counts as a write for SQLite,
+  # which would commit nothing else on the connection until it is reset: the next statement, another write, settles it
+  # first, so its row is there for every connection and after a reopen, and the database is not left locked.
   Scenario Outline: A cancelled write that waits for a lock never stops the schedulers, statement_cache=<cache> on sqlite
     Given the environment variable "AGENTICA_SCHEDULERS" is "4"
     And a "sqlite" database
     When I open "sqlite:[SCRATCH]/cancel.db?statement_cache=<cache>"
     And I execute "create table t (a integer)"
+    And I execute "create table u (a integer)"
     And the write "insert into t values (1)" that waits for "sqlite:[SCRATCH]/cancel.db" is cancelled beside "with recursive c(x) as (select 1 union all select x + 1 from c limit 8000000) select max(x) as n from c" within 500 ms
+    Then it succeeds
+    When I execute "insert into u values (2)"
     Then the changed row count is 1
+    When a connection of its own to "sqlite:[SCRATCH]/cancel.db" queries "select count(*) as n from u"
+    Then the result is:
+      | n     |
+      | Int 1 |
+    When a connection of its own to "sqlite:[SCRATCH]/cancel.db?busy_timeout=1000" executes "insert into t values (3)"
+    Then the changed row count is 1
+    When I close the database
+    And I open "sqlite:[SCRATCH]/cancel.db"
+    Then the query "select (select count(*) from u) as u, (select count(*) from t) as t" returns:
+      | u     | t     |
+      | Int 1 | Int 1 |
 
     Examples:
       | cache |

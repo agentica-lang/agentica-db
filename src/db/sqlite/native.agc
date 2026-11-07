@@ -98,6 +98,15 @@ export def query(
   return all_rows(conn, wait, sql, params, options)
 end
 
+## Ends what a cancelled query left on the connection: a statement that a lock stopped holds a write that SQLite never
+## ended, which keeps the connection in a hidden transaction until it is reset. Every fetch does it first; the adapter
+## does it before it reads whether a transaction is open.
+export def settle(conn: Conn) -> Void
+  if pending?(conn)
+    tidy(conn)
+  end
+end
+
 ## Runs one statement for its effect and gives the number of rows it inserted, updated or deleted.
 export def execute(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Int]
   if SqliteWait.expired?(wait)
@@ -117,6 +126,8 @@ extern module "db_sqlite"
   def cursor(conn: Conn) -> Cursor
   compute def fetch(conn: Conn, cursor: Cursor, sql: String, params: List[Value], options: Fetch) -> Batch
   compute def finish(conn: Conn, cursor: Cursor) -> Void
+  def pending?(conn: Conn) -> Bool
+  compute def tidy(conn: Conn) -> Void
   def quick(conn: Conn, sql: String, params: List[Value], options: Fetch) -> Optional[Batch]
 end
 
