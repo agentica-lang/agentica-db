@@ -33,8 +33,6 @@ TIMED_OUT = "native: timed out"
 # schema, after which the cache lets every statement go: a cached plan may no longer fit the tables.
 CACHED_VERBS = Set.new(["select", "insert", "update", "delete", "with", "values", "merge", "table"])
 FLUSH_VERBS = Set.new(["create", "alter", "drop", "import"])
-# `DEALLOCATE ALL` and `DISCARD ALL` drop every prepared statement of the session, the cached ones too.
-DROP_ALL_VERBS = Set.new(["deallocate", "discard"])
 # PQstatus CONNECTION_BAD and PQtransactionStatus UNKNOWN, as `link_status` gives them: what a closed connection is.
 CLOSED_STATUS = 1 * 16 + 4
 CLOSED = "postgres error: the connection is closed"
@@ -201,7 +199,7 @@ def plan_of(session: Session, sql: String, params: List[Value], keep: Bool) -> R
     count: translated.count,
     cache: CACHED_VERBS.include?(verb),
     flush: FLUSH_VERBS.include?(verb),
-    forgot: DROP_ALL_VERBS.include?(verb) and drops_all?(sql),
+    forgot: drops_all?(translated.words),
     keep: keep,
   )
 
@@ -281,13 +279,13 @@ def settled_status(session: Session) -> Int
   return status(session.conn)
 end
 
-# Whether a DEALLOCATE or DISCARD names ALL (`DEALLOCATE PREPARE ALL` too). A statement named `all` must be quoted,
-# so a bare word is the keyword.
-def drops_all?(sql: String) -> Bool
-  text = sql.downcase
-  for blank in [";", "\t", "\r", "\n"]
-    text = text.replace(blank, " ")
+# Whether the statement is `DEALLOCATE [PREPARE] ALL` or `DISCARD ALL`, which drop every prepared statement of the
+# session, the cached ones too. WORDS are its first bare words: a statement named `all` must be quoted, and a comment
+# is not a word.
+def drops_all?(words: List[String]) -> Bool
+  if words == ["discard", "all"] or words == ["deallocate", "all"]
+    return true
   end
 
-  return text.split(" ").include?("all")
+  return words == ["deallocate", "prepare", "all"]
 end

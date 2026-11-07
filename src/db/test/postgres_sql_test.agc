@@ -22,6 +22,12 @@ def verb_of(sql: String, verb: String) -> Result[Void]
   return Test.eq(done.unwrap!.verb, verb)
 end
 
+def words_of(sql: String, words: List[String]) -> Result[Void]
+  done = PostgresSql.translate(sql)
+  try Test.ok?(done)
+  return Test.eq(done.unwrap!.words, words)
+end
+
 def refused(sql: String, message: String) -> Result[Void]
   return Test.eq(PostgresSql.translate(sql), error(message))
 end
@@ -118,6 +124,13 @@ def main() -> Void
       try verb_of("(select 1)", "")
       try verb_of("'x'", "")
       return verb_of("begin;", "begin")
+    end,
+    Test.test("the words are the first three bare words, outside comments, literals and quoted names") do
+      try words_of("DEALLOCATE PREPARE ALL", ["deallocate", "prepare", "all"])
+      try words_of("discard all;", ["discard", "all"])
+      try words_of("deallocate mine /* all of it */", ["deallocate", "mine"])
+      try words_of("deallocate \"all\" -- all", ["deallocate"])
+      return words_of("select a1, 'b' from t where x_y = 2", ["select", "a1", "from"])
     end,
   ])
 end

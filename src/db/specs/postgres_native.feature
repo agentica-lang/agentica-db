@@ -225,6 +225,17 @@ Feature: PostgreSQL native driver
       | n     |
       | Int 4 |
 
+  # Only `DEALLOCATE [PREPARE] ALL` and `DISCARD ALL` drop the cached statements: an `all` in a comment is no keyword.
+  Scenario: A DEALLOCATE of one statement keeps the cache on postgres
+    Given a "postgres" database
+    When I query "select [N] as n" for each [N] from 1 to 5
+    And I execute "prepare mine as select 1"
+    And I execute "deallocate mine /* all of it */"
+    And I read the statement cache
+    Then the result is:
+      | size  | capacity | hits  | misses | evictions |
+      | Int 5 | Int 100  | Int 0 | Int 5  | Int 0     |
+
   Scenario: AGENTICA_DB_POSTGRES_DRIVER=ffi runs the FFI driver on postgres
     Given the environment variable "AGENTICA_DB_POSTGRES_DRIVER" is "ffi"
     And a "postgres" database

@@ -393,8 +393,11 @@ typedef struct {
   uint64_t tick, serial, hits, misses, evictions;
   bool inflight, flushing;
   int copy;
-  /* The name of a statement whose PREPARE was sent and not read yet: a drain lets it go. */
+  /* The name of a statement whose PREPARE was sent and not read to its end, and whether its COMMAND_OK came (the
+     server holds it): a drain lets it go. The result comes before the end of the PREPARE, so a task can be cancelled
+     between them. */
   char preparing[32];
+  bool prepare_ok;
   query q;
 } conn;
 
@@ -978,6 +981,7 @@ static bool send_statement(conn *c, query *cur) {
     cur->phase = P_PREPARE;
     if (!sent(c, cur, pq.send_prepare(c->pg, cur->name, cur->text, 0, NULL))) return false;
     memcpy(c->preparing, cur->name, sizeof c->preparing);
+    c->prepare_ok = false;
     return true;
   }
   cur->phase = P_EXEC;
@@ -1085,12 +1089,7 @@ static an_term advance(an_env *env, conn *c, query *cur, int64_t max_rows, int64
     if (got == PUMP_RESULT) {
       int status = pq.result_status(r);
       bool good = status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
-      if (cur->phase == P_DRAIN && c->preparing[0] && status == PGRES_COMMAND_OK) {
-        /* The PREPARE that a cancelled task left went through: its name goes at a CHORE. One that failed left no
-           statement, and a DEALLOCATE of it would fail the CHORE. */
-        drop_name(c, c->preparing);
-        c->preparing[0] = '\0';
-      }
+      if (c->preparing[0] && status == PGRES_COMMAND_OK) c->prepare_ok = true;
       if (cur->phase == P_EXEC && good && !cur->res && !cur->failure[0]) {
         cur->res = r;
         continue;
@@ -1106,8 +1105,10 @@ static an_term advance(an_env *env, conn *c, query *cur, int64_t max_rows, int64
     c->inflight = false;
     if (cur->phase == P_DRAIN) {
       /* The failures of the query drained belong to the task that sent it; this one starts clean. A statement that
-         it prepared and never cached goes at a CHORE. */
+         it prepared and never cached goes at a CHORE; one whose PREPARE failed left none, and a DEALLOCATE of it
+         would fail the CHORE. */
       cur->failure[0] = '\0';
+      if (c->preparing[0] && c->prepare_ok) drop_name(c, c->preparing);
       c->preparing[0] = '\0';
       cur->phase = cur->drain_only ? P_DONE : P_CHORE;
       if (cur->drain_only) return step_state(env, c, S_DONE);
@@ -1398,6 +1399,18 @@ static void sleep_ms(int ms) {
 #endif
 }
 
+/* Milliseconds of a clock that only goes forward; a sleep of 1 ms takes about 15 ms on Windows, so turns of a loop
+   are no clock. */
+static uint64_t now_ms(void) {
+#if defined(_WIN32)
+  return (uint64_t)GetTickCount64();
+#else
+  struct timespec t;
+  if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0;
+  return (uint64_t)t.tv_sec * 1000u + (uint64_t)t.tv_nsec / 1000000u;
+#endif
+}
+
 /* Sends the cancel request with libpq 17's PQcancelStart and PQcancelPoll, and gives up after CANCEL_WAIT_MS: a
    server that does not answer would hold a thread of the compute pool. It polls every millisecond instead of waiting
    on the socket, which keeps it the same on every system; it runs only after a task was cancelled in a query. */
@@ -1407,7 +1420,9 @@ static void cancel_polled(PGconn *pg) {
   PGcancelConn *cc = pq_cancel.create(pg);
   if (!cc) return;
   if (pq_cancel.start(cc)) {
-    for (int waited = 0; waited < CANCEL_WAIT_MS; waited++) {
+    /* The count of turns bounds the loop too, should the clock fail: each turn sleeps at least a millisecond. */
+    uint64_t started = now_ms();
+    for (int turn = 0; turn < CANCEL_WAIT_MS && now_ms() - started < CANCEL_WAIT_MS; turn++) {
       int state = pq_cancel.poll(cc);
       if (state == PGRES_POLLING_OK || state == PGRES_POLLING_FAILED) break;
       sleep_ms(1);
