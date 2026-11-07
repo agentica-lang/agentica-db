@@ -21,9 +21,12 @@
 ## `start`. `timeout_ms` of the url bounds each statement, as on a connection of `Db.open` (see `Db`).
 ##
 ## The SQLite connections of a pool take turns at `Db.transaction`: a writer waits in line for the one before it to
-## commit, in order, instead of trying its `BEGIN IMMEDIATE` again every few milliseconds (`busy_timeout` stays the
-## wait for the writers of other pools and processes). The line is a hint and SQLite's lock stays the rule: a block
-## that crashes or runs past `lease_ms` in a transaction lets the next writer go.
+## commit, in the order they came (a channel's waiters are served first come, first served), instead of trying its
+## `BEGIN IMMEDIATE` again every few milliseconds. A writer waits for its turn up to `busy_timeout` and at most half
+## of `lease_ms`; then its BEGIN takes SQLite's lock if it is free and fails with `sqlite error 5: database is locked`
+## if not, as without the line. So a block that checks out a second connection inside its transaction and starts a
+## transaction on it fails after that wait, as before. A block that crashes or runs past `lease_ms` in its
+## transaction gives the turn back when its connection is checked in.
 
 import Db from "db"
 import P from "pkg/pool/pool"
@@ -40,9 +43,9 @@ MEMORY_SIZE = 1
 ## A pool of connections.
 export type Pool = P.Pool[Config, Db.Connection]
 
-## What each connection of the pool is opened with: the url, and the line that the SQLite writers of the pool share
-## (`gate` holds one token; `lease_ms` is the longest a writer waits in it).
-export struct Config
+# What each connection of the pool is opened with: the url, and the line that the SQLite writers of the pool share
+# (`gate` holds one token) with the lease of a block, which bounds the wait in it.
+struct Config
   url: String
   gate: Channel[Int]
   lease_ms: Int
@@ -211,9 +214,9 @@ def interrupt(conn: Db.Connection) -> Void
   end
 end
 
-# A block that ended inside Db.transaction may hold the token of the line of writers, which it will never give back.
-# One goes back now; when the block held none, the line has one more token for a while (two writers at once, which
-# SQLite's lock orders), and the line keeps one again as soon as every holder gives its token back to the full channel.
+# A block that ended inside Db.transaction may hold the turn of the writers, which it will never give back: it goes
+# back now. Only the connection that holds the turn gives it (Sqlite.leave_gate), so a block that waited in vain, or
+# never reached its transaction, adds no token.
 def reopen_gate(conn: Db.Connection) -> Void
   case conn
     Db.Connection.Sqlite(handle) -> Sqlite.leave_gate(handle)

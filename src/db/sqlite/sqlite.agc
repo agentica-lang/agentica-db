@@ -56,14 +56,22 @@ NUL_SQL = "sqlite error: the sql contains a NUL character"
 ## An open database, the time its statements wait for a lock, and the limit of a statement (0: none). `link` is
 ## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
 ## opaque and pass the `Connection` around. `deadline` is set only on the copy that a bounded call works with.
-## `gate` is the line of the writers of a pool (`with_gate`), which waits up to `gate_ms`.
+## `gate` is the line of the writers of a pool (`with_gate`).
 export struct Connection
   link: Link
   busy_timeout: Int
   timeout_ms: Int = 0
   deadline: Int = 0
-  gate: Optional[Channel[Int]] = none
-  gate_ms: Int = 0
+  gate: Optional[Gate] = none
+end
+
+# The line of the writers of a pool. `turn` is the pool's, with its one token; `held` is this connection's, and holds a
+# value while its transaction has the turn, so that only the holder gives the token back. `wait_ms` is how long a
+# writer waits for its turn.
+struct Gate
+  turn: Channel[Int]
+  held: Channel[Int]
+  wait_ms: Int
 end
 
 # The connection of the driver that runs it, with what a call of the native one may give at once.
@@ -156,26 +164,45 @@ export def healthy?(conn: Connection) -> Bool
   return run_query(conn, "SELECT 1", []).ok?
 end
 
-## The connection with a line of writers, a channel that holds one token, which `enter_gate` takes for up to `ms`
-## milliseconds and `leave_gate` gives back. A pool gives one line to its connections.
-export def with_gate(conn: Connection, gate: Channel[Int], ms: Int) -> Connection
-  return conn.with(gate: some(gate), gate_ms: ms)
+## The connection in the line of writers `turn`, a channel that holds one token, which a pool gives to its connections.
+## A writer waits for its turn up to `busy_timeout`, the time it would wait for SQLite's lock, and at most half of
+## `lease_ms`: the lease counts from the start of the block, and must not end a writer that waits.
+export def with_gate(conn: Connection, turn: Channel[Int], lease_ms: Int) -> Connection
+  wait_ms = conn.busy_timeout
+  if wait_ms > lease_ms / 2
+    wait_ms = lease_ms / 2
+  end
+
+  held: Channel[Int] = Channel.new(1)
+  return conn.with(gate: some(Gate(turn: turn, held: held, wait_ms: wait_ms)))
 end
 
-## Waits for the turn of this writer. A wait that ends without the token goes on all the same: the line is a hint, and
-## SQLite's lock (with `busy_timeout`) stays the rule.
-export def enter_gate(conn: Connection) -> Void
+## Waits for the turn of this writer and gives the connection for its BEGIN. A wait that ends without the turn (a
+## writer of the pool holds it longer, or one checked out inside its own transaction waits for itself) has spent the
+## time of `busy_timeout`, so the BEGIN does not wait for SQLite's lock again: it takes the lock if it is free, and
+## fails with `sqlite error 5: database is locked` if not, as after `busy_timeout` without the line.
+export def enter_gate(conn: Connection) -> Connection
   case conn.gate
-    some(gate) -> _ = gate.recv(conn.gate_ms)
-    none -> return
+    none -> return conn
+    some(gate) ->
+      case gate.turn.recv(gate.wait_ms)
+        ok(_) ->
+          _ = gate.held.send(1, 0)
+          return conn
+        error(_) -> return conn.with(busy_timeout: 0)
+      end
   end
 end
 
-## Gives the token back; a full line (a writer that waited in vain took none) keeps the one it has.
+## Gives the turn back if this connection holds it, and only then: a writer that waited in vain, or a block that ended
+## before its transaction, has no token to give, and the line never has more than one.
 export def leave_gate(conn: Connection) -> Void
   case conn.gate
-    some(gate) -> _ = gate.send(1, 0)
     none -> return
+    some(gate) ->
+      if gate.held.recv(0).ok?
+        _ = gate.turn.send(1, 0)
+      end
   end
 end
 

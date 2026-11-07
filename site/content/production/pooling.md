@@ -71,7 +71,9 @@ State that belongs to one connection (a temporary table, `SET` on the session, a
 
 ## SQLite writers take turns
 
-SQLite has one writer at a time. The connections of a SQLite pool wait in line at `Db.transaction`: a writer waits for the one before it to commit, and they go in order, instead of each trying its `BEGIN IMMEDIATE` again every few milliseconds until the lock is free. `busy_timeout` stays the wait for the writers of other pools and other processes. The line is only an order: a writer that waits longer than `lease_ms` goes on to SQLite's lock, and a block that crashes or runs past `lease_ms` inside its transaction lets the next writer go. A statement outside `Db.transaction` does not wait in line.
+SQLite has one writer at a time. The connections of a SQLite pool wait in line at `Db.transaction`: a writer waits for the one before it to commit, and they get their turn in the order they came, instead of each trying its `BEGIN IMMEDIATE` again every few milliseconds until the lock is free. A writer waits for its turn up to `busy_timeout`, and at most half of `lease_ms`; then its `BEGIN` takes the lock if it is free and fails with `sqlite error 5: database is locked` if not, as it would without the line. A block that crashes or runs past `lease_ms` inside its transaction gives the turn back when the pool takes its connection back. A statement outside `Db.transaction` does not wait in line, and `busy_timeout` stays its wait for the writers of other pools and processes.
+
+Do not start a transaction on a second connection of the pool inside a transaction: it waits for the turn that the first one holds, and fails after `busy_timeout` with `sqlite error 5: database is locked`.
 
 ## Errors and timeouts
 

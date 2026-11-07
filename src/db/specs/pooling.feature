@@ -160,40 +160,54 @@ Feature: Pooling
       | v     |
       | Int 1 |
 
-  # The writers of one pool wait in line for each other at Db.transaction, so they need no busy_timeout: with 0, a
-  # writer that tried BEGIN IMMEDIATE while another held the lock would fail at once.
-  Scenario: The writers of a pool take turns at their transactions on sqlite
+  # The writers of one pool wait in line at Db.transaction and get their turn in the order they came: a channel serves
+  # the tasks that wait for it first come, first served. Each writer comes 50 ms after the one before and holds its
+  # transaction 150 ms; without the line they would try BEGIN again in any order.
+  Scenario: The writers of a pool take turns at their transactions in the order they came on sqlite
     Given a "sqlite" database
-    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=0" with:
+    When I start a pool on "sqlite:[SCRATCH]/pool.db" with:
       | option | value |
       | size   | 4     |
     And I execute "create table notes (id integer primary key, writer integer not null)" in the pool
-    And 8 tasks each run these statements in a transaction in the pool:
-      | sql                                   |
-      | insert into notes (writer) values (1) |
-      | insert into notes (writer) values (2) |
-      | insert into notes (writer) values (3) |
+    And 4 writers of the pool come in turn, each holding its transaction
     Then it succeeds
-    When I query "select count(*) as n from notes" in the pool
+    When I query "select writer from notes order by id" in the pool
     Then the result is:
-      | n      |
-      | Int 24 |
+      | writer |
+      | Int 1  |
+      | Int 2  |
+      | Int 3  |
+      | Int 4  |
 
-  # The block that crashed held the turn of the writers, which the pool gives back: the next writers do not wait
-  # lease_ms for it.
-  Scenario: A writer that crashes in its transaction lets the next writers of the pool go on sqlite
+  # A block that crashes or runs past lease_ms inside its transaction holds the turn, which the pool gives back when it
+  # checks the connection in. A turn left taken would hold the next writer for its whole wait: busy_timeout, at most
+  # half of lease_ms, so 1000 ms here.
+  Scenario Outline: A block that <ends> in its transaction gives the turn back to the pool on sqlite
     Given a "sqlite" database
-    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=0" with:
-      | option   | value  |
-      | size     | 2      |
-      | lease_ms | 600000 |
+    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=3000" with:
+      | option   | value |
+      | size     | 2     |
+      | lease_ms | 2000  |
     And I execute "create table notes (writer integer not null)" in the pool
-    And I run a block that crashes in the pool
-    Then it fails with "task crashed"
-    When 2 tasks each run these statements in a transaction in the pool:
-      | sql                                   |
-      | insert into notes (writer) values (1) |
-    Then it succeeds
+    And a block of the pool "<ends>" in its transaction, then a writer takes less than 500 ms
+    Then the changed row count is 1
+
+    Examples:
+      | ends               |
+      | crashes            |
+      | outlasts its lease |
+
+  # A block that checks out a second connection inside its transaction and starts one there waits behind its own turn:
+  # the wait ends after busy_timeout, and the BEGIN fails as SQLite's lock makes it, long before the lease ends.
+  Scenario: A transaction on a second connection inside a transaction of the pool fails as locked on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/pool.db?busy_timeout=500" with:
+      | option   | value |
+      | size     | 2     |
+      | lease_ms | 3000  |
+    And I execute "create table notes (writer integer not null)" in the pool
+    And a block of the pool starts a transaction on a second connection
+    Then it fails with "sqlite error 5: database is locked"
 
   Scenario Outline: A pool of a private in-memory database cannot have more than one connection on sqlite
     Given a "sqlite" database
