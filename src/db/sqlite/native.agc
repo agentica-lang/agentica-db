@@ -1,8 +1,9 @@
-## The native driver of the SQLite adapter: the module of `native/db_sqlite.c`, which `agentica.toml` builds from its
-## C source in the repository and in a `path` dependency (`[native.db_sqlite]`). A connection keeps its prepared
-## statements in a cache keyed by the sql text, so a statement it ran before is not prepared again. A read of a cached
-## statement runs whole in one short call when it is small (`Fetch.quick_steps`, `quick_rows`); any other statement
-## runs on the compute pool, one call per batch of rows. A lock comes back at once, and the wait is made here.
+## The native driver of the SQLite adapter: the module of `native/db_sqlite.c` (`[native.db_sqlite]` of
+## `agentica.toml`), which Agentica builds at the first run or compile of a program, a fetched package too. A
+## connection keeps its prepared statements in a cache keyed by the sql text, so a statement it ran before is not
+## prepared again. A read of a cached statement runs whole in one short call when it is small (`Fetch.quick_steps`,
+## `quick_rows`); any other statement runs on the compute pool, one call per batch of rows. A lock comes back at once,
+## and the wait is made here.
 
 import SqliteWait from "wait"
 import {Row, Value} from "../support/value"
@@ -66,7 +67,7 @@ extern module "db_sqlite"
   export def cache_stats(conn: Conn) -> CacheStats
 end
 
-## Whether the module opens: false where it was not built (a fetched package), and the FFI driver runs.
+## Whether the module opens: false where the built library does not load, and the FFI driver runs.
 export def available?() -> Bool
   return Native.load("db_sqlite").ok?
 end

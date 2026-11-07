@@ -12,10 +12,10 @@ linux = { system = "libsqlite3.so.0" }
 macos = { system = "libsqlite3.dylib" }
 windows = { system = "winsqlite3.dll" }
 
-# The native SQLite driver (sqlite/native.agc), built from native/db_sqlite.c with the system C compiler by the run
-# that first uses it, here and in a `path` dependency. It opens the system SQLite itself (the library of
-# [native.sqlite3]), so the build needs no SQLite headers. A fetched package is not built: it looks for the library
-# below on the loader path, and without one the adapter runs the FFI driver (sqlite/ffi.agc).
+# The native SQLite driver (sqlite/native.agc), built from native/db_sqlite.c with the system C compiler into the
+# package cache by the first run or compile of a program that imports the package, a fetched package too. It opens the
+# system SQLite itself (the library of [native.sqlite3]), so the build needs no SQLite headers. When the library does
+# not load, the adapter runs the FFI driver (sqlite/ffi.agc).
 [native.db_sqlite]
 build = { sources = ["native/db_sqlite.c"] }
 linux = { system = "libdb_sqlite.so" }

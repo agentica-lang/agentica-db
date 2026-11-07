@@ -17,9 +17,9 @@
 ## Two drivers run the statements. The native one (`native.agc`, a native module built from `native/db_sqlite.c`)
 ## keeps a cache of prepared statements per connection (`statement_cache`, 100 by default) and reads many rows per
 ## call (`batch_rows`, `batch_bytes`); the FFI one (`ffi.agc`) prepares each statement and steps it row by row. `open`
-## takes the native driver when its library loads and the FFI one otherwise, as in a fetched package, which does not
-## build native code; `AGENTICA_DB_SQLITE_DRIVER=native` or `ffi` chooses one (with `native`, a library that does not
-## load is an error).
+## takes the native driver when its library loads and the FFI one only when it does not (compiled bytecode run where
+## the built library is gone); `AGENTICA_DB_SQLITE_DRIVER=native` or `ffi` chooses one (with `native`, a library that
+## does not load is an error).
 ##
 ## A statement that finds a lock held by another connection (SQLITE_BUSY, or SQLITE_LOCKED for a table of a shared
 ## cache) is tried again after a short sleep until `busy_timeout` is over, then fails with that error; 0 fails at once

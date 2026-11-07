@@ -93,8 +93,8 @@ jobs:
           (cd src/db && agentica test --jobs 4)
           (cd src/pool && agentica test --jobs 4)
 
-      # The SQLite scenarios again on the FFI driver, which a fetched package runs; @native are the scenarios of the
-      # statement cache, which only the native driver has.
+      # The SQLite scenarios again on the FFI driver, which runs where the native library is missing; @native are the
+      # scenarios of the statement cache, which only the native driver has.
       - name: Test the FFI driver
         env:
           AGENTICA_DB_SQLITE_DRIVER: ffi
