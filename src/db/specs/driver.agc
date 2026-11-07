@@ -8,10 +8,10 @@ import Db from "../db"
 import DbPool from "../db_pool"
 import Migrate from "../migrate"
 import Orm from "../orm"
+import Postgres from "../postgres/postgres"
 import Protocol from "protocol"
 import {Request} from "protocol"
 import Sqlite from "../sqlite/sqlite"
-import SqliteNative from "../sqlite/native"
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
@@ -68,6 +68,10 @@ PAUSE_TICK_MS = 5
 CANCEL_AFTER_MS = 5
 # The `number` of an `on_other` request that queries; any other executes.
 OTHER_QUERY = 1
+# `cache_beside_big` reads the statement cache this many times, a millisecond apart, while the big query runs.
+CACHE_READS = 200
+# `close_beside_queries`: the time the first statement needs to start, so that the second waits for it.
+QUEUE_START_MS = 20
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
 # `pool_writers_in_turn`: the time between two writers that come to the line, and how long each holds its transaction.
@@ -293,6 +297,10 @@ def act(state: State, req: Request) -> Handled
     "on_other" -> return reply_ok(on_other(state, req))
     "query_big_json" -> return reply_ok(query_big_json(state, req))
     "statement_cache" -> return reply_ok(statement_cache(state))
+    "cancel_task" -> return reply_ok(cancel_task(state, req))
+    "query_each" -> return reply_ok(query_each(state, req))
+    "cache_beside_big" -> return reply_ok(cache_beside_big(state, req))
+    "close_beside_queries" -> return reply_ok(close_beside_queries(state, req))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
@@ -1587,29 +1595,112 @@ def query_repeated(job: Job) -> Result[List[Db.Row]]
   return ok(first)
 end
 
-# The counters of the statement cache of the SQLite connection, as one row.
+# The counters of the statement cache of the connection, as one row.
 def statement_cache(state: State) -> State
   return with_conn(state) do |conn|
     case conn
-      Db.Connection.Sqlite(sqlite) -> return cache_row(state, Sqlite.statement_cache(sqlite))
-      _ -> return failed(state, "only a SQLite connection has a statement cache")
+      Db.Connection.Sqlite(sqlite) ->
+        found = Sqlite.statement_cache(sqlite).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
+        return cache_row(state, found)
+      Db.Connection.Postgres(postgres) ->
+        found = Postgres.statement_cache(postgres).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
+        return cache_row(state, found)
+      _ -> return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
     end
   end
 end
 
-def cache_row(state: State, found: Optional[SqliteNative.CacheStats]) -> State
+def cache_row(state: State, found: Optional[List[Int]]) -> State
   case found
     none -> return failed(state, "the FFI driver has no statement cache")
-    some(stats) ->
-      row = {
-        "size": Db.Value.Int(stats.size),
-        "capacity": Db.Value.Int(stats.capacity),
-        "hits": Db.Value.Int(stats.hits),
-        "misses": Db.Value.Int(stats.misses),
-        "evictions": Db.Value.Int(stats.evictions),
-      }
+    some(counts) ->
+      names = ["size", "capacity", "hits", "misses", "evictions"]
+      row: Db.Row = {}
+      for i in 0...names.size
+        row = row.put(names[i], Db.Value.Int(counts[i]))
+      end
 
       return recorded(state, Outcome.Rows([row]))
+  end
+end
+
+# A task runs `req.text` on the connection and is cancelled after `req.number` ms. With a query in `req.cells`, then
+# its rows, unless it took `req.cells[1]` ms or more: the cancelled statement must not hold it up.
+def cancel_task(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    task = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    Task.sleep(req.number)
+    Task.cancel(task)
+    if req.cells.empty?
+      return recorded(state, Outcome.Done)
+    end
+
+    started = Time.monotonic_ms()
+    rows = Db.query(conn, Cells.expand(req.cells[0]), [])
+    took = Time.monotonic_ms() - started
+    if took >= req.cells[1].to_i!
+      return failed(state, "the query took #{took} ms after the cancel")
+    end
+
+    return recorded_rows(state, rows)
+  end
+end
+
+# Queries `req.text` with `[N]` replaced by each number from `req.cells[0]` to `req.number`; the rows of the last.
+def query_each(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    rows: Result[List[Db.Row]] = ok([])
+    for n in req.cells[0].to_i!..req.number
+      rows = Db.query(conn, Cells.expand(req.text.replace("[N]", n.to_s)), [])
+      if not rows.ok?
+        return recorded_rows(state, rows)
+      end
+    end
+
+    return recorded_rows(state, rows)
+  end
+end
+
+# Queries `req.text` with a text of `req.number` characters while another task reads the statement cache of the
+# connection: the reads wait for the query instead of failing its calls.
+def cache_beside_big(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    reader = Task.spawn(&read_cache, conn)
+    rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text("x" * req.number)])
+    case Task.await(reader)
+      error(message) -> return failed(state, message)
+      ok(_) -> return recorded_rows(state, rows)
+    end
+  end
+end
+
+def read_cache(conn: Db.Connection) -> Result[Int]
+  case conn
+    Db.Connection.Postgres(postgres) ->
+      for _ in 0...CACHE_READS
+        _ = Postgres.statement_cache(postgres)
+        Task.sleep(1)
+      end
+
+      return ok(CACHE_READS)
+    _ -> return error("only a PostgreSQL connection is read here")
+  end
+end
+
+# A task executes `req.text` on the connection, a second one executes `req.cells[0]` there, which waits for the first,
+# and this task closes the connection after `req.number` ms: the outcome of the second.
+def close_beside_queries(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    first = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    Task.sleep(QUEUE_START_MS)
+    second = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
+    Task.sleep(req.number)
+    Db.close(conn)
+    _ = Task.await(first)
+    case Task.await(second)
+      error(message) -> return failed(state, message)
+      ok(count) -> return recorded(state, Outcome.Counted(count))
+    end
   end
 end
 

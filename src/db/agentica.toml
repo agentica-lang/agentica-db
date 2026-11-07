@@ -22,13 +22,22 @@ linux = { system = "libdb_sqlite.so" }
 macos = { system = "libdb_sqlite.dylib" }
 windows = { system = "db_sqlite.dll" }
 
-# The system libpq (PostgreSQL client); `extern "pq"` in postgres/postgres.agc opens the entry of the running system. A
+# The system libpq (PostgreSQL client); `extern "pq"` in postgres/ffi.agc opens the entry of the running system. A
 # macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH only: with Homebrew's libpq, run with
 # DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib".
 [native.pq]
 linux = { system = "libpq.so.5" }
 macos = { system = "libpq.5.dylib" }
 windows = { system = "libpq.dll" }
+
+# The native PostgreSQL driver (postgres/native.agc), built from native/db_postgres.c like db_sqlite. It opens the
+# system libpq itself (the library of [native.pq]; on macOS from DYLD_LIBRARY_PATH, Homebrew or Postgres.app), so the
+# build needs no libpq headers. When the library does not load, the adapter runs the FFI driver (postgres/ffi.agc).
+[native.db_postgres]
+build = { sources = ["native/db_postgres.c"] }
+linux = { system = "libdb_postgres.so" }
+macos = { system = "libdb_postgres.dylib" }
+windows = { system = "db_postgres.dll" }
 
 # The system MariaDB Connector/C (`libmariadb.so.3`), which speaks to MySQL and MariaDB servers; `extern "mariadb"`
 # in mysql/mysql.agc opens the entry of the running system. A macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH

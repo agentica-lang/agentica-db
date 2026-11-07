@@ -74,6 +74,30 @@ export def translate(sql: String) -> Result[Translated]
   return ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
 end
 
+## The first `limit` bare words of the sql in lower case, outside literals, quoted names and comments (`deallocate
+## mine /* all */` gives `["deallocate", "mine"]`). A scan of its own, apart from `translate`, so that only the
+## statements that need it pay for it.
+export def first_words(sql: String, limit: Int) -> List[String]
+  bytes = sql.bytes
+  words: List[String] = []
+  at = 0
+  while at < bytes.size and words.size < limit
+    byte = bytes[at]
+    stop = span_end(bytes, at)
+    if stop > at
+      at = stop
+    elsif (letter?(byte) or byte >= FIRST_NON_ASCII) and not word_before?(bytes, at)
+      word = bare_word_at(bytes, at)
+      words = words.push(word.downcase)
+      at = word_end(bytes, at)
+    else
+      at += 1
+    end
+  end
+
+  return words
+end
+
 # Reads one literal, comment, placeholder or byte.
 def step(bytes: Bytes, scan: Scan) -> Result[Scan]
   at = scan.at
@@ -141,6 +165,20 @@ def word_at(bytes: Bytes, at: Int) -> String
 
   # A run of ASCII letters is always valid UTF-8, so the empty fallback never shows.
   return String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
+end
+
+def word_end(bytes: Bytes, at: Int) -> Int
+  stop = at
+  while stop < bytes.size and word_byte?(bytes[stop])
+    stop += 1
+  end
+
+  return stop
+end
+
+# A word of an identifier or keyword; its bytes outside ASCII come whole, so it is valid UTF-8.
+def bare_word_at(bytes: Bytes, at: Int) -> String
+  return String.from_bytes(bytes.slice(at, word_end(bytes, at) - at)).unwrap_or("")
 end
 
 def more_than_one() -> String
