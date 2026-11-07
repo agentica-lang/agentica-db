@@ -61,6 +61,7 @@ enum {
   SQLITE_BLOB = 4,
   SQLITE_UTF8 = 1,
   SQLITE_TXN_READ = 1,
+  SQLITE_STMTSTATUS_REPREPARE = 5,
   SQLITE_OPEN_NOMUTEX = 0x8000,
   SQLITE_OPEN_FULLMUTEX = 0x10000,
 };
@@ -105,6 +106,7 @@ typedef struct {
   void (*mutex_enter)(sqlite3_mutex *);
   void (*mutex_leave)(sqlite3_mutex *);
   int (*mutex_try)(sqlite3_mutex *);
+  int (*stmt_status)(sqlite3_stmt *, int, int);
   /* Optional: NULL in a library older than 3.34.0. */
   int (*txn_state)(sqlite3 *, const char *);
 } sqlite_api;
@@ -153,6 +155,7 @@ static const struct {
   SYM("mutex_enter", mutex_enter),
   SYM("mutex_leave", mutex_leave),
   SYM("mutex_try", mutex_try),
+  SYM("stmt_status", stmt_status),
   SYM("txn_state", txn_state),
 };
 #define SYMBOL_COUNT (sizeof SYMBOLS / sizeof SYMBOLS[0])
@@ -265,7 +268,9 @@ static bool library_ready(void) {
 /* ---- Connections and their statement cache. ---- */
 
 /* A cached statement. `busy` while a call or a Cursor runs it; `quick` when it may run in a short call: it only
-   reads, gives columns with distinct names, and its sql passes quick_text. */
+   reads, gives columns with distinct names, its sql passes quick_text and its plan has no long instruction, as read
+   when SQLite had prepared it again `checked` times (after a schema change; -1: not read yet). `dirty` when a free
+   function gave it back without its reset, which the next fetch makes. */
 typedef struct {
   char *sql;
   size_t len;
@@ -274,12 +279,20 @@ typedef struct {
   uint64_t used;
   bool busy;
   bool quick;
+  bool dirty;
+  int checked;
 } entry;
 
+/* A statement that a free function could not finalize, left for the next fetch or the last free. */
+typedef struct orphan {
+  sqlite3_stmt *stmt;
+  struct orphan *next;
+} orphan;
+
 /* The C state of a connection, shared by its Conn and its Cursors, and freed when the last of them is (`refs`).
-   `lock` guards refs, closed, the entries and the counters. quick_left and quick_over belong to the quick call
-   that holds SQLite's mutex of the database, the only place they are written, so the progress handler (which runs
-   inside sqlite3_step, under that mutex) reads them safely. */
+   `lock` guards refs, closed, the entries, the orphans and the counters. quick_left and quick_over belong to the
+   quick call that holds SQLite's mutex of the database, the only place they are written, so the progress handler
+   (which runs inside sqlite3_step, under that mutex) reads them safely. */
 typedef struct {
   lock_t lock;
   int refs;
@@ -287,6 +300,7 @@ typedef struct {
   sqlite3 *db;
   entry *entries;
   int capacity;
+  orphan *orphans;
   uint64_t tick, hits, misses, evictions;
   int64_t quick_left;
   bool quick_over;
@@ -324,11 +338,29 @@ static uint64_t hash_text(const char *s, size_t n) {
   return h;
 }
 
+/* Finalizes the orphans; it waits for SQLite's mutex, so only a call on the compute pool or the last free (no one
+   else holds the connection) makes it. */
+static void finalize_orphans(conn *c) {
+  lock_take(&c->lock);
+  orphan *list = c->orphans;
+  c->orphans = NULL;
+  lock_drop(&c->lock);
+  while (list) {
+    orphan *next = list->next;
+    /* finalize gives the error of the statement's last step, which no one asks for. */
+    (void)sq.finalize(list->stmt);
+    free(list);
+    list = next;
+  }
+}
+
 static void conn_unref(conn *c) {
   lock_take(&c->lock);
   bool last = --c->refs == 0;
   lock_drop(&c->lock);
   if (!last) return;
+  /* The connection closed already (conn_free); the last orphan finalized closes its zombie. */
+  finalize_orphans(c);
   for (int i = 0; i < c->capacity; i++) free(c->entries[i].sql);
   free(c->entries);
   lock_destroy(&c->lock);
@@ -416,7 +448,7 @@ static bool distinct_names(sqlite3_stmt *stmt, int *repeated) {
 /* Puts a statement that was just prepared into the cache, evicting the one used least long ago that no one runs;
    the entry (marked busy), or NULL when the cache is off, full of busy statements, or already holds that sql. The
    evicted statement goes to *EVICTED, which the caller finalizes outside the lock. Under c->lock. */
-static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite3_stmt *stmt, bool quick,
+static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite3_stmt *stmt,
                      sqlite3_stmt **evicted) {
   *evicted = NULL;
   if (c->capacity == 0 || cached(c, sql, len, hash)) return NULL;
@@ -438,7 +470,7 @@ static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite
     free(slot->sql);
     c->evictions++;
   }
-  *slot = (entry){copy, len, hash, stmt, ++c->tick, true, quick};
+  *slot = (entry){copy, len, hash, stmt, ++c->tick, true, false, false, -1};
   return slot;
 }
 
@@ -486,10 +518,46 @@ static void conn_free(void *state) {
   conn_unref(c);
 }
 
+/* Gives a statement back from a free function, which never waits for SQLite's mutex: the VM runs it under its own
+   lock, so a wait there stops every scheduler for the whole step of another thread. Without the mutex a cached
+   statement goes back dirty (the next fetch resets it) and another one, or one of a closed connection, becomes an
+   orphan. It never finalizes: the last finalize of a closed connection frees the mutex, and only a statement that is
+   not reset needs one here. */
+static void give_back(conn *c, sqlite3_stmt *stmt, entry *e) {
+  sqlite3_mutex *m = sq.db_mutex(c->db);
+  bool reset = sq.mutex_try(m) == SQLITE_OK;
+  if (reset) {
+    /* reset gives the error of the last step again, which the cursor's query has read already. */
+    (void)sq.reset(stmt);
+    (void)sq.clear_bindings(stmt);
+    sq.mutex_leave(m);
+  }
+  orphan *node = NULL;
+  lock_take(&c->lock);
+  bool kept = e && !c->closed;
+  if (kept) {
+    e->busy = false;
+    e->dirty = !reset;
+  } else {
+    if (e) {
+      free(e->sql);
+      *e = (entry){0};
+    }
+    node = malloc(sizeof *node);
+    if (node) {
+      *node = (orphan){stmt, c->orphans};
+      c->orphans = node;
+    }
+  }
+  lock_drop(&c->lock);
+  /* Out of memory for the node: the one case that waits rather than leaks. */
+  if (!kept && !node) (void)sq.finalize(stmt);
+}
+
 static void cursor_free(void *state) {
   cursor_state *cur = state;
   if (!cur->c) return;
-  if (cur->stmt) release(cur->c, cur->stmt, cur->e, true, false);
+  if (cur->stmt) give_back(cur->c, cur->stmt, cur->e);
   conn_unref(cur->c);
 }
 
@@ -596,12 +664,14 @@ static bool lock_code(int code) { return code == SQLITE_BUSY || code == SQLITE_L
 
 /* ---- Binding and reading. ---- */
 
-/* Binds PARAMS (a List[Value], argument ARG of the call); false with the failure in F. The text of a failed bind
-   comes from its code, not from the connection's last message, which another thread may have set meanwhile. */
-static bool bind_all(an_env *env, sqlite3_stmt *stmt, an_term params, int arg, failure *f) {
+/* Binds PARAMS (a List[Value], argument ARG of the call); false with the failure in F, or with *OVER when the texts
+   and blobs have more than LIMIT bytes in all. The text of a failed bind comes from its code, not from the
+   connection's last message, which another thread may have set meanwhile. */
+static bool bind_all(an_env *env, sqlite3_stmt *stmt, an_term params, int arg, size_t limit, bool *over, failure *f) {
   an_list_cursor walk;
-  size_t count;
+  size_t count, bound = 0;
   an_term item;
+  *over = false;
   if (!an_list_cursor_begin(env, params, &walk, &count)) {
     (void)an_badarg(env, arg);
     fail_input(f, "the parameters are not a list");
@@ -640,12 +710,22 @@ static bool bind_all(an_env *env, sqlite3_stmt *stmt, an_term params, int arg, f
       break;
     case V_TEXT:
       if (an_get_string(env, payload, &data, &len)) {
+        if (len > limit - bound) {
+          *over = true;
+          return false;
+        }
+        bound += len;
         /* A NULL pointer would bind NULL: an empty text needs a real one. SQLite copies the text (transient). */
         rc = sq.bind_text64(stmt, index, data ? data : "", len, SQLITE_TRANSIENT, SQLITE_UTF8);
       }
       break;
     case V_BLOB:
       if (an_get_bytes(env, payload, &bytes, &len)) {
+        if (len > limit - bound) {
+          *over = true;
+          return false;
+        }
+        bound += len;
         rc = len == 0 ? sq.bind_zeroblob(stmt, index, 0) : sq.bind_blob64(stmt, index, bytes, len, SQLITE_TRANSIENT);
       }
       break;
@@ -822,40 +902,71 @@ static bool long_instruction(conn *c, const char *sql, size_t len) {
   return found;
 }
 
+/* Whether a statement may run in a short call (entry.quick). */
+static bool quick_plan(conn *c, sqlite3_stmt *stmt, const char *sql, size_t len) {
+  int repeated;
+  return sq.stmt_readonly(stmt) && sq.column_count(stmt) > 0 && quick_text(sql, len) &&
+         distinct_names(stmt, &repeated) && !long_instruction(c, sql, len);
+}
+
 /* The statement of SQL for a fetch: the cached one when it is idle, else a new one, cached when there is room (and
    CACHE: the settings that `open` runs once are not). NULL with the failure in O. */
 static sqlite3_stmt *acquire(conn *c, const char *sql, size_t len, bool cache, entry **e, outcome *o) {
   *e = NULL;
   if (!cache) return prepare(c, sql, len, o);
   uint64_t hash = hash_text(sql, len);
+  bool dirty = false;
   lock_take(&c->lock);
   *e = find_idle(c, sql, len, hash);
   if (*e) {
     c->hits++;
+    dirty = (*e)->dirty;
+    (*e)->dirty = false;
   } else {
     c->misses++;
   }
   lock_drop(&c->lock);
-  if (*e) return (*e)->stmt;
-  sqlite3_stmt *stmt = prepare(c, sql, len, o);
-  if (!stmt) return NULL;
-  int repeated;
-  bool quick = sq.stmt_readonly(stmt) && sq.column_count(stmt) > 0 && quick_text(sql, len) &&
-               distinct_names(stmt, &repeated) && !long_instruction(c, sql, len);
-  sqlite3_stmt *evicted;
-  lock_take(&c->lock);
-  *e = insert(c, sql, len, hash, stmt, quick, &evicted);
-  lock_drop(&c->lock);
-  if (evicted) (void)sq.finalize(evicted);
+  sqlite3_stmt *stmt;
+  if (*e) {
+    stmt = (*e)->stmt;
+    if (dirty) {
+      sqlite3_mutex *m = sq.db_mutex(c->db);
+      sq.mutex_enter(m);
+      /* The error of the last step again, which its query read already. */
+      (void)sq.reset(stmt);
+      (void)sq.clear_bindings(stmt);
+      sq.mutex_leave(m);
+    }
+  } else {
+    stmt = prepare(c, sql, len, o);
+    if (!stmt) return NULL;
+    sqlite3_stmt *evicted;
+    lock_take(&c->lock);
+    *e = insert(c, sql, len, hash, stmt, &evicted);
+    lock_drop(&c->lock);
+    if (evicted) (void)sq.finalize(evicted);
+  }
+  /* The plan is read for a new entry, and again when SQLite has prepared the statement again since (a schema change
+     can bring in a long instruction). The entry is busy, so this call is its only reader meanwhile. */
+  int prepared = sq.stmt_status(stmt, SQLITE_STMTSTATUS_REPREPARE, 0);
+  if (*e && prepared != (*e)->checked) {
+    bool quick = quick_plan(c, stmt, sql, len);
+    lock_take(&c->lock);
+    (*e)->quick = quick;
+    (*e)->checked = prepared;
+    lock_drop(&c->lock);
+  }
   return stmt;
 }
 
-static bool check_names(sqlite3_stmt *stmt, outcome *o) {
+/* False with the failure in O when two columns of the result have one name; RAN says that the statement has written
+   already. */
+static bool check_names(sqlite3_stmt *stmt, outcome *o, bool ran) {
   int repeated;
   if (distinct_names(stmt, &repeated)) return true;
   char message[sizeof o->why.text - 32];
-  snprintf(message, sizeof message, "the result has the column %s twice, alias one of them",
-           sq.column_name(stmt, repeated));
+  snprintf(message, sizeof message, "%sthe result has the column %s twice, alias one of them",
+           ran ? "the statement ran, but " : "", sq.column_name(stmt, repeated));
   o->code = -1;
   fail_input(&o->why, message);
   return false;
@@ -994,6 +1105,8 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
   if (!an_get_resource(env, argv[1], CURSOR, (void **)&cur) || cur->c != c) return an_badarg(env, 1);
   if (!an_get_string(env, argv[2], &sql, &len)) return an_badarg(env, 2);
   if (!read_options(env, argv[4], &opt)) return an_badarg(env, 4);
+  /* The statements that free functions could not finalize go here, on the compute pool. */
+  finalize_orphans(c);
   an_list_begin(env, &rows, 0);
   o.readonly = true;
   if (!cur->stmt) {
@@ -1001,9 +1114,10 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
     entry *e = NULL;
     sqlite3_stmt *stmt = acquire(c, sql, len, opt.cache, &e, &o);
     if (!stmt) return batch(env, &o, an_list_end(env, &rows));
-    /* The names are checked before the statement runs too, so that a write whose result cannot be read is refused
-       before it writes. */
-    if (!bind_all(env, stmt, argv[3], 3, &o.why) || (opt.keep && !check_names(stmt, &o))) {
+    /* The names are checked before the first step too, so that a write whose result cannot be read is refused
+       before it writes; after a schema change only the first step shows the new columns (see below). */
+    bool over;
+    if (!bind_all(env, stmt, argv[3], 3, SIZE_MAX, &over, &o.why) || (opt.keep && !check_names(stmt, &o, false))) {
       if (o.code == 0) o.code = -1;
       release(c, stmt, e, true, false);
       cur->started = true;
@@ -1023,8 +1137,11 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
     if (rc == SQLITE_ROW) {
       if (!opt.keep) continue;
       /* The columns are read after the step: SQLite prepares a statement again when the schema changed, and the new
-         one may have other columns than before it ran. */
-      if (!named && !check_names(stmt, &o)) {
+         one may have other columns than before it ran. A write has run by its first row, and a reset would keep it
+         too, so it runs to its end and the error says that it ran. */
+      if (!named && !check_names(stmt, &o, !o.readonly)) {
+        outcome rest = {0};
+        while (!o.readonly && step(c, stmt, &rest) == SQLITE_ROW) continue;
         release(c, stmt, cur->e, true, false);
         cur->stmt = NULL;
         break;
@@ -1085,7 +1202,8 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   if (!read_options(env, argv[3], &opt)) return an_badarg(env, 3);
   if (!opt.cache || opt.quick_steps <= 0 || opt.quick_rows <= 0 || !lock_try(&c->lock)) return an_none(env);
   entry *e = find_idle(c, sql, len, hash_text(sql, len));
-  if (e && !e->quick) {
+  /* A dirty entry needs its reset, which may wait: fetch makes it. */
+  if (e && (!e->quick || e->dirty)) {
     e->busy = false;
     e = NULL;
   }
@@ -1098,13 +1216,21 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
     release(c, stmt, e, false, false);
     return an_none(env);
   }
-  bool done = false, fallback = false;
+  if (sq.stmt_status(stmt, SQLITE_STMTSTATUS_REPREPARE, 0) != e->checked) {
+    /* SQLite prepared it again since its plan was read: fetch reads the plan again. */
+    sq.mutex_leave(m);
+    release(c, stmt, e, false, false);
+    return an_none(env);
+  }
+  bool done = false, fallback = false, over;
   an_list_builder rows;
   an_list_begin(env, &rows, 0);
   columns cols;
-  if (!bind_all(env, stmt, argv[2], 2, &o.why)) {
-    o.code = -1;
-    done = true;
+  /* Big bound data can take long in one instruction (a JSON function over it): past QUICK_BYTES fetch runs it. */
+  if (!bind_all(env, stmt, argv[2], 2, QUICK_BYTES, &over, &o.why)) {
+    fallback = over;
+    done = !over;
+    if (!over) o.code = -1;
   } else {
     int64_t count = 0, bytes = 0;
     int64_t cap = opt.rows < opt.quick_rows ? opt.rows : opt.quick_rows;

@@ -161,7 +161,11 @@ def run(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], opt
       end
 
       if batch.upgrade or not SqliteWait.lock_wait?(wait, batch.code, batch.extended, started)
-        finish(conn, cur)
+        # Only a lock leaves the statement with the cursor; fetch gave back any other.
+        if SqliteWait.lock_code?(batch.code)
+          finish(conn, cur)
+        end
+
         Native.close(cur)
         return error(batch.failure)
       end
