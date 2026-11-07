@@ -4,6 +4,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A native PostgreSQL driver (`src/db/native/db_postgres.c`, an Agentica native module, the default for PostgreSQL
+  urls): libpq in its non-blocking mode, so a query waits on the socket and takes no compute call, a cache of prepared
+  statements per connection, and many rows per call. A one-row query costs about half of the FFI driver's, a query of
+  1000 rows about a quarter. Url parameters `statement_cache`, `batch_rows` and `batch_bytes`;
+  `AGENTICA_DB_POSTGRES_DRIVER=native` or `ffi` picks the driver.
+- With the native PostgreSQL driver, a query after one that a cancelled task left on the connection cancels it on the
+  server and goes on, and queries of several tasks on one connection run one after the other.
+
 ## [0.6.0] - 2026-11-07
 
 Needs Agentica 0.26.1 or later (native modules), and a C compiler where the package is first run or compiled.

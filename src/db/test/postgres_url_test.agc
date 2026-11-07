@@ -63,6 +63,33 @@ def main() -> Void
       try Test.eq(conninfo_of("host=h oops"), "host=h oops")
       return Test.eq(target_of("host=h oops").timeout_ms, 0)
     end,
+    Test.test("statement_cache, batch_rows and batch_bytes are taken out of a url and a conninfo string") do
+      url = target_of("postgres://u@h/app?statement_cache=0&sslmode=disable&batch_rows=7&batch_bytes=4096")
+      try Test.eq(url.conninfo, "postgres://u@h/app?sslmode=disable")
+      try Test.eq([url.statement_cache, url.batch_rows, url.batch_bytes], [0, 7, 4096])
+      words = target_of("host=h statement_cache='5' batch_rows=1 user=u")
+      try Test.eq(words.conninfo, "host=h user=u")
+      try Test.eq([words.statement_cache, words.batch_rows, words.batch_bytes], [5, 1, 262_144])
+      plain = target_of("postgres://h/app")
+      return Test.eq([plain.statement_cache, plain.batch_rows, plain.batch_bytes], [100, 100, 262_144])
+    end,
+    Test.test("a statement_cache, batch_rows or batch_bytes out of its range is an error") do
+      try Test.eq(
+        PostgresUrl.parse("postgres://h/app?statement_cache=10001").message,
+        "postgres error: the url statement_cache is over 10000: 10001",
+      )
+
+      try Test.eq(PostgresUrl.parse("host=h batch_rows=0").message, "postgres error: the url batch_rows is below 1: 0")
+      try Test.eq(
+        PostgresUrl.parse("postgres://h/app?batch_bytes=-1").message,
+        "postgres error: the url batch_bytes is not a whole number",
+      )
+
+      return Test.eq(
+        PostgresUrl.parse("postgres://h/app?statement_cache=1e3").message,
+        "postgres error: the url statement_cache is not a whole number",
+      )
+    end,
     Test.test("a timeout_ms that is not a number of milliseconds is an error that repeats no part of the url") do
       message = "postgres error: the url timeout_ms is not a number of milliseconds"
       try Test.eq(PostgresUrl.parse("postgres://u:hunter2@h/app?timeout_ms=soon").message, message)

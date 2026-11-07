@@ -1,31 +1,10 @@
-## The PostgreSQL adapter, through the system libpq.
-##
-## `open` gives a `Connection`, which the task that opened it owns. Close it with `close`, or the end of the task
-## closes it (PQfinish, the free function of the connection resource). A closed handle gives
-## `postgres error: the connection is closed`.
-##
-## `timeout_ms` (a parameter of the url or key of the conninfo, which libpq never sees, and an argument of `query` and
-## `execute`) is the `statement_timeout` of the session: a statement that runs longer fails with `postgres error 57014:
-## canceling statement due to statement timeout`, and the connection works after it. A call with its own limit sets it
-## before the statement and puts the limit of the connection back after it (the server's own when the url sets none),
-## in two more round trips; a call that asks for the limit it has costs none, and so does a statement that begins or
-## ends a transaction or is a SET, which runs under the limit of the session. A `timeout_ms` of 0 (`NO_TIMEOUT`) lifts
-## the limit of the url, but not one that the server sets on its own when the url has none. A `SET statement_timeout`
-## you run yourself is undone by the put-back of the next call that has its own limit, and so is a `SELECT
-## set_config('statement_timeout', ...)`, which is a statement like any other. A `SET LOCAL statement_timeout` is lost
-## the same way: the call's own limit replaces it for the rest of the transaction, and the put-back restores the limit
-## of the connection, not yours.
-##
-## An engine failure is `postgres error <sqlstate>: <message>`, with the five character SQLSTATE of the server
-## (`23505` for a unique violation) and its primary message. A failure without a SQLSTATE (the connection is lost,
-## `open` fails) and a bad input are `postgres error: <message>`.
+## The FFI driver of the PostgreSQL adapter: libpq through `extern "pq"`, one call per value, and a compute call for
+## each wait for the server. The adapter runs it where the native module (`native.agc`) does not load, or when
+## `AGENTICA_DB_POSTGRES_DRIVER=ffi`.
 
-import PostgresSql from "sql"
-import PostgresUrl from "url"
+import PostgresStatement from "statement"
 import {Row, Value} from "../support/value"
 
-## The statement that starts a transaction.
-export BEGIN_SQL = "BEGIN"
 CONNECTION_OK = 0
 PGRES_EMPTY_QUERY = 0
 PGRES_COMMAND_OK = 1
@@ -50,28 +29,11 @@ IS_NULL = 1
 COPY_BLOCKING = 0
 NO_MORE_COPY_DATA = 0
 HEX_BASE = 16
-# PGTransactionStatusType: a transaction is open (INTRANS) or failed (INERROR).
-PQTRANS_INTRANS = 2
-PQTRANS_INERROR = 3
-PQTRANS_UNKNOWN = 4
-# The verbs of the statements that begin, end or step inside a transaction, and `set` (`SET TRANSACTION` fails after
-# any other statement of the transaction, 25001).
-TRANSACTION_VERBS = Set.new(["begin", "start", "commit", "end", "rollback", "abort", "savepoint", "release", "set"])
-SET_TIMEOUT_SQL = "SELECT set_config('statement_timeout', ?, false)"
-ABORTED_COMMIT_SQLSTATE = "25P02"
-ACTIVE_TRANSACTION_SQLSTATE = "25001"
 # The statements whose command tag counts rows changed; a SELECT counts rows too, but execute does not report them.
 COUNTING_TAGS = Set.new(["INSERT", "UPDATE", "DELETE", "MERGE"])
 HEX_DIGITS = "0123456789abcdef"
 # Far past the range of a double: a decimal string this long reads as infinity or zero.
 EXPONENT_LIMIT = 400
-
-## An open connection and the `statement_timeout` it was opened with (0: none). `handle` is public because a struct
-## has no private fields: treat it as opaque and pass the `Connection` around.
-export struct Connection
-  handle: Handle
-  timeout_ms: Int = 0
-end
 
 # The libpq names start with a capital letter, which a def name cannot, so each def says its C name.
 extern "pq"
@@ -106,85 +68,24 @@ extern "pq"
   compute def pq_get_result(conn: Handle) -> C.Pointer = "PQgetResult"
 end
 
-## Connects with a `postgres://` or `postgresql://` url, which libpq parses (`?sslmode=disable`, `connect_timeout`
-## and the other parameters of the url work as in libpq), or with a conninfo string. `timeout_ms` is read here, not by
-## libpq. The client encoding is set to UTF8.
-export def open(url: String) -> Result[Connection]
-  if has_nul?(url)
-    return error("postgres error: the url contains a NUL character")
-  end
-
-  target = try PostgresUrl.parse(url)
+## Connects with what libpq takes (a url or a conninfo string) and sets the client encoding to UTF8.
+export def open(conninfo: String) -> Result[Handle]
   try load_library()
-  case pq_connectdb(target.conninfo)
+  case pq_connectdb(conninfo)
     error(_) -> return error("postgres error: out of memory")
     ok(handle) ->
       try check_connection(handle)
-      conn = Connection(handle: handle, timeout_ms: target.timeout_ms)
-      try limit_session(conn)
-      return ok(conn)
+      return ok(handle)
   end
 end
 
-## Closes the connection; closing it again does nothing.
-export def close(conn: Connection) -> Void
-  Native.close(conn.handle)
+## PQstatus and PQtransactionStatus of the connection, as `status * 16 + transaction status`.
+export def status(handle: Handle) -> Int
+  return pq_status(handle) * 16 + pq_transaction_status(handle)
 end
 
-## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
-## Two columns with one name are an error: alias them. `timeout_ms` is the limit of this call: -1 takes the one of
-## the connection, 0 is none.
-export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
-  return limited(conn, timeout_ms, sql) do run_query(conn.handle, sql, params) end
-end
-
-## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
-## `timeout_ms` is as in `query`.
-export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
-  return limited(conn, timeout_ms, sql) do run_execute(conn.handle, sql, params) end
-end
-
-## Whether a transaction is open or failed and waits for its ROLLBACK, as libpq knows it: no round trip. A closed
-## connection is not in one.
-export def in_transaction?(conn: Connection) -> Bool
-  if Native.closed?(conn.handle)
-    return false
-  end
-
-  status = pq_transaction_status(conn.handle)
-  return status == PQTRANS_INTRANS or status == PQTRANS_INERROR
-end
-
-## Whether libpq still has the connection up, from its own state and with no round trip: it is open, its status is OK
-## and the transaction status is known. A connection the server ended shows here after the first call that fails on it.
-export def connected?(conn: Connection) -> Bool
-  if Native.closed?(conn.handle) or pq_status(conn.handle) != CONNECTION_OK
-    return false
-  end
-
-  return pq_transaction_status(conn.handle) != PQTRANS_UNKNOWN
-end
-
-## Whether the connection works: libpq says it is up and the server answers `SELECT 1`. A failed transaction is
-## healthy, since the connection is.
-export def healthy?(conn: Connection) -> Bool
-  if Native.closed?(conn.handle) or pq_status(conn.handle) != CONNECTION_OK
-    return false
-  end
-
-  status = pq_transaction_status(conn.handle)
-  if status == PQTRANS_UNKNOWN
-    return false
-  end
-
-  if status == PQTRANS_INERROR
-    return true
-  end
-
-  return run_query(conn.handle, "SELECT 1", []).ok?
-end
-
-def run_query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
+## Runs one statement with bound parameters and gives its rows. Two columns with one name are an error.
+export def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
   res = try run(handle, sql, params)
   names = column_names(res)
   if names.uniq.size != names.size
@@ -197,66 +98,12 @@ def run_query(handle: Handle, sql: String, params: List[Value]) -> Result[List[R
   return rows
 end
 
-def run_execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
+## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
+export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
   res = try run(handle, sql, params)
   changed = changed_rows(res)
   pq_clear(res)
   return changed
-end
-
-# Runs `body` under the limit of the call. A limit other than the session's is set before and put back after, also
-# when the body failed. A statement that controls a transaction runs under the limit of the session: a SET before a
-# BEGIN would stay out of the transaction while its put-back went in, and a ROLLBACK of an aborted transaction cannot
-# be preceded by any other statement. The put-back is not part of the result. It runs under the short limit of the
-# call, so it can fail like any statement: on a lost connection (the next call says so), in a transaction that the
-# body's failure aborted (the rollback undoes the SET too), or on a timeout of its own; the connection then keeps the
-# limit of the call until the next put-back.
-def limited[R](conn: Connection, timeout_ms: Int, sql: String, body: Fn[Result[R]]) -> Result[R]
-  if timeout_ms < 0 or timeout_ms == conn.timeout_ms or controls_transaction?(sql)
-    return body.call()
-  end
-
-  try set_statement_timeout(conn.handle, timeout_ms)
-  done = body.call()
-  put_back_statement_timeout(conn)
-  return done
-end
-
-def controls_transaction?(sql: String) -> Bool
-  case PostgresSql.translate(sql)
-    error(_) -> return false
-    ok(translated) -> return TRANSACTION_VERBS.include?(translated.verb)
-  end
-end
-
-def limit_session(conn: Connection) -> Result[Void]
-  if conn.timeout_ms == 0
-    return ok()
-  end
-
-  set = set_statement_timeout(conn.handle, conn.timeout_ms)
-  case set
-    ok(_) -> return ok()
-    error(message) ->
-      Native.close(conn.handle)
-      return error(message)
-  end
-end
-
-# `set_config` takes the value as a parameter, which `SET` does not.
-def set_statement_timeout(handle: Handle, ms: Int) -> Result[Void]
-  try run_query(handle, SET_TIMEOUT_SQL, [Value.Text(ms.to_s)])
-  return ok()
-end
-
-# The limit of the url, or, when the url sets none, whatever the server gives the session (a role or database setting,
-# or the `options` of the url): a NULL value resets the variable to that.
-def put_back_statement_timeout(conn: Connection) -> Void
-  if conn.timeout_ms > 0
-    _ = set_statement_timeout(conn.handle, conn.timeout_ms)
-  else
-    _ = run_query(conn.handle, SET_TIMEOUT_SQL, [Value.Null])
-  end
 end
 
 # A library that is missing is an error here, not a stop of the program at the first call.
@@ -292,71 +139,15 @@ def repeated_name(names: List[String]) -> String
   return names.find do |name| counts[name] > 1 end.unwrap_or("")
 end
 
-# A call with a closed resource stops the program, so a closed handle is turned into an error first.
-def check_open(handle: Handle) -> Result[Void]
-  if Native.closed?(handle)
-    return error("postgres error: the connection is closed")
-  end
-
-  return ok()
-end
-
-# The result of a statement that succeeded. The caller clears it.
+# The result of a statement that succeeded. The caller clears it. The adapter has checked that the handle is open.
 def run(handle: Handle, sql: String, params: List[Value]) -> Result[C.Pointer]
-  try check_open(handle)
-  translated = try PostgresSql.translate(sql)
-  if translated.count != params.size
-    wanted = translated.count
-    return error("postgres error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
-  end
-
-  try check_params(params)
-  verb = translated.verb
-  try check_begin(handle, verb)
+  translated = try PostgresStatement.check(sql, params, pq_transaction_status(handle))
   res = exec_params(handle, translated.sql, params)
   if Native.null?(res)
     return error("postgres error: #{pq_error_message(handle).strip}")
   end
 
-  return accept(handle, res, verb)
-end
-
-# PostgreSQL only warns about a BEGIN inside a transaction, and the inner COMMIT would then end the outer one:
-# transactions do not nest here, as in the other adapters.
-def check_begin(conn: Handle, verb: String) -> Result[Void]
-  status = pq_transaction_status(conn)
-  if (verb == "begin" or verb == "start") and (status == PQTRANS_INTRANS or status == PQTRANS_INERROR)
-    return error("postgres error #{ACTIVE_TRANSACTION_SQLSTATE}: a transaction is already in progress")
-  end
-
-  return ok()
-end
-
-def noun(count: Int) -> String
-  if count == 1
-    return "parameter"
-  end
-
-  return "parameters"
-end
-
-def check_params(params: List[Value]) -> Result[Void]
-  for param in params
-    case param
-      Value.Text(text) ->
-        if has_nul?(text)
-          return error("postgres error: a text parameter contains a NUL character")
-        end
-
-      Value.Null -> next
-      Value.Int(_) -> next
-      Value.Float(_) -> next
-      Value.Bool(_) -> next
-      Value.Blob(_) -> next
-    end
-  end
-
-  return ok()
+  return accept(handle, res, translated.verb)
 end
 
 # Parameters travel as text and the server infers their types from the sql. A NULL entry of the value array is
@@ -463,15 +254,13 @@ def accept(conn: Handle, res: C.Pointer, verb: String) -> Result[C.Pointer]
   return error(message)
 end
 
-# A COMMIT of a transaction that failed does not fail: the server rolls it back and says ROLLBACK. The data is
-# lost, so the call must not look like a commit.
 def check_commit(res: C.Pointer, verb: String) -> Result[C.Pointer]
-  if pq_cmd_status(res) == "ROLLBACK" and (verb == "commit" or verb == "end")
-    pq_clear(res)
-    return error("postgres error #{ABORTED_COMMIT_SQLSTATE}: the transaction failed, COMMIT rolled it back")
+  case PostgresStatement.check_commit(pq_cmd_status(res), verb)
+    ok(_) -> return ok(res)
+    error(message) ->
+      pq_clear(res)
+      return error(message)
   end
-
-  return ok(res)
 end
 
 # The code is the SQLSTATE of the server; a failure that libpq makes itself has none.
@@ -670,9 +459,4 @@ def place_point(digits: String, point: Int) -> String
   end
 
   return digits.slice(0, point) + "." + digits.slice(point, digits.length - point)
-end
-
-# A NUL ends a C.String early, and the VM stops the program at the call (RUNTIME-INVALID-CHARACTER).
-def has_nul?(text: String) -> Bool
-  return text.include?(String.from_code(0))
 end

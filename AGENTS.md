@@ -1,8 +1,8 @@
 # agentica-db
 
-One database API for Agentica and one adapter per database, through the C FFI, and for SQLite also a native module of
-ours (`src/db/native/db_sqlite.c`, the only C code of the repository, which Agentica builds at the first run; the FFI
-driver stays for a run without the built library). The repository
+One database API for Agentica and one adapter per database, through the C FFI, and for SQLite and PostgreSQL also a
+native module of ours (`src/db/native/`, the only C code of the repository, which Agentica builds at the first run; the
+FFI driver stays for a run without the built library). The repository
 is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
 
 ```text
@@ -16,10 +16,13 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
   sqlite/      sqlite.agc (the adapter: picks a driver, the settings, timeouts), native.agc (the driver over the
                native module), ffi.agc (the driver over extern calls), wait.agc (the wait for a lock, shared),
                url.agc (the parameters of the url), lock.agc (the lock rule)
-  native/      db_sqlite.c, the native module ([native.db_sqlite] build): it opens the system SQLite itself
-               (dlopen), so a build needs only a C compiler; specs/statement_cache.feature (tag @native)
-  postgres/    postgres.agc, sql.agc (the placeholder scanner), url.agc (it takes timeout_ms out of the url
-               before libpq sees it)
+  native/      db_sqlite.c and db_postgres.c, the native modules ([native.db_sqlite] and [native.db_postgres]
+               build): each opens the system library itself (dlopen), so a build needs only a C compiler;
+               specs/statement_cache.feature and specs/postgres_native.feature (tag @native)
+  postgres/    postgres.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module),
+               ffi.agc (the driver over extern calls), statement.agc (the checks both drivers make), sql.agc (the
+               placeholder scanner), url.agc (it takes the parameters of the adapter out of the url before libpq
+               sees it)
   mysql/       mysql.agc, sql.agc (the statement scanner), url.agc
   orm/         build.agc (the sql of the query builder), codec.agc (row to Json for T.codec), dialect.agc
                (identifier names and quotes), errors.agc
@@ -49,8 +52,11 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
   `.github/workflows/ci.yml`, the one of the tag 0.26.1 (`.github/actions/agentica`); a version bump sets it to the
   commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
-  sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver (CI does both). A C change: C11, every
-  SQLite return code checked, every statement and connection freed exactly once, also on the error paths.
+  sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver (CI does both). PostgreSQL the same, with
+  `AGENTICA_DB_POSTGRES_DRIVER=ffi agentica test --only "on postgres" --tags "not @native"` and `agentica test
+  specs/postgres.feature`. A C change: C11, every return code of the library checked, every statement, result and
+  connection freed exactly once, also on the error paths; a free function never waits (no lock that a call holds, no
+  socket I/O that can block).
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
   itself). `make check` (from the root) runs `agentica check *.agc sqlite postgres mysql support orm examples specs

@@ -8,10 +8,10 @@ import Db from "../db"
 import DbPool from "../db_pool"
 import Migrate from "../migrate"
 import Orm from "../orm"
+import Postgres from "../postgres/postgres"
 import Protocol from "protocol"
 import {Request} from "protocol"
 import Sqlite from "../sqlite/sqlite"
-import SqliteNative from "../sqlite/native"
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
@@ -293,6 +293,8 @@ def act(state: State, req: Request) -> Handled
     "on_other" -> return reply_ok(on_other(state, req))
     "query_big_json" -> return reply_ok(query_big_json(state, req))
     "statement_cache" -> return reply_ok(statement_cache(state))
+    "cancel_task" -> return reply_ok(cancel_task(state, req))
+    "query_each" -> return reply_ok(query_each(state, req))
     "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
     "round_trips" -> return round_trips(state, req.table)
     "float_oracle" -> return float_oracle(state, req.text)
@@ -1587,29 +1589,69 @@ def query_repeated(job: Job) -> Result[List[Db.Row]]
   return ok(first)
 end
 
-# The counters of the statement cache of the SQLite connection, as one row.
+# The counters of the statement cache of the connection, as one row.
 def statement_cache(state: State) -> State
   return with_conn(state) do |conn|
     case conn
-      Db.Connection.Sqlite(sqlite) -> return cache_row(state, Sqlite.statement_cache(sqlite))
-      _ -> return failed(state, "only a SQLite connection has a statement cache")
+      Db.Connection.Sqlite(sqlite) ->
+        found = Sqlite.statement_cache(sqlite).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
+        return cache_row(state, found)
+      Db.Connection.Postgres(postgres) ->
+        found = Postgres.statement_cache(postgres).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
+        return cache_row(state, found)
+      _ -> return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
     end
   end
 end
 
-def cache_row(state: State, found: Optional[SqliteNative.CacheStats]) -> State
+def cache_row(state: State, found: Optional[List[Int]]) -> State
   case found
     none -> return failed(state, "the FFI driver has no statement cache")
-    some(stats) ->
-      row = {
-        "size": Db.Value.Int(stats.size),
-        "capacity": Db.Value.Int(stats.capacity),
-        "hits": Db.Value.Int(stats.hits),
-        "misses": Db.Value.Int(stats.misses),
-        "evictions": Db.Value.Int(stats.evictions),
-      }
+    some(counts) ->
+      names = ["size", "capacity", "hits", "misses", "evictions"]
+      row: Db.Row = {}
+      for i in 0...names.size
+        row = row.put(names[i], Db.Value.Int(counts[i]))
+      end
 
       return recorded(state, Outcome.Rows([row]))
+  end
+end
+
+# A task runs `req.text` on the connection and is cancelled after `req.number` ms. With a query in `req.cells`, then
+# its rows, unless it took `req.cells[1]` ms or more: the cancelled statement must not hold it up.
+def cancel_task(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    task = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    Task.sleep(req.number)
+    Task.cancel(task)
+    if req.cells.empty?
+      return recorded(state, Outcome.Done)
+    end
+
+    started = Time.monotonic_ms()
+    rows = Db.query(conn, Cells.expand(req.cells[0]), [])
+    took = Time.monotonic_ms() - started
+    if took >= req.cells[1].to_i!
+      return failed(state, "the query took #{took} ms after the cancel")
+    end
+
+    return recorded_rows(state, rows)
+  end
+end
+
+# Queries `req.text` with `[N]` replaced by each number from 1 to `req.number`; the rows of the last.
+def query_each(state: State, req: Request) -> State
+  return with_conn(state) do |conn|
+    rows: Result[List[Db.Row]] = ok([])
+    for n in 1..req.number
+      rows = Db.query(conn, Cells.expand(req.text.replace("[N]", n.to_s)), [])
+      if not rows.ok?
+        return recorded_rows(state, rows)
+      end
+    end
+
+    return recorded_rows(state, rows)
   end
 end
 
