@@ -110,16 +110,6 @@ jobs:
           (cd src/db && agentica test --jobs 4 --only "on mysql" --tags "not @native")
           (cd src/db && agentica test --jobs 4 specs/mysql.feature)
 
-      # TEMPORARY (removed before merge): the MySQL measurement of the pull request, native and FFI in turn.
-      - name: Measure the MySQL drivers
-        env:
-          AGENTICA_DB_MYSQL_URL: mysql://root:pw@127.0.0.1:3306/mysql
-        run: |
-          cd src/db
-          for round in 1 2 3 4; do
-            for driver in native ffi; do AGENTICA_DB_MYSQL_DRIVER=$driver agentica bench_mysql.agc; done
-          done
-
   # The SQLite scenarios on macOS and Windows. A service container runs on Linux only, so the PostgreSQL and MySQL
   # scenarios stay in the job above; here `--only "on sqlite"` keeps the SQLite ones (every one has that in its name).
   # SQLite is the system library: libsqlite3.dylib on macOS, winsqlite3.dll in System32 on Windows.

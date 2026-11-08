@@ -111,8 +111,9 @@ Feature: MySQL native driver
       | a     | b     |
       | Int 1 | Int 7 |
 
-  # Another connection changes the table: the server prepares the cached statement again by itself, and the library
-  # reads the new columns. The table is a real one, which the other connections see; its name is this feature's own.
+  # Another connection adds a column: the cached statement fails with 2057 (more columns than it was prepared with),
+  # and the driver prepares it again and runs it once more. The table is a real one, which the other connections see;
+  # its name is this feature's own.
   Scenario: A cached statement whose table another connection changed reads its new columns on mysql
     Given a "mysql" database
     When a connection of its own to "[URL]" executes "drop table if exists agentica_db_mysql_native_t"
