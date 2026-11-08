@@ -76,7 +76,7 @@ enum {
   SQLITE_UTF8 = 1,
   SQLITE_TXN_READ = 1,
   SQLITE_STMTSTATUS_VM_STEP = 4,
-  SQLITE_DBSTATUS_CACHE_SPILL = 12,
+  SQLITE_DBSTATUS_CACHE_WRITE = 9,
   SQLITE_STMTSTATUS_REPREPARE = 5,
   SQLITE_OPEN_NOMUTEX = 0x8000,
   SQLITE_OPEN_FULLMUTEX = 0x10000,
@@ -1828,10 +1828,11 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
     c->quick_left = writes ? 0 : opt.quick_steps > PROGRESS_OPS ? opt.quick_steps / PROGRESS_OPS : 1;
     /* One instruction can make or copy a value of any size (randomblob, a blob column), which neither the budget nor
        the plan bounds: a longer value or row fails with SQLITE_TOOBIG, which aborts only the statement, and fetch
-       runs it again. A page that SQLite spills to the WAL makes the transaction heavy. */
+       runs it again. A page that SQLite writes to the WAL before the commit (a spill of the page cache, which
+       CACHE_WRITE counts in every version, CACHE_SPILL only in some) makes the transaction heavy. */
     int length = sq.limit(c->db, SQLITE_LIMIT_LENGTH, QUICK_BYTES);
-    int spilled = 0, unused = 0;
-    bool counts = writes && sq.db_status(c->db, SQLITE_DBSTATUS_CACHE_SPILL, &spilled, &unused, 0) == SQLITE_OK;
+    int written = 0, unused = 0;
+    bool counts = writes && sq.db_status(c->db, SQLITE_DBSTATUS_CACHE_WRITE, &written, &unused, 0) == SQLITE_OK;
     while (!done && !fallback) {
       int rc = step(c, stmt, true, &o);
       if (rc == SQLITE_ROW) {
@@ -1871,7 +1872,8 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
     c->quick_left = 0;
     (void)sq.limit(c->db, SQLITE_LIMIT_LENGTH, length);
     int now = 0;
-    if (counts && sq.db_status(c->db, SQLITE_DBSTATUS_CACHE_SPILL, &now, &unused, 0) == SQLITE_OK && now != spilled)
+    if (counts && !sq.get_autocommit(c->db) &&
+        sq.db_status(c->db, SQLITE_DBSTATUS_CACHE_WRITE, &now, &unused, 0) == SQLITE_OK && now != written)
       c->txn_writes = TXN_HEAVY;
   }
   /* Reset under the mutex this call holds, so that giving the statement back never waits for another thread. The
