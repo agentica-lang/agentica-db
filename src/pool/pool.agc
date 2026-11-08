@@ -58,12 +58,14 @@ end
 ## body may still run for a moment, so nobody else may get the resource. After `Crashed` the body is dead, and
 ## `checkin` decides.
 ##
-## `size` resources are kept. In a spike the pool makes up to `max_overflow` more (so `size + max_overflow` is the
-## most that exist). When a spike is over, an overflow resource that nobody needs stays for `overflow_idle_ms` and is
-## ended if it is still idle then (0 ends it as soon as it is given back), so the pool shrinks back to `size` and a
-## steady load a little over `size` does not make and end a resource for every request. A `lazy` pool makes its
-## resources when callers need them. `max_age_ms` and `idle_ms` need `health_ms` (the health tick is what applies
-## them) and 0 turns each off; `idle_ms` needs a lazy pool, since an eager pool would make a new resource at once.
+## `size` resources are kept. In a spike the pool makes up to `max_overflow` more (so `size + max_overflow` is the most
+## that exist). When a spike is over, an overflow resource that nobody needs stays for `overflow_idle_ms` and is ended
+## if it is still idle then (0 ends it as soon as it is given back), so the pool shrinks back to `size` and a steady
+## load a little over `size` does not make and end a resource for every request. A `lazy` pool makes its resources when
+## callers need them. `max_age_ms` and `idle_ms` need `health_ms` (the health tick is what applies them) and 0 turns
+## each off; `idle_ms` needs a lazy pool, since an eager pool would make a new resource at once. `max_waiting` is how
+## many callers may wait in line for a resource at once (0 or more); one more is refused with `pool error: queue full
+## (max_waiting N)`, and 0 lets nobody wait: a caller that finds every resource busy is refused.
 export struct Spec[A, W]
   config: A
   init: Fn[A, Result[W]]
@@ -200,8 +202,8 @@ end
 ## in it is an `error` here, and the resource is checked in with the outcome. Other errors: `pool error: checkout
 ## timed out after N ms` (the caller waited that long for a resource, with the last error of `init` if the pool could
 ## not make one, even when the owner is busy in a slow `init`), `pool error: lease timed out after N ms` (the body
-## ran longer than `lease_ms`), `pool error: queue full` (`max_waiting` callers wait already), `pool error: closed`
-## and `pool error: owner task ended`. A caller that got an error never has its body run later.
+## ran longer than `lease_ms`), `pool error: queue full (max_waiting N)` (`max_waiting` callers wait already),
+## `pool error: closed` and `pool error: owner task ended`. A caller that got an error never has its body run later.
 export def with[A, W, R](pool: Pool[A, W], body: Fn[W, Result[R]]) -> Result[R]
   if pool.counts.has_key?(CLOSED)
     return error(CLOSED_ERROR)
@@ -859,7 +861,7 @@ end
 def wait_for[A, W](core: Core[A, W]) -> Result[Slot[W]]
   if core.counts.add(WAITING, 1) > core.spec.max_waiting
     core.counts.add(WAITING, -1)
-    return error(QUEUE_FULL_ERROR)
+    return error("#{QUEUE_FULL_ERROR} (max_waiting #{core.spec.max_waiting})")
   end
 
   got = core.idle.recv(core.spec.checkout_ms)

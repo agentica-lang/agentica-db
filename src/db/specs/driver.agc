@@ -475,6 +475,7 @@ def pool_setting(options: DbPool.Options, name: String, value: String) -> Result
     "max_overflow" -> return ok(options.with(max_overflow: try value.to_i))
     "checkout_ms" -> return ok(options.with(checkout_ms: try value.to_i))
     "lease_ms" -> return ok(options.with(lease_ms: try value.to_i))
+    "max_waiting" -> return ok(options.with(max_waiting: try value.to_i))
     "health_ms" -> return ok(options.with(health_ms: try value.to_i))
     "checkpoint_frames" -> return ok(options.with(checkpoint_frames: try value.to_i))
     "checkpoint_ms" -> return ok(options.with(checkpoint_ms: try value.to_i))

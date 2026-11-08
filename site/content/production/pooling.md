@@ -51,6 +51,7 @@ Start the pool once, in a task that lives as long as it does, such as `main`: it
 - `lease_ms` (30000): how long a block may run.
 - `max_age_ms` (0): a connection this old is closed and replaced when it is idle. 0 turns it off.
 - `idle_ms` (0): a connection unused this long is closed. It needs `lazy: true`, which opens connections only when callers need them (default `false`: always connected).
+- `max_waiting` (1000): how many callers may wait in line for a connection at once, 0 or more. One more is refused with `pool error: queue full (max_waiting 1000)`. 0 lets nobody wait: a caller that finds every connection busy is refused at once. Raise it for a burst of many callers (thousands of WebSockets that connect together), or lower it to refuse load early.
 - `health_ms` (5000): how often the idle connections are pinged and `max_age_ms` and `idle_ms` applied. 0 turns the check off, and then those two must be 0.
 - `checkpoint_frames` (1000), `checkpoint_ms` (1000) and `checkpoint_cap` (0): the checkpoints of a SQLite file in WAL mode, see [below](#sqlite-checkpoints). Other databases ignore them.
 
@@ -88,7 +89,7 @@ Since its `COMMIT` no longer checkpoints, the `COMMIT` of a transaction of short
 
 - `pool error: checkout timed out after N ms`: every connection was busy for `checkout_ms`.
 - `pool error: lease timed out after N ms`: the block ran too long.
-- `pool error: queue full`: more than 1000 callers wait already.
+- `pool error: queue full (max_waiting N)`: `max_waiting` callers wait already (1000 by default).
 - `pool error: closed`: the pool is closed.
 - `sqlite error 9: interrupted`, `postgres error 57014: ...` and the like: a statement ran over its `timeout_ms`.
 
