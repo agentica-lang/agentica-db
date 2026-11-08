@@ -5,6 +5,7 @@
 ## `--only "on sqlite"`.
 
 import BDD from "std/bdd"
+import MysqlNative from "../mysql/native"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
@@ -160,6 +161,8 @@ def main() -> Void
       send(ctx, Request(op: "query_big_json", text: args[0], number: args[1].to_i!, cells: [args[2]]))
     end,
     plain_step("I read the statement cache", "statement_cache"),
+    BDD.step("the native MySQL driver runs here", &native_mysql_only),
+    BDD.step("the server is MariaDB", &mariadb_only),
     BDD.step("a task that runs {string} is cancelled after {int} ms") do |ctx, args|
       send(ctx, Request(op: "cancel_task", text: args[0], number: args[1].to_i!))
     end,
@@ -262,6 +265,27 @@ end
 def answers_with(ctx: BDD.Context, args: List[String]) -> BDD.Context
   answer = BDD.read_line(ctx, REPLY_MS).unwrap_or("no answer")
   return BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
+end
+
+# The scenarios of the native MySQL driver are skipped while it is off (`MysqlNative.available?`).
+def native_mysql_only(ctx: BDD.Context, _args: List[String]) -> BDD.Context
+  if MysqlNative.available?()
+    return ctx
+  end
+
+  return BDD.skip(ctx, "the native MySQL driver is off until agentica-lang/agentica#1193")
+end
+
+# A scenario of what MariaDB alone has (`RETURNING`) is skipped on MySQL. The driver answers with the flavor of its
+# first connection.
+def mariadb_only(ctx: BDD.Context, _args: List[String]) -> BDD.Context
+  asked = BDD.when_line(start(ctx), JSON.encode(Request(op: "mysql_flavor")))
+  answer = BDD.read_line(asked, REPLY_MS).unwrap_or("no answer")
+  if answer == "mysql"
+    return BDD.skip(asked, "MariaDB only")
+  end
+
+  return BDD.assert(asked, answer == "mariadb", "the driver answered #{answer.inspect}")
 end
 
 def left_open(ctx: BDD.Context, args: List[String]) -> BDD.Context

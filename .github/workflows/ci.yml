@@ -94,8 +94,8 @@ jobs:
           (cd src/pool && agentica test --jobs 4)
 
       # The SQLite, PostgreSQL and MySQL scenarios again on the FFI drivers, which run where the native library is
-      # missing (and MySQL's on every system but Linux); @native are the scenarios of what only the native drivers have
-      # (the statement cache, batches, cancels).
+      # missing (and MySQL's everywhere until agentica#1193); @native are the scenarios of what only the native drivers
+      # have (the statement cache, batches, cancels).
       - name: Test the FFI driver
         env:
           AGENTICA_DB_SQLITE_DRIVER: ffi

@@ -5,9 +5,13 @@ Feature: MySQL native driver
   `batch_bytes` bytes, one call per batch, and waits on the socket instead of compute calls. Only SELECT, INSERT,
   UPDATE, DELETE, REPLACE, WITH, VALUES and TABLE are cached, and a statement that changes the schema (CREATE, ALTER,
   DROP, RENAME, TRUNCATE) lets the whole cache go. The FFI driver has none of this, so these scenarios have the
-  tag @native (the FFI run leaves them out). These scenarios need a server: set AGENTICA_DB_MYSQL_URL. [URL] is its
-  url (`[URL]&name=value` adds a parameter). MariaDB takes packets of 16 MB at most by default, hence the sizes of the
-  big values.
+  tag @native (the FFI run leaves them out). The native driver is off until Agentica ships `an_blocking`
+  (agentica-lang/agentica#1193), so the background skips every scenario until then. These scenarios need a server:
+  set AGENTICA_DB_MYSQL_URL. [URL] is its url (`[URL]&name=value` adds a parameter). MariaDB takes packets of 16 MB
+  at most by default, hence the sizes of the big values.
+
+  Background:
+    Given the native MySQL driver runs here
 
   Scenario: A statement that ran before comes from the cache on mysql
     Given a "mysql" database
@@ -111,9 +115,9 @@ Feature: MySQL native driver
       | a     | b     |
       | Int 1 | Int 7 |
 
-  # Another connection adds a column: the cached statement fails with 2057 (more columns than it was prepared with),
-  # and the driver prepares it again and runs it once more. The table is a real one, which the other connections see;
-  # its name is this feature's own.
+  # Another connection adds a column: the cached SELECT fails with 2057 (more columns than it was prepared with) after
+  # the server ran it, and the driver prepares it again and runs it once more. The table is a real one, which the other
+  # connections see; its name is this feature's own.
   Scenario: A cached statement whose table another connection changed reads its new columns on mysql
     Given a "mysql" database
     When a connection of its own to "[URL]" executes "drop table if exists agentica_db_mysql_native_t"
@@ -175,17 +179,42 @@ Feature: MySQL native driver
     When a task executes "do sleep(0.3)", another executes "select 1", and I close the connection after 100 ms
     Then it fails with exactly "mysql error: the connection is closed"
 
-  Scenario: AGENTICA_DB_MYSQL_DRIVER=ffi runs the FFI driver on mysql
-    Given the environment variable "AGENTICA_DB_MYSQL_DRIVER" is "ffi"
-    And a "mysql" database
-    When I read the statement cache
-    Then it fails with exactly "the FFI driver has no statement cache"
+  # A write that gives rows is not cached: a cached statement meets 2057 only after the server ran it, and a write is
+  # never run again, so it would fail after it wrote.
+  Scenario: A write that gives rows is not cached on mysql
+    Given a "mysql" database
+    And the server is MariaDB
+    When I execute "create temporary table t (n integer)"
+    And I query "insert into t values (?) returning n" with:
+      | value |
+      | Int 1 |
+    And I query "insert into t values (?) returning n" with:
+      | value |
+      | Int 2 |
+    And I read the statement cache
+    Then the result is:
+      | size  | capacity | hits  | misses | evictions |
+      | Int 0 | Int 100  | Int 0 | Int 2  | Int 0     |
 
-  Scenario: Another AGENTICA_DB_MYSQL_DRIVER is an error on mysql
-    Given the environment variable "AGENTICA_DB_MYSQL_DRIVER" is "fast"
-    And a "sqlite" database
-    When I open "mysql://u@127.0.0.1:1/d"
-    Then it fails with exactly "mysql error: AGENTICA_DB_MYSQL_DRIVER is fast, expected native or ffi"
+  # A statement that is not cached cannot be made to meet 2057 (the table would have to change between its prepare and
+  # its run), and the driver never runs such a one again. What a test can show: a write that gives rows, after another
+  # connection changed its table, is prepared again and inserts once.
+  Scenario: A write that gives rows inserts once after another connection changed its table on mysql
+    Given a "mysql" database
+    And the server is MariaDB
+    When a connection of its own to "[URL]" executes "drop table if exists agentica_db_mysql_native_w"
+    And a connection of its own to "[URL]" executes "create table agentica_db_mysql_native_w (a integer)"
+    And I query "insert into agentica_db_mysql_native_w (a) values (1) returning *"
+    And a connection of its own to "[URL]" executes "alter table agentica_db_mysql_native_w add column b integer default 7"
+    And I query "insert into agentica_db_mysql_native_w (a) values (2) returning *"
+    Then the result is:
+      | a     | b     |
+      | Int 2 | Int 7 |
+    And the query "select count(*) as n from agentica_db_mysql_native_w" returns:
+      | n     |
+      | Int 2 |
+    When a connection of its own to "[URL]" executes "drop table agentica_db_mysql_native_w"
+    Then the changed row count is 0
 
   # Copying big parameters, or turning a big row into values, takes long for a short call on the scheduler: past
   # 256 KiB the call is made on the compute pool. The list is 12 MB, and the row of the second query 10 MB (the library

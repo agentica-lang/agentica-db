@@ -3,7 +3,9 @@
 ## non-blocking calls of MariaDB Connector/C: every call is short, and a wait for the server is a wait on its socket
 ## (`Native.wait_readable`), which parks only this task, so a query takes no compute call. A connection keeps its
 ## prepared statements in a cache keyed by the sql text, and a result comes in batches of rows, one call per batch.
-## It runs on Linux only (see the module).
+## It is off for now: the non-blocking calls run on a stack of their own, and only `an_blocking` of the native API
+## 1.3 (agentica-lang/agentica#1193) keeps the collector of the VM off it. Until the module runs them under it,
+## `available?` is false, the module refuses to connect, and the adapter runs the FFI driver.
 ##
 ## A query holds the mutex of its connection from its first call to its last: the calls of a query must not mix with
 ## another's, and every call on the connection is made under it. A task that is cancelled in the middle of one leaves
@@ -41,6 +43,11 @@ FLUSH_VERBS = Set.new(["create", "alter", "drop", "rename", "truncate"])
 TLS_REQUIRED = 1
 TLS_VERIFY = 2
 CLOSED = "mysql error: the connection is closed"
+LEFT_AGAIN = "mysql error: the query that a cancelled task left on the connection did not end"
+## Why the native driver does not run (see the top); `connect` of the module refuses with the same words.
+export UNAVAILABLE = (
+  "mysql error: the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
+)
 
 ## What a call may give at once: up to `rows` rows or about `bytes` bytes of values; a longer result takes more calls.
 export struct Options
@@ -109,10 +116,10 @@ extern module "db_mysql"
   export resource Conn
 end
 
-## Whether the module opens on this system: false where the built library does not load, or on a system other than
-## Linux, and the FFI driver runs.
+## Whether the native driver runs here: not until the module runs the library under `an_blocking` (see the top). Then
+## it needs Linux and a module that loads.
 export def available?() -> Bool
-  return System.os() == "linux" and Native.load("db_mysql").ok?
+  return false
 end
 
 ## Connects to the target with its cache and batch caps.
@@ -221,6 +228,10 @@ def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Resul
     end
 
     step = start(session.conn, sql, params, plan, session.options)
+    # The drain gave up (a failure that did not end the query): never resume a query that is not this one.
+    if step.state == S_LEFT
+      return error(LEFT_AGAIN)
+    end
   end
 
   if step.state == S_PLAN
@@ -263,6 +274,8 @@ def finish(session: Session, first: Step) -> Result[Done]
       return ok(Done(rows: rows, changes: step.changes))
     elsif step.state == S_FAILED
       return error(step.failure)
+    elsif step.state == S_LEFT
+      return error(LEFT_AGAIN)
     elsif step.state == S_ROWS
       batches = batches.push(step.rows)
     elsif step.state != S_BIG

@@ -16,11 +16,14 @@
  *   - TEXT: a statement that the server does not prepare (error 1295) and has no parameters runs as text.
  * The values are read with the buffer types of the FFI adapter, so the library converts them the same way.
  *
- * The non-blocking calls of the library run on a stack of its own (a coroutine). The collector of the VM stops a
- * thread with a signal and scans the stack from where the thread is: a signal taken on that stack would scan the wrong
- * memory. So every `_start` and `_cont` runs with the signals of the thread blocked, and a stop waits until it is back
- * on its own stack. Other systems stop threads without a signal, so the driver runs on Linux only; elsewhere `connect`
- * fails and the adapter runs the FFI driver.
+ * The non-blocking calls of the library run on a stack of their own (a coroutine). The collector of the VM stops a
+ * thread with a signal and scans its stack from where the thread is, which on that stack is the wrong memory; blocking
+ * the signals instead can hang every thread (the library may wait on a lock, of malloc say, that a thread the
+ * collector already stopped holds). The safe way is to run each such call as blocked for the collector
+ * (GC_do_blocking), which the native API gives from version 1.3 as an_blocking (agentica-lang/agentica#1193). Every
+ * `_start` and `_cont` goes through `on_library_stack`, and until it runs them under an_blocking, `connect` refuses
+ * (STACK_SWITCH_SAFE) and the adapter runs the FFI driver. The driver opens libmariadb.so.3, a Linux name: elsewhere
+ * `connect` fails the same way.
  *
  * Calls on one connection are made one at a time: the adapter holds a Native.Mutex of the connection for the whole
  * query, and `enter` below only refuses a call that would break that rule. A task cancelled in the middle of a query
@@ -42,7 +45,6 @@
 #endif
 #if defined(__linux__)
 #include <poll.h>
-#include <signal.h>
 #include <sys/socket.h>
 #endif
 
@@ -281,7 +283,8 @@ _Static_assert(sizeof(my_api) == SYMBOL_COUNT * sizeof(void (*)(void)), "SYMBOLS
 
 /* ---- The system: the library loader, a lock, a clock, the socket. ---- */
 
-static char load_error[512];
+/* Why the library did not open, written once under load_once (Linux); empty when it opened. */
+static char load_message[512];
 
 #if defined(_WIN32)
 typedef SRWLOCK lock_t;
@@ -312,42 +315,32 @@ static uint64_t now_ms(void) {
 static void *library;
 static pthread_once_t load_once = PTHREAD_ONCE_INIT;
 
-/* Opens the library and fills `my`, once per run; load_error says why when it failed. dlopen never searches the
+/* Opens the library and fills `my`, once per run; load_message says why when it failed. dlopen never searches the
    working directory for a bare name on Linux. */
 static void load_symbols(void) {
   library = dlopen("libmariadb.so.3", RTLD_NOW | RTLD_LOCAL);
   if (!library) {
     const char *why = dlerror();
-    snprintf(load_error, sizeof load_error, "%s", why ? why : "libmariadb.so.3");
+    snprintf(load_message, sizeof load_message, "%s", why ? why : "libmariadb.so.3");
     return;
   }
   for (size_t i = 0; i < SYMBOL_COUNT; i++) {
     void *p = dlsym(library, SYMBOLS[i].name);
     if (!p) {
-      snprintf(load_error, sizeof load_error, "the library has no %s", SYMBOLS[i].name);
+      snprintf(load_message, sizeof load_message, "the library has no %s", SYMBOLS[i].name);
       return;
     }
     /* POSIX gives a function's address as an object pointer; every field is a function pointer. */
     memcpy((char *)&my + SYMBOLS[i].offset, &p, sizeof p);
   }
   /* mysql_init sets the library up on its first call, which is not safe for two threads at once. */
-  if (my.library_init(0, NULL, NULL) != 0) snprintf(load_error, sizeof load_error, "mysql_server_init failed");
+  if (my.library_init(0, NULL, NULL) != 0) snprintf(load_message, sizeof load_message, "mysql_server_init failed");
 }
 
-static bool library_ready(void) {
+/* NULL once the library is open, else why it is not. */
+static const char *library_error(void) {
   if (pthread_once(&load_once, load_symbols) != 0) abort();
-  return load_error[0] == '\0';
-}
-
-/* The signals of the thread are blocked while the library runs on its own stack (see the top). */
-typedef sigset_t signals;
-static void signals_block(signals *saved) {
-  sigset_t all;
-  sigfillset(&all);
-  if (pthread_sigmask(SIG_BLOCK, &all, saved) != 0) abort();
-}
-static void signals_restore(const signals *saved) {
-  if (pthread_sigmask(SIG_SETMASK, saved, NULL) != 0) abort();
+  return load_message[0] ? load_message : NULL;
 }
 
 /* The events of WAIT that the socket has now, without waiting: an error or a hang-up counts as every one of them, so
@@ -372,14 +365,8 @@ static void shut_socket(int fd) {
   if (fd >= 0) (void)shutdown(fd, SHUT_RDWR);
 }
 #else
-/* Elsewhere the collector stops threads without a signal (see the top): the library is never opened. */
-static bool library_ready(void) {
-  snprintf(load_error, sizeof load_error, "the native MySQL driver runs on Linux only");
-  return false;
-}
-typedef int signals;
-static void signals_block(signals *saved) { *saved = 0; }
-static void signals_restore(const signals *saved) { (void)saved; }
+/* Elsewhere the library has another name, and the driver is not tried (see the top). */
+static const char *library_error(void) { return "the native MySQL driver runs on Linux only"; }
 static int ready_events(int fd, int wait) {
   (void)fd;
   return wait;
@@ -514,6 +501,9 @@ typedef struct {
 #define CLOSE_BATCH 32
 /* The seconds that the connection of `cancel` may take to connect, and to send its KILL QUERY and read the reply. */
 #define CANCEL_WAIT_S 5
+/* Why `connect` refuses (see the top); the adapter says the same (mysql/native.agc). */
+#define NEEDS_BLOCKING \
+  "the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
 
 static uint64_t hash_text(const char *s, size_t n) {
   uint64_t h = 14695981039346656037ull;
@@ -529,13 +519,16 @@ static int find_entry(conn *c, const char *sql, size_t len, uint64_t hash) {
   return -1;
 }
 
-/* Keeps STMT for the next CLOSE. Out of memory, the server keeps it until the session ends, and the free function of
-   the connection lets go of its memory. */
+/* Keeps STMT for the next CLOSE. Out of memory, it is closed at once with the blocking call, which only sends the
+   few bytes of COM_STMT_CLOSE (no reply) on a connection that waits for no answer here, and frees the statement. */
 static void close_later(conn *c, MYSQL_STMT *stmt) {
   if (c->closing_size == c->closing_capacity) {
     int grown = c->closing_capacity ? c->closing_capacity * 2 : 16;
     void *more = grown > c->closing_capacity ? realloc(c->closing, (size_t)grown * sizeof *c->closing) : NULL;
-    if (!more) return;
+    if (!more) {
+      (void)my.stmt_close(stmt);
+      return;
+    }
     c->closing = more;
     c->closing_capacity = grown;
   }
@@ -608,7 +601,10 @@ static void end_query(conn *c, query *q) {
   c->inflight = false;
 }
 
+/* The password is wiped before its memory goes (volatile, so the stores are not dropped as dead). */
 static void free_login(login *l) {
+  if (l->password)
+    for (volatile char *p = l->password; *p; p++) *p = 0;
   free(l->host);
   free(l->user);
   free(l->password);
@@ -625,8 +621,10 @@ static void conn_free(void *state) {
   /* A query left on the connection may be in the middle of a packet: with the socket shut down, the goodbye of
      mysql_close fails at once instead of waiting. An idle socket takes the goodbye without waiting. */
   if (c->inflight) shut_socket(my.get_socket(c->my));
-  /* mysql_close detaches the statements, so their mysql_stmt_close below only frees memory. A statement that a close
-     left half done (the query's `closing`) is the library's still: it is let go. */
+  /* mysql_close detaches the statements, so their mysql_stmt_close below only frees memory. A statement whose close
+     waits to write (the query's `closing`) is let go: the library already took it off the connection, and only its
+     own `_cont` can end it, which would switch stacks here, in a free function that has no env for an_blocking. It
+     is one statement's client memory, once per connection freed in that state. */
   my.close(c->my);
   for (int i = 0; i < c->capacity; i++) {
     if (c->entries[i].stmt) (void)my.stmt_close(c->entries[i].stmt);
@@ -805,7 +803,7 @@ static bool bind_all(an_env *env, an_term list, size_t limit, params *p, bool *o
     an_term payload;
     int64_t whole;
     double x;
-    bool flag;
+    bool flag = false;
     const char *data;
     const uint8_t *bytes;
     size_t len;
@@ -1129,12 +1127,22 @@ static an_term read_row(an_env *env, const query *q, const an_term *names, int64
 
 /* ---- The calls of the library that wait. ---- */
 
-/* Calls the `_start` (EVENTS 0) or the `_cont` of the operation of Q, with the signals of the thread blocked: the
-   library runs on its own stack meanwhile. The events it waits for, 0 once the operation is over. */
-static int op_call(conn *c, query *q, int events) {
-  signals saved;
-  int wait = 0;
-  signals_block(&saved);
+/* What one call of the library needs: the query, its connection and the events (0 for the `_start`); WAIT is what
+   the call gives back. It lives in C memory: no term and no memory of the collector is touched on the library's
+   stack. */
+typedef struct {
+  conn *c;
+  query *q;
+  int events, wait;
+} op_args;
+
+/* Calls the `_start` (events 0) or the `_cont` of the operation of the query: the events it waits for, 0 once the
+   operation is over. */
+static void op_run(void *arg) {
+  op_args *a = arg;
+  conn *c = a->c;
+  query *q = a->q;
+  int events = a->events, wait = 0;
   switch (q->op) {
   case OP_PREPARE:
     wait = events ? my.stmt_prepare_cont(&q->ret, q->stmt, events)
@@ -1169,8 +1177,29 @@ static int op_call(conn *c, query *q, int events) {
   default:
     break;
   }
-  signals_restore(&saved);
-  return wait;
+  a->wait = wait;
+}
+
+/* STACK_SWITCH_SAFE: whether `on_library_stack` keeps the collector off the library's stack. It is 0 until this
+   module runs FN under an_blocking(env, fn, arg) of the native API 1.3 (agentica-lang/agentica#1193), which marks the
+   thread as blocked for the collector while FN runs, so a stop of the world neither signals it nor scans that stack.
+   That change is this function and the constant; the rest of the module already keeps FN off terms and GC memory.
+
+   A `_cont` may run on another thread than its `_start` (a dirty call starts it, a scheduler goes on with it, or the
+   task moves to another scheduler). Connector/C keeps the state of a suspended call in its async context, with no
+   thread-local data, and its socket loops (pvio_socket_read and _write) ask for errno after every recv and send,
+   also after the yield, in the builds that this driver was checked with (Debian's libmariadb3), so a resumed call
+   reads the errno of the thread it runs on. */
+#define STACK_SWITCH_SAFE 0
+static void on_library_stack(an_env *env, void (*fn)(void *), void *arg) {
+  (void)env;
+  fn(arg);
+}
+
+static int op_call(an_env *env, conn *c, query *q, int events) {
+  op_args a = {c, q, events, 0};
+  on_library_stack(env, op_run, &a);
+  return a.wait;
 }
 
 static int op_settle(conn *c, query *q, int wait) {
@@ -1185,17 +1214,17 @@ static int op_settle(conn *c, query *q, int wait) {
 }
 
 /* Starts OP: 0 when it is over at once, else the events it waits for. */
-static int op_start(conn *c, query *q, int op) {
+static int op_start(an_env *env, conn *c, query *q, int op) {
   q->op = op;
-  return op_settle(c, q, op_call(c, q, 0));
+  return op_settle(c, q, op_call(env, c, q, 0));
 }
 
 /* Goes on with the operation that waits when its socket is ready or its timeout passed. */
-static int op_resume(conn *c, query *q) {
+static int op_resume(an_env *env, conn *c, query *q) {
   int events = ready_events(my.get_socket(c->my), q->wait);
   if (!events && q->deadline && now_ms() >= q->deadline) events = EV_TIMEOUT;
   if (!events) return q->wait;
-  return op_settle(c, q, op_call(c, q, events));
+  return op_settle(c, q, op_call(env, c, q, events));
 }
 
 /* What to wait for. A query that a cancelled task left asks for a KILL QUERY first, once. */
@@ -1287,7 +1316,7 @@ static an_term take_rows(an_env *env, conn *c, query *q, int64_t max_rows, int64
 /* Runs the phases of Q until it must wait, has rows to give, or ends. */
 static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t max_bytes) {
   for (;;) {
-    if (q->op != OP_NONE && op_resume(c, q) != 0) return wait_step(env, c, q);
+    if (q->op != OP_NONE && op_resume(env, c, q) != 0) return wait_step(env, c, q);
     switch (q->phase) {
     case P_START:
       q->phase = P_CLOSE;
@@ -1299,7 +1328,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       }
       q->closing = c->closing[--c->closing_size];
       q->closes++;
-      if (op_start(c, q, OP_CLOSE)) return wait_step(env, c, q);
+      if (op_start(env, c, q, OP_CLOSE)) return wait_step(env, c, q);
       continue;
     case P_SEND:
       if (q->discard) {
@@ -1329,7 +1358,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
         }
       }
       q->phase = P_PREPARED;
-      if (op_start(c, q, OP_PREPARE)) return wait_step(env, c, q);
+      if (op_start(env, c, q, OP_PREPARE)) return wait_step(env, c, q);
       continue;
     case P_PREPARED:
       if (q->ret != 0) {
@@ -1355,9 +1384,10 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
           q->phase = P_FINISH;
           continue;
         }
-        /* A write with a result (INSERT ... RETURNING) is not cached: P_FREED may run a cached statement again. */
-        bool rerun_safe = !q->counts || my.stmt_field_count(q->stmt) == 0;
-        if (q->cache && rerun_safe && c->capacity > 0 && insert(c, q, (int)wanted)) q->owned = false;
+        /* A write with a result (INSERT ... RETURNING) is not cached: a cached statement meets 2057 after the server
+           ran it, and a write is never run again (P_FREED), so it would fail after it wrote. */
+        bool result_free_write = !q->counts || my.stmt_field_count(q->stmt) == 0;
+        if (q->cache && result_free_write && c->capacity > 0 && insert(c, q, (int)wanted)) q->owned = false;
       }
       q->phase = P_EXEC;
       continue;
@@ -1381,7 +1411,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
         continue;
       }
       q->phase = P_EXECUTED;
-      if (op_start(c, q, OP_EXECUTE)) return wait_step(env, c, q);
+      if (op_start(env, c, q, OP_EXECUTE)) return wait_step(env, c, q);
       continue;
     case P_EXECUTED:
       if (q->ret != 0) {
@@ -1393,7 +1423,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
              and the statement goes. */
           q->spoiled = true;
           q->phase = P_FREED;
-          if (op_start(c, q, OP_FREE)) return wait_step(env, c, q);
+          if (op_start(env, c, q, OP_FREE)) return wait_step(env, c, q);
         }
         continue;
       }
@@ -1403,28 +1433,26 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
         continue;
       }
       q->phase = P_STORED;
-      if (op_start(c, q, OP_STORE)) return wait_step(env, c, q);
+      if (op_start(env, c, q, OP_STORE)) return wait_step(env, c, q);
       continue;
     case P_FREED:
-      /* The sql is prepared again and runs once more, as a first run: only a statement with a result gets here, and
-         the cache keeps no write that has one. */
+      /* The server ran the statement before the library saw 2057. A cached statement that is not a write is prepared
+         again and runs once more, as a first run; that runs twice what it does besides reading (a NEXTVAL, a stored
+         function that writes). A statement of this query alone (prepared just now, or with statement_cache=0) and a
+         write give the 2057: running them again could write twice. */
       q->phase = P_FINISH;
-      if (q->freed || q->extra || q->discard || q->retried) continue;
-      if (!q->sql) {
+      if (q->freed || q->extra || q->discard || q->retried || q->owned || q->counts || q->slot < 0) continue;
+      {
         const entry *e = &c->entries[q->slot];
         q->sql = malloc(e->len ? e->len : 1);
         if (!q->sql) continue;
         memcpy(q->sql, e->sql, e->len);
       }
-      if (q->owned) {
-        close_later(c, q->stmt);
-      } else {
-        forget(c, q->slot);
-        q->cache = true;
-        c->misses++;
-      }
+      forget(c, q->slot);
+      q->cache = true;
+      c->misses++;
       q->stmt = NULL;
-      q->owned = q->spoiled = false;
+      q->spoiled = false;
       q->slot = -1;
       q->retried = true;
       q->failure[0] = 0;
@@ -1464,7 +1492,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       if (q->stmt && my.stmt_more_results(q->stmt)) {
         q->extra = true;
         q->phase = P_NEXTED;
-        if (op_start(c, q, OP_NEXT)) return wait_step(env, c, q);
+        if (op_start(env, c, q, OP_NEXT)) return wait_step(env, c, q);
         continue;
       }
       q->phase = P_FINISH;
@@ -1481,7 +1509,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       }
       q->text = true;
       q->phase = P_TEXT_SENT;
-      if (op_start(c, q, OP_QUERY)) return wait_step(env, c, q);
+      if (op_start(env, c, q, OP_QUERY)) return wait_step(env, c, q);
       continue;
     case P_TEXT_SENT:
       if (q->ret != 0) {
@@ -1490,7 +1518,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
         continue;
       }
       q->phase = P_TEXT_STORED;
-      if (op_start(c, q, OP_TEXT_STORE)) return wait_step(env, c, q);
+      if (op_start(env, c, q, OP_TEXT_STORE)) return wait_step(env, c, q);
       continue;
     case P_TEXT_STORED:
       /* No result is a failure only when the statement should have had one. */
@@ -1515,7 +1543,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       if (my.more_results(c->my)) {
         q->extra = true;
         q->phase = P_TEXT_NEXTED;
-        if (op_start(c, q, OP_TEXT_NEXT)) return wait_step(env, c, q);
+        if (op_start(env, c, q, OP_TEXT_NEXT)) return wait_step(env, c, q);
         continue;
       }
       q->phase = P_FINISH;
@@ -1613,8 +1641,13 @@ static an_term fn_connect(an_env *env, int argc, const an_term *argv) {
       port > 65535 || timeout < 0 || timeout > 99999 || timeout_ms < 0 || timeout_ms > 999999999 || tls < 0 || tls > 2)
     return an_badarg(env, 0);
   if (!an_get_int(env, argv[1], &capacity) || capacity < 0 || capacity > MAX_CACHE) return an_badarg(env, 1);
-  if (!library_ready()) {
-    int n = snprintf(message, sizeof message, "mysql error: cannot load the client library: %s", load_error);
+  if (!STACK_SWITCH_SAFE) {
+    static const char off[] = "mysql error: " NEEDS_BLOCKING;
+    return an_error(env, off, sizeof off - 1);
+  }
+  const char *why = library_error();
+  if (why) {
+    int n = snprintf(message, sizeof message, "mysql error: cannot load the client library: %s", why);
     return an_error(env, message, n > 0 ? (size_t)n : 0);
   }
   login l = {login_text(env, argv[0], L_HOST), login_text(env, argv[0], L_USER), login_text(env, argv[0], L_PASSWORD),

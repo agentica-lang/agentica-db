@@ -24,9 +24,9 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                ffi.agc (the driver over extern calls), statement.agc (the checks both drivers make), sql.agc (the
                placeholder scanner), url.agc (it takes the parameters of the adapter out of the url before libpq
                sees it)
-  mysql/       mysql.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module, Linux
-               only), ffi.agc (the driver over extern calls), statement.agc (what both drivers read of a verb),
-               sql.agc (the statement scanner), url.agc
+  mysql/       mysql.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module, off
+               until agentica#1193), ffi.agc (the driver over extern calls), statement.agc (what both drivers read
+               of a verb), sql.agc (the statement scanner), url.agc
   orm/         build.agc (the sql of the query builder), codec.agc (row to Json for T.codec), dialect.agc
                (identifier names and quotes), errors.agc
   support/     value.agc (Value, Row; db.agc re-exports them), milliseconds.agc (the timeout_ms and

@@ -8,10 +8,11 @@
 ## Two drivers run the statements, with the same values and errors. The native one (`native.agc`, a native module built
 ## from `native/db_mysql.c`) runs the non-blocking calls of the library and waits on the socket, so a query parks only
 ## its task and takes no compute call; it keeps a cache of prepared statements per connection (`statement_cache`, 100
-## by default, 0 for none) and reads many rows per call (`batch_rows`, `batch_bytes`). It runs on Linux only. The FFI
-## one (`ffi.agc`) prepares each statement again, waits on the compute pool and reads one value per call. `open` takes
-## the native driver when its library loads, else the FFI one; `AGENTICA_DB_MYSQL_DRIVER=native` or `ffi` chooses one
-## (with `native`, a library that does not load is an error).
+## by default, 0 for none) and reads many rows per call (`batch_rows`, `batch_bytes`). It is off until Agentica ships
+## `an_blocking` (agentica-lang/agentica#1193, see `native.agc`). The FFI one (`ffi.agc`) prepares each statement
+## again, waits on the compute pool and reads one value per call. `open` takes the native driver when it runs here,
+## else the FFI one; `AGENTICA_DB_MYSQL_DRIVER=native` or `ffi` chooses one (with `native`, a driver that does not run
+## here is an error).
 ##
 ## Every statement goes through the prepared statement API (`mysql_stmt_*`): the sql is sent as it is, with its `?`
 ## placeholders, and the values are bound, never spliced.
@@ -141,7 +142,7 @@ export def statement_cache(conn: Connection) -> Optional[MysqlNative.CacheStats]
   end
 end
 
-# The driver that the variable names, else the native one when its library loads, else the FFI one.
+# The driver that the variable names, else the native one when it runs here, else the FFI one.
 def connect(target: MysqlUrl.Target) -> Result[Link]
   choice = System.env(DRIVER_VARIABLE).unwrap_or("")
   if choice == "ffi" or (choice == "" and not MysqlNative.available?())
@@ -154,7 +155,7 @@ def connect(target: MysqlUrl.Target) -> Result[Link]
   end
 
   if not MysqlNative.available?()
-    return error("mysql error: the native driver is not built or not supported here (#{DRIVER_VARIABLE}=native)")
+    return error(MysqlNative.UNAVAILABLE)
   end
 
   session = try MysqlNative.open(target)

@@ -333,6 +333,7 @@ def act(state: State, req: Request) -> Handled
     "on_other" -> return reply_ok(on_other(state, req))
     "query_big_json" -> return reply_ok(query_big_json(state, req))
     "statement_cache" -> return reply_ok(statement_cache(state))
+    "mysql_flavor" -> return Handled(state: state, reply: mysql_flavor(state))
     "cancel_task" -> return reply_ok(cancel_task(state, req))
     "query_each" -> return reply_ok(query_each(state, req))
     "cache_beside_big" -> return reply_ok(cache_beside_big(state, req))
@@ -1892,6 +1893,23 @@ def statement_cache(state: State) -> State
         found = Mysql.statement_cache(mysql).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
         return cache_row(state, found)
     end
+  end
+end
+
+# The server of the first connection, `mariadb` or `mysql`, for the steps of what one of them alone has.
+def mysql_flavor(state: State) -> String
+  if state.conns.empty?
+    return NO_DATABASE
+  end
+
+  case state.conns[0]
+    Db.Connection.Mysql(mysql) ->
+      if mysql.flavor == Mysql.Flavor.MariaDb
+        return "mariadb"
+      end
+
+      return "mysql"
+    _ -> return "not a mysql connection"
   end
 end
 
