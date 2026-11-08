@@ -1,7 +1,8 @@
-## A row through a database: the cells of `value_gens.agc` written with bound parameters and read back, against the cells
-## that the database promises to give back (`held`, the cells themselves but for what SQLite does to a NaN and a negative
-## zero). The table of an adapter has the types that the adapter has; a type with no `Value` variant (decimal, date,
-## time) is written and read as text. CI runs it once per driver, and both give the same model, so the drivers agree.
+## A row through a database: the cells of `value_gens.agc` written with bound parameters and read back, against the
+## cells that the database promises to give back (`held`, the cells themselves but for what SQLite does to a NaN and
+## a negative zero). The table of an adapter has the types that the adapter has; a type with no `Value` variant
+## (decimal, date, time) is written and read as text. CI runs it once per driver, and both give the same model, so
+## the drivers agree.
 
 import Db from "pkg/db/db"
 import Cells from "pkg/db/specs/cells"
@@ -21,8 +22,8 @@ struct Column
 end
 
 ## Writes generated rows to a database of `adapter` and reads them back, `runs` times, and checks that each row reads
-## back as `held` says (`Prop.oracle`: a failure names the shrunk row and the seed). PostgreSQL and MySQL need their url
-## variable.
+## back as `held` says (`Prop.oracle`: a failure names the shrunk row and the seed). PostgreSQL and MySQL need their
+## url variable.
 export def reads_back(adapter: Adapter, runs: Int) -> Result[Void]
   conn = try connect(adapter)
   columns = columns_of(adapter)

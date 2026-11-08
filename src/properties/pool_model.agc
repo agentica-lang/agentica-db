@@ -124,12 +124,12 @@ export def keeps_invariants(setup: Setup, jobs: List[Job]) -> Result[Void]
 end
 
 ## A burst of `count` callers that hold a resource at once, until the last of them is refused, holding a resource or
-## standing in line. The pool serves `size + max_overflow` of them and lets `max_waiting` wait, so at least the rest are
-## refused with a full queue, and no more of them hold a resource than the pool has. An eager pool with no overflow has
-## its resources at once, so there the numbers are exact. A resource that the owner is still making (an overflow one,
-## or any of a lazy pool) is not idle when a caller asks, so the caller can be refused although it could be served,
-## even a lone caller of a lazy pool with `max_waiting` 0 (agentica-lang/agentica-db#86): there the numbers are bounds,
-## and for a lazy pool the upper bound of refusals is every caller.
+## standing in line. The pool serves `size + max_overflow` of them and lets `max_waiting` wait, so at least the rest
+## are refused with a full queue, and no more of them hold a resource than the pool has. An eager pool with no
+## overflow has its resources at once, so there the numbers are exact. A resource that the owner is still making (an
+## overflow one, or any of a lazy pool) is not idle when a caller asks, so the caller can be refused although it
+## could be served, even a lone caller of a lazy pool with `max_waiting` 0 (agentica-lang/agentica-db#86): there the
+## numbers are bounds, and for a lazy pool the upper bound of refusals is every caller.
 export def keeps_line(setup: Setup, count: Int) -> Result[Void]
   stats: ATS[String, Int] = ATS.new()
   pool = try Pool.start(spec_of(setup, stats, BURST_CHECKOUT_MS, BURST_LEASE_MS))
