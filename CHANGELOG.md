@@ -4,23 +4,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-08
+
 ### Added
 
-- A native PostgreSQL driver (`src/db/native/db_postgres.c`, an Agentica native module, the default for PostgreSQL
-  urls): libpq in its non-blocking mode, so a query waits on the socket and takes no compute call, a cache of prepared
-  statements per connection, and many rows per call. A one-row query costs about half of the FFI driver's, a query of
-  1000 rows about a quarter. Url parameters `statement_cache`, `batch_rows` and `batch_bytes`;
-  `AGENTICA_DB_POSTGRES_DRIVER=native` or `ffi` picks the driver.
-- With the native PostgreSQL driver, a query after one that a cancelled task left on the connection cancels it on the
-  server and goes on, and queries of several tasks on one connection run one after the other.
-- With the native SQLite driver in WAL mode, the `BEGIN` of a transaction and a cached write whose plan finds its rows
-  by key run in one short call on the scheduler, and go to the compute pool when they would wait for the lock or
-  make a value over 256 KiB.
-- A `DbPool` of a SQLite file takes the WAL checkpoints off the commits: a checkpointer task checkpoints when a commit
-  leaves `checkpoint_frames` uncopied pages in the WAL or every `checkpoint_ms`, a commit at `checkpoint_cap`
-  checkpoints itself, and the `COMMIT` of a transaction of short writes runs on the scheduler. A pool of 16 tasks
-  posting short transactions serves about 1.3 times the commits per second. The FFI driver keeps SQLite's own
-  checkpoints.
+- A native PostgreSQL driver (`src/db/native/db_postgres.c`), the default for PostgreSQL urls: a cache of prepared
+  statements per connection and many rows per call. A one-row query costs about half of the FFI driver's. Url
+  parameters `statement_cache`, `batch_rows` and `batch_bytes`; `AGENTICA_DB_POSTGRES_DRIVER=native` or `ffi` picks the
+  driver.
+- With the native PostgreSQL driver, a query waits on the socket and takes no compute call, and a query after one that
+  a cancelled task left on the connection cancels it on the server and goes on.
+- With the native SQLite driver in WAL mode, `BEGIN` and a short write run on the scheduler, not on the compute pool.
+- A `DbPool` of a SQLite file runs the WAL checkpoints in a task of its own, not in a `COMMIT`: options
+  `checkpoint_frames`, `checkpoint_ms` and `checkpoint_cap`. A pool of 16 tasks posting short transactions serves about
+  1.3 times the commits per second.
 - `CacheStats.fallbacks` of the native SQLite driver (`Sqlite.statement_cache`): the short calls that left their
   statement to the compute pool.
 
@@ -189,7 +186,8 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.6.0...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/agentica-lang/agentica-db/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/agentica-lang/agentica-db/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/agentica-lang/agentica-db/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/agentica-lang/agentica-db/compare/0.3.0...0.4.0
