@@ -5,6 +5,10 @@
 ## statement from a known shape, dress it with those, and check what the driver did with it against the shape alone.
 ## What the driver did is read from `CacheStats.shorts`, the number of statements that ran whole in a short call.
 ##
+## Not covered: what the PRAGMAs wal_checkpoint and wal_autocheckpoint do to the other connections of a pool
+## (`share_stick`), which needs a pool of connections, and the rule that a name the scanner cannot read counts as all
+## of them (no statement that SQLite accepts reaches it). `specs/sqlite_writes.feature` has scenarios for the first.
+##
 ## The numbers of a generated `Read` and `Pragma` pick from the tables below by their remainder, so a shrunk case is
 ## the plain statement.
 
@@ -327,7 +331,7 @@ def shorts_of(conn: Db.Connection) -> Result[Int]
 end
 
 def scratch_dir() -> Result[String]
-  dir = try Path.join(["..", "..", "tmp", "properties", "#{System.pid}-#{Time.monotonic_ns()}"])
+  dir = try Path.join(["..", "tmp", "properties", "#{System.pid}-#{Time.monotonic_ns()}"])
   try Dir.mkdir(dir)
   return ok(dir)
 end

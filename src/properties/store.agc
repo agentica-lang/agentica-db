@@ -104,8 +104,9 @@ def columns_of(adapter: Adapter) -> List[Column]
 end
 
 # MySQL has no NaN and no infinity, and its adapter refuses them (specs/mysql.feature), so its generator makes none.
-# CI showed a -0.0 reading back as 0.0 on MySQL 8.4 and MariaDB 11 (through the FFI driver, and PostgreSQL and SQLite's
-# FFI and native drivers keep or document it), so it is left out until agentica-db says where that comes from.
+# CI showed a -0.0 reading back as 0.0 on MySQL 8.4 and MariaDB 11 (PostgreSQL keeps it, and SQLite does it on purpose,
+# see `held`). Whether the server or the FFI driver does it is open (agentica-lang/agentica-db#84), so a negative zero
+# is left out of the MySQL generator until that issue says.
 def float_kinds(adapter: Adapter) -> Gens.FloatKinds
   case adapter
     Adapter.Sqlite -> return Gens.FloatKinds(nan: true, infinite: true, negative_zero: true)

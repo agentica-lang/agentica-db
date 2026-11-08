@@ -5,10 +5,9 @@ name = "properties"
 # src/db or src/pool. db and pool are members of the workspace (the root agentica.toml), read from their folders.
 #
 # prop is a normal dependency for now: the manifest has no test-only dependency yet. Move it to one when Agentica
-# supports it (https://github.com/agentica-lang/agentica/issues/1196). The commit is the one of the merge of
-# agentica-lang/packages#14; move it to the tag prop-0.1.0 when that tag exists.
+# supports it (https://github.com/agentica-lang/agentica/issues/1196).
 [dependencies]
-prop = { git = "https://github.com/agentica-lang/packages", ref = "14c29d4ac7e399401efe849ae415f2da333d42f3", subdir = "prop" }
+prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.1.0", subdir = "prop" }
 db = { git = "https://github.com/agentica-lang/agentica-db", ref = "6ed767b557afe9d10bcbe020e58c5ed3f661d8ae", subdir = "src/db" }
 pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf", subdir = "src/pool" }
 

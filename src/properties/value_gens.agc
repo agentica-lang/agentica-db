@@ -180,18 +180,19 @@ def text_gen() -> Prop.Gen[String]
   return Prop.map(Prop.list(piece_gen(), MAX_TEXT_PIECES)) do |pieces| "Text #{pieces.join("")}" end
 end
 
-# One of the pieces above or a code point of Unicode, which skips the surrogates and the NUL, that no text holds.
-# Pick 1 is the first piece, so a shrunk text is made of it.
+# One of the pieces above in half of the cases, else any code point, which skips the NUL and the surrogates (no text
+# holds them). A shrunk text is made of the first piece, the empty one.
 def piece_gen() -> Prop.Gen[String]
-  return Prop.map(Prop.int(1, TEXT_PIECES.length + LAST_CODE_POINT - SURROGATE_COUNT)) do |pick| piece_of(pick) end
+  picks = Prop.pair(Prop.int(0, 2 * TEXT_PIECES.length), Prop.int(1, LAST_CODE_POINT - SURROGATE_COUNT))
+  return Prop.map(picks) do |pair| piece_of(pair.first, pair.second) end
 end
 
-def piece_of(pick: Int) -> String
-  if pick <= TEXT_PIECES.length
-    return TEXT_PIECES[pick - 1]
+def piece_of(pick: Int, free: Int) -> String
+  if pick < TEXT_PIECES.length
+    return TEXT_PIECES[pick]
   end
 
-  code = pick - TEXT_PIECES.length
+  code = free
   if code >= FIRST_SURROGATE
     code = code + SURROGATE_COUNT
   end

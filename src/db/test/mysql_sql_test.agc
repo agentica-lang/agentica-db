@@ -39,7 +39,7 @@ def main() -> Void
     end,
     # A step budget (2.5 million for a test) is the measure: the scan took about 7000 steps for this statement, so 1000
     # of them did not fit, and a statement of an application runs this check at every call.
-    Test.test("a plain statement is checked in a few steps, whatever its length") do
+    Test.test("a plain statement is checked in a few steps") do
       sql = "insert into notes (room_id, author_id, body, created_at) values (?, ?, ?, ?)"
       for _ in 0...1000
         try MysqlSql.inspect(sql)

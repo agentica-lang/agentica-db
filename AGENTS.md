@@ -3,7 +3,7 @@
 One database API for Agentica and one adapter per database, through the C FFI, and for SQLite and PostgreSQL also a
 native module of ours (`src/db/native/`, the only C code of the repository, which Agentica builds at the first run; the
 FFI driver stays for a run without the built library). The repository
-is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
+is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with three packages in `src/`:
 
 ```text
 src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the dependency on pool; agentica.lock)

@@ -12,8 +12,8 @@ CHECKOUT_MS = 60
 # A burst never times out a caller or a body: it counts who is refused.
 BURST_LEASE_MS = 30_000
 BURST_CHECKOUT_MS = 30_000
-# Longer than the time the callers of a burst need to arrive, so none finishes before the last one asks.
-BURST_HOLD_MS = 100
+# The most a burst waits for its callers to be refused, hold a resource or stand in line; and for a body to be let go.
+PLACE_MS = 10_000
 HANG_MS = 60_000
 CLOSE_DRAIN_MS = 100
 ANSWER_MS = 10_000
@@ -64,10 +64,23 @@ struct Cell
   fake: Fake
 end
 
+# `gated` bodies hold their resource until the key "release" is put in `stats` (a burst), not for a time.
 struct JobArgs
   pool: Pool.Pool[Fake, Cell]
   stats: ATS[String, Int]
   job: Job
+  gated: Bool
+end
+
+struct Bounds
+  least: Int
+  most: Int
+end
+
+# The tasks of the callers: the ones that are awaited, and the ones that cancel a caller.
+struct Started
+  waited: List[Task[Void]]
+  cancellers: List[Task[Void]]
 end
 
 struct CancelArgs
@@ -80,51 +93,88 @@ struct CloseArgs
   ms: Int
 end
 
-## The generator of a sequence: a setup and up to six jobs.
+## The generator of a sequence: a setup and up to six jobs, in their small ranges (the numbers that shrink are the
+## generator's, the case that is printed is the folded one).
 export def sequence_gen() -> Prop.Gen[Prop.Pair[Setup, List[Job]]]
-  return Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.list(Prop.of(Job.codec, JSON.schema(Job)), MAX_JOBS))
+  raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.list(Prop.of(Job.codec, JSON.schema(Job)), MAX_JOBS))
+  return Prop.map(raw) do |pair|
+    Prop.Pair(first: setup_of(pair.first), second: pair.second.map do |job| job_of(job) end)
+  end
 end
 
 ## The generator of a burst: a setup and how many callers arrive at once.
 export def burst_gen() -> Prop.Gen[Prop.Pair[Setup, Int]]
-  return Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.int(1, MAX_BURST))
+  raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.int(1, MAX_BURST))
+  return Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second) end
 end
 
 ## Runs the jobs on a pool of the setup, a task each, with the cancels and the close of the sequence. It checks that no
 ## resource was lent twice or after it ended, that the resources in use never passed `size + max_overflow`, that every
 ## caller that was not cancelled got an answer, and, once the pool is closed, that every resource made was ended and
 ## that no caller holds one or waits in line.
-export def keeps_invariants(raw: Setup, raw_jobs: List[Job]) -> Result[Void]
-  setup = setup_of(raw)
+export def keeps_invariants(setup: Setup, jobs: List[Job]) -> Result[Void]
   stats: ATS[String, Int] = ATS.new()
   pool = try Pool.start(spec_of(setup, stats, CHECKOUT_MS, LEASE_MS))
   closer = start_closer(pool, setup)
-  answered = run_jobs(pool, stats, raw_jobs.map do |job| job_of(job) end)
+  answered = finish_jobs(start_jobs(pool, stats, jobs, false))
   Pool.close(pool, CLOSE_DRAIN_MS)
   try wait_closer(closer)
   try answered
   return audit(setup, pool, stats)
 end
 
-## A burst of `count` callers that hold a resource at once. Beyond the `size + max_overflow` resources only
-## `max_waiting` callers may wait, so at least the rest are refused with a full queue; the others get their answer.
-export def keeps_line(raw: Setup, count: Int) -> Result[Void]
-  setup = setup_of(raw)
+## A burst of `count` callers that hold a resource at once, until the last of them is refused, holding a resource or
+## standing in line. The pool serves `size + max_overflow` of them and lets `max_waiting` wait, so at least the rest are
+## refused with a full queue, and no more of them hold a resource than the pool has. An eager pool with no overflow has
+## its resources at once, so there the numbers are exact. A resource that the owner is still making (an overflow one,
+## or any of a lazy pool) is not idle when a caller asks, so the caller can be refused although it could be served,
+## even a lone caller of a lazy pool with `max_waiting` 0 (agentica-lang/agentica-db#86): there the numbers are bounds,
+## and for a lazy pool the upper bound of refusals is every caller.
+export def keeps_line(setup: Setup, count: Int) -> Result[Void]
   stats: ATS[String, Int] = ATS.new()
   pool = try Pool.start(spec_of(setup, stats, BURST_CHECKOUT_MS, BURST_LEASE_MS))
-  jobs: List[Job] = List.repeat(Job(kind: Body.Holds, start_ms: 0, hold_ms: BURST_HOLD_MS, cancel_ms: none), count)
-  answered = run_jobs(pool, stats, jobs)
+  jobs: List[Job] = List.repeat(Job(kind: Body.Holds, start_ms: 0, hold_ms: 0, cancel_ms: none), count)
+  started = start_jobs(pool, stats, jobs, true)
+  placed = wait_placed(pool, stats, count)
+  stats.put("release", 1)
+  answered = finish_jobs(started)
   Pool.close(pool, CLOSE_DRAIN_MS)
+  try placed
   try answered
   try audit(setup, pool, stats)
-  refused = count_of(stats, "refused")
-  least = count - setup.size - setup.max_overflow - setup.max_waiting
-  if refused < least
-    return error("#{refused} of #{count} callers were refused, at least #{least} must be (#{describe(setup)})")
-  end
-
+  try within("callers refused", count_of(stats, "refused"), refusals(setup, count), setup)
+  try within("resources in use at once", peak_of(stats), peaks(setup, count), setup)
   if count_of(stats, "failed") > 0
     return error("#{count_of(stats, "failed")} of #{count} callers failed without being refused (#{describe(setup)})")
+  end
+
+  return ok()
+end
+
+# The least and the most callers that are refused.
+def refusals(setup: Setup, count: Int) -> Bounds
+  least = [0, count - setup.size - setup.max_overflow - setup.max_waiting].max.unwrap!
+  most = [0, count - setup.size - setup.max_waiting].max.unwrap!
+  if setup.lazy
+    most = count
+  end
+
+  return Bounds(least: least, most: most)
+end
+
+# The least and the most resources in use at once.
+def peaks(setup: Setup, count: Int) -> Bounds
+  least = [count, setup.size].min.unwrap!
+  if setup.lazy
+    least = 0
+  end
+
+  return Bounds(least: least, most: [count, setup.size + setup.max_overflow].min.unwrap!)
+end
+
+def within(what: String, found: Int, bounds: Bounds, setup: Setup) -> Result[Void]
+  if found < bounds.least or found > bounds.most
+    return error("#{found} #{what}, from #{bounds.least} to #{bounds.most} expected (#{describe(setup)})")
   end
 
   return ok()
@@ -194,33 +244,54 @@ def wait_closer(closer: Optional[Task[Void]]) -> Result[Void]
   end
 end
 
-# Starts a task for each caller (and one that cancels it, when the job says so), and waits for the answer of every
-# caller that is not cancelled. A cancelled caller has no answer, which `audit` finds out from the counters.
-def run_jobs(pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int], jobs: List[Job]) -> Result[Void]
+# Starts a task for each caller, and one that cancels it when the job says so.
+def start_jobs(pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int], jobs: List[Job], gated: Bool) -> Started
   run_fn: Fn[JobArgs, Void] = &run_job
   cancel_fn: Fn[CancelArgs, Void] = &cancel_after
   waited: List[Task[Void]] = []
   cancellers: List[Task[Void]] = []
   for job in jobs
-    task = Task.spawn(run_fn, JobArgs(pool: pool, stats: stats, job: job))
+    task = Task.spawn(run_fn, JobArgs(pool: pool, stats: stats, job: job, gated: gated))
     case job.cancel_ms
       none -> waited = waited.push(task)
       some(ms) -> cancellers = cancellers.push(Task.spawn(cancel_fn, CancelArgs(task: task, ms: job.start_ms + ms)))
     end
   end
 
-  for task in waited
+  return Started(waited: waited, cancellers: cancellers)
+end
+
+# Waits for the answer of every caller that is not cancelled. A cancelled caller has no answer, which `audit` finds out
+# from the counters.
+def finish_jobs(started: Started) -> Result[Void]
+  for task in started.waited
     case Task.await(task, ANSWER_MS)
       Await.Done(_) -> next
       Await.TimedOut -> return error("a caller got no answer within #{ANSWER_MS} ms")
     end
   end
 
-  for task in cancellers
+  for task in started.cancellers
     case Task.await(task, ANSWER_MS)
       Await.Done(_) -> next
       Await.TimedOut -> return error("a cancel did not end within #{ANSWER_MS} ms")
     end
+  end
+
+  return ok()
+end
+
+# Waits until each of the `count` callers is refused, holds a resource or stands in line, which no time decides.
+def wait_placed(pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int], count: Int) -> Result[Void]
+  deadline = Time.monotonic_ms() + PLACE_MS
+  placed = 0
+  while placed < count and Time.monotonic_ms() < deadline
+    Task.sleep(POLL_MS)
+    placed = count_of(stats, "refused") + count_of(stats, "holders") + count_of(pool.counts, WAITING)
+  end
+
+  if placed < count
+    return error("only #{placed} of #{count} callers were refused, holding a resource or in line after #{PLACE_MS} ms")
   end
 
   return ok()
@@ -235,7 +306,7 @@ end
 # the pool (a timeout, a close), which the invariants allow.
 def run_job(args: JobArgs) -> Void
   Task.sleep(args.job.start_ms)
-  result = Pool.with(args.pool) do |cell| use(cell, args.job) end
+  result = Pool.with(args.pool) do |cell| use(cell, args) end
   case result
     ok(_) -> args.stats.add("answered", 1)
     error(message) if message.start_with?(QUEUE_FULL) -> args.stats.add("refused", 1)
@@ -244,28 +315,43 @@ def run_job(args: JobArgs) -> Void
 end
 
 # The body: it holds the resource, crashes, fails or hangs until the lease ends it. `holders` counts the resources in
-# use (the checkin gives one back), `peak` the most at once, and `violations` a resource lent while it was in use or
+# use (the checkin gives one back), the keys `held_at_N` the most at once, and `violations` a resource lent while it
+# was in use or
 # after it ended.
-def use(cell: Cell, job: Job) -> Result[Int]
+def use(cell: Cell, args: JobArgs) -> Result[Int]
   stats = cell.fake.stats
+  job = args.job
+  # Each count that `holders` reaches is a key: the peak is the highest one (a compare and put of one number would lose
+  # a peak to a task that reads before another puts).
   holders = stats.add("holders", 1)
-  if holders > count_of(stats, "peak")
-    stats.put("peak", holders)
-  end
+  stats.put_new("held_at_#{holders}", 1)
 
   if stats.add("lent_#{cell.id}", 1) > 1 or stats.has_key?("ended_#{cell.id}")
     stats.add("violations", 1)
   end
 
   case job.kind
+    # A runtime error in the body, which is how a body crashes (a Result error is a failure).
     Body.Crashes -> return ok("not a number".to_i!)
     Body.Fails -> return error("the body failed")
     Body.Hangs ->
       Task.sleep(HANG_MS)
       return ok(cell.id)
     Body.Holds ->
-      Task.sleep(job.hold_ms)
+      if args.gated
+        hold_until_released(stats)
+      else
+        Task.sleep(job.hold_ms)
+      end
+
       return ok(cell.id)
+  end
+end
+
+def hold_until_released(stats: ATS[String, Int]) -> Void
+  deadline = Time.monotonic_ms() + PLACE_MS
+  while not stats.has_key?("release") and Time.monotonic_ms() < deadline
+    Task.sleep(POLL_MS)
   end
 end
 
@@ -308,6 +394,15 @@ def count_of(stats: ATS[String, Int], name: String) -> Int
   return stats.get(name).unwrap_or(0)
 end
 
+def peak_of(stats: ATS[String, Int]) -> Int
+  peak = 0
+  while stats.has_key?("held_at_#{peak + 1}")
+    peak += 1
+  end
+
+  return peak
+end
+
 # What must hold once the pool is closed. The ending of the resources and the return of the last bodies are
 # asynchronous, so a count that is not yet right is polled for a while.
 def audit(setup: Setup, pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int]) -> Result[Void]
@@ -315,8 +410,8 @@ def audit(setup: Setup, pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int]) ->
     return error("a resource was lent twice or after it ended (#{describe(setup)})")
   end
 
-  if count_of(stats, "peak") > setup.size + setup.max_overflow
-    return error("#{count_of(stats, "peak")} resources in use at once (#{describe(setup)})")
+  if peak_of(stats) > setup.size + setup.max_overflow
+    return error("#{peak_of(stats)} resources in use at once (#{describe(setup)})")
   end
 
   try settle("resources in use", stats, "holders")
