@@ -12,6 +12,7 @@ import Postgres from "../postgres/postgres"
 import Protocol from "protocol"
 import {Request} from "protocol"
 import Sqlite from "../sqlite/sqlite"
+import SqliteNative from "../sqlite/native"
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
@@ -288,6 +289,8 @@ def act(state: State, req: Request) -> Handled
     "pool_commits" -> return reply_ok(pool_commits(state, req))
     "pool_writers_readers" -> return reply_ok(pool_writers_readers(state, req))
     "pool_short_calls" -> return reply_ok(pool_short_calls(state))
+    "pool_fallbacks" -> return reply_ok(pool_fallbacks(state))
+    "pool_repeat" -> return reply_ok(pool_repeat(state, req))
     "pool_close" -> return reply_ok(pool_close(state))
     "short_calls" -> return reply_ok(short_calls(state))
     "file_size" -> return file_size(state, req)
@@ -697,30 +700,67 @@ end
 
 # How many statements ran whole in a short call on the connection of a block of the pool, as one row.
 def pool_short_calls(state: State) -> State
+  return pool_stat(state, "shorts")
+end
+
+# How many short calls ran a statement and then left it to the compute pool (a value too long, rows past the caps, a
+# lock), on the connection of a block of the pool, as one row.
+def pool_fallbacks(state: State) -> State
+  return pool_stat(state, "fallbacks")
+end
+
+def pool_stat(state: State, name: String) -> State
   return with_pool(state) do |pool|
-    found = DbPool.with(pool) do |conn| ok(shorts_of(conn)) end
+    found = DbPool.with(pool) do |conn| ok(stat_of(conn, name)) end
     case found
       error(message) -> return failed(state, message)
-      ok(row) -> return shorts_row(state, row)
+      ok(row) -> return stat_row(state, name, row)
     end
   end
 end
 
 def short_calls(state: State) -> State
-  return with_conn(state) do |conn| shorts_row(state, shorts_of(conn)) end
+  return with_conn(state) do |conn| stat_row(state, "shorts", stat_of(conn, "shorts")) end
 end
 
-def shorts_of(conn: Db.Connection) -> Optional[Int]
+def stat_of(conn: Db.Connection, name: String) -> Optional[Int]
   case conn
-    Db.Connection.Sqlite(sqlite) -> return Sqlite.statement_cache(sqlite).map do |c| c.shorts end
+    Db.Connection.Sqlite(sqlite) -> return Sqlite.statement_cache(sqlite).map do |c| pick_stat(c, name) end
     _ -> return none
   end
 end
 
-def shorts_row(state: State, found: Optional[Int]) -> State
+def pick_stat(stats: SqliteNative.CacheStats, name: String) -> Int
+  if name == "fallbacks"
+    return stats.fallbacks
+  end
+
+  return stats.shorts
+end
+
+def stat_row(state: State, name: String, found: Optional[Int]) -> State
   case found
     none -> return failed(state, "only the native SQLite driver runs short calls")
+    some(n) if name == "fallbacks" -> return recorded(state, Outcome.Rows([{"fallbacks": Db.Value.Int(n)}]))
     some(n) -> return recorded(state, Outcome.Rows([{"shorts": Db.Value.Int(n)}]))
+  end
+end
+
+# One transaction in a block of the pool that runs the statement `req.text` `req.number` times.
+def pool_repeat(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    sql = sql_of(state, req.text)
+    done = DbPool.with(pool) do |conn|
+      Db.transaction(conn) do |tx|
+        for _ in 0...req.number
+          try Db.execute(tx, sql, [])
+        end
+
+        return ok()
+      end
+    end
+
+    return checked(state, done)
   end
 end
 

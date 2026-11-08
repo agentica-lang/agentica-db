@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A `DbPool` of a SQLite file takes the WAL checkpoints off the commits: a checkpointer task checkpoints when a commit
   leaves `checkpoint_frames` uncopied pages in the WAL or every `checkpoint_ms`, a commit at `checkpoint_cap`
   checkpoints itself, and the `COMMIT` of a transaction of short writes runs on the scheduler. A pool of 16 tasks
-  posting short transactions serves about 1.5 times the commits per second. The FFI driver keeps SQLite's own
+  posting short transactions serves about 1.3 times the commits per second. The FFI driver keeps SQLite's own
   checkpoints.
 
 ## [0.6.0] - 2026-11-07

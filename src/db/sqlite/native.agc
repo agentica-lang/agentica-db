@@ -46,8 +46,9 @@ struct Batch
 end
 
 ## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
-## statement, a `miss` prepared one, an `eviction` finalized the one used least long ago to make room, and `shorts`
-## counts the statements that ran whole in a short call on the scheduler.
+## statement, a `miss` prepared one, an `eviction` finalized the one used least long ago to make room, `shorts`
+## counts the statements that ran whole in a short call on the scheduler, and `fallbacks` the short calls that ran a
+## statement and then left it to the compute pool (a lock, a value too long, rows past the caps).
 export struct CacheStats
   size: Int
   capacity: Int
@@ -55,6 +56,7 @@ export struct CacheStats
   misses: Int
   evictions: Int
   shorts: Int
+  fallbacks: Int
 end
 
 ## The rows and the count of changes of a statement that ran to its end, and the frames in the WAL that no checkpoint

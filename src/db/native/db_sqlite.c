@@ -40,9 +40,11 @@
 #endif
 #include <dlfcn.h>
 #include <pthread.h>
+#include <time.h>
 #endif
 
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -298,6 +300,10 @@ static bool library_ready(void) {
    next writer whose snapshot has every frame copied starts the WAL again from its first frame.
    - `hold` counts the reasons that no connection of the pool may write in a short call: each checkpoint while it
      runs, and `restart`.
+   - `inflight` counts the short calls that run a write now (share_enter, share_leave). A checkpoint holds first and
+     then waits for them to end, so that none takes its snapshot after the checkpoint and commits in a short call:
+     share_enter counts itself before it looks at `hold`, and the checkpoint holds before it looks at `inflight`
+     (sequentially consistent atomics), so at least one of them sees the other.
    - `restart` is set by a checkpoint that copied every frame (and for a new WAL), and keeps that checkpoint's hold.
      The first commit that starts after it ends it (share_committed): that commit starts the WAL again or appends to
      it, and either way no writer after it can start it again before another checkpoint.
@@ -305,17 +311,20 @@ static bool library_ready(void) {
      hold that it left.
    - `copied` is the count of frames that the last checkpoint left copied, and `last` the frames in the WAL after the
      last commit, so that a commit tells how many frames of the WAL no checkpoint has copied yet: those past
-     `copied`, or all of them once the WAL started again (fewer frames than `last`).
+     `copied`, or all of them once the WAL may have started again.
    - `stuck` is set for good by a PRAGMA that checkpoints or changes the checkpoints on a connection of the pool
      (wal_checkpoint, wal_autocheckpoint), which the share does not see.
-   `lock` guards it all; it is held for a few instructions, never while SQLite's mutex is wanted. */
+   `hold`, `inflight`, `stuck` and `gen` are atomics, read without the lock (a short call never waits for it, and every
+   step reads `gen`); `lock` guards the updates of `hold`, `restart`, `gen`, `copied`, `last` and `refs`. It is held
+   for a few instructions, never while SQLite's mutex is wanted. */
 typedef struct {
   lock_t lock;
   int refs;
-  int hold;
+  atomic_int hold;
+  atomic_int inflight;
+  atomic_bool stuck;
+  atomic_uint_fast64_t gen;
   bool restart;
-  bool stuck;
-  uint64_t gen;
   int copied, last;
 } wal_share;
 
@@ -325,7 +334,10 @@ static wal_share *share_new(void) {
   if (!s) return NULL;
   lock_init(&s->lock);
   s->refs = 1;
-  s->hold = 1;
+  atomic_init(&s->hold, 1);
+  atomic_init(&s->inflight, 0);
+  atomic_init(&s->stuck, false);
+  atomic_init(&s->gen, 0);
   s->restart = true;
   return s;
 }
@@ -345,27 +357,36 @@ static void share_unref(wal_share *s) {
   free(s);
 }
 
-/* Whether nothing holds the short writes; false too when another thread has the lock this instant, so that a short
-   call never waits for it. */
-static bool share_calm(wal_share *s) {
-  if (!lock_try(&s->lock)) return false;
-  bool calm = s->hold == 0 && !s->stuck;
-  lock_drop(&s->lock);
-  return calm;
+/* A short call may write when nothing holds the writes: then it counts in `inflight` until share_leave. It never
+   waits. */
+static bool share_enter(wal_share *s) {
+  atomic_fetch_add(&s->inflight, 1);
+  if (atomic_load(&s->hold) == 0 && !atomic_load(&s->stuck)) return true;
+  atomic_fetch_sub(&s->inflight, 1);
+  return false;
 }
 
-static uint64_t share_gen(wal_share *s) {
-  lock_take(&s->lock);
-  uint64_t gen = s->gen;
-  lock_drop(&s->lock);
-  return gen;
+static void share_leave(wal_share *s) { atomic_fetch_sub(&s->inflight, 1); }
+
+static uint64_t share_gen(wal_share *s) { return (uint64_t)atomic_load(&s->gen); }
+
+/* A moment of the compute pool's thread, while a checkpoint waits for the short writes that run to end. */
+static void pause_briefly(void) {
+#if defined(_WIN32)
+  Sleep(0);
+#else
+  struct timespec t = {0, 50000};
+  (void)nanosleep(&t, NULL);
+#endif
 }
 
-/* A checkpoint starts: it holds the short writes until share_checkpointed. */
+/* A checkpoint starts: it holds the short writes until share_checkpointed, and waits for those that run (each a
+   bounded write, which never waits itself). On the compute pool. */
 static void share_checkpoint(wal_share *s) {
   lock_take(&s->lock);
-  s->hold++;
+  atomic_fetch_add(&s->hold, 1);
   lock_drop(&s->lock);
+  while (atomic_load(&s->inflight) > 0) pause_briefly();
 }
 
 /* A checkpoint ended, with COPIED frames of the WAL copied (-1: it failed). One that copied every frame (WHOLE)
@@ -373,35 +394,34 @@ static void share_checkpoint(wal_share *s) {
 static void share_checkpointed(wal_share *s, bool whole, int copied) {
   lock_take(&s->lock);
   if (copied >= 0) s->copied = copied;
-  if (whole) s->gen++;
+  if (whole) atomic_fetch_add(&s->gen, 1);
   if (whole && !s->restart)
     s->restart = true;
   else
-    s->hold--;
+    atomic_fetch_sub(&s->hold, 1);
   lock_drop(&s->lock);
 }
 
 /* A commit of a connection of the pool left FRAMES frames in the WAL; GEN is what share_gen gave before its step. The
-   frames that no checkpoint has copied. Two commits that report out of order look like a WAL that started again,
-   which only counts more frames, and so checkpoints sooner. */
+   frames that no checkpoint has copied. A commit that ends `restart` may have started the WAL again, whatever its
+   frames, and so may one with fewer frames than the last (or two commits that report out of order): `copied` then
+   counts nothing, which only counts more frames, and so checkpoints sooner. */
 static int share_committed(wal_share *s, uint64_t gen, int frames) {
   lock_take(&s->lock);
-  if (s->restart && s->gen == gen) {
+  bool again = frames < s->last;
+  if (s->restart && (uint64_t)atomic_load(&s->gen) == gen) {
     s->restart = false;
-    s->hold--;
+    atomic_fetch_sub(&s->hold, 1);
+    again = true;
   }
-  if (frames < s->last) s->copied = 0;
+  if (again) s->copied = 0;
   s->last = frames;
-  int fresh = frames > s->copied ? frames - s->copied : frames;
+  int uncopied = frames > s->copied ? frames - s->copied : frames;
   lock_drop(&s->lock);
-  return fresh;
+  return uncopied;
 }
 
-static void share_stick(wal_share *s) {
-  lock_take(&s->lock);
-  s->stuck = true;
-  lock_drop(&s->lock);
-}
+static void share_stick(wal_share *s) { atomic_store(&s->stuck, true); }
 
 /* ---- Connections and their statement cache. ---- */
 
@@ -412,7 +432,8 @@ enum { K_NONE, K_READ, K_WRITE, K_BEGIN, K_COMMIT };
    as read when SQLite had prepared it again `checked` times (after a schema change; -1: not read yet). `dirty` when
    a free function gave it back without its reset, which the next fetch makes. `steps` is the count of SQLite VM
    instructions of its last run (INT_MAX before the first one ends), which a write must keep within the budget of a
-   short call. */
+   short call. `long_value` is set for good once a run made a value or row past QUICK_BYTES, or rows past the caps
+   (a cost of INT_MAX): the short calls leave it to fetch, until SQLite prepares it again. */
 typedef struct {
   char *sql;
   size_t len;
@@ -424,6 +445,7 @@ typedef struct {
   bool dirty;
   int checked;
   int steps;
+  bool long_value;
 } entry;
 
 /* A statement that a free function could not finalize, left for the next fetch or the last free. */
@@ -449,7 +471,7 @@ typedef struct {
   int capacity;
   orphan *orphans;
   int pending;
-  uint64_t tick, hits, misses, evictions, shorts;
+  uint64_t tick, hits, misses, evictions, shorts, fallbacks;
   int level;
   bool hooked;
   int64_t quick_left;
@@ -509,8 +531,8 @@ static int progress(void *arg) {
    the step that committed, under its mutex of the database, where step() reads it. */
 static int wal_frames(void *arg, sqlite3 *db, const char *name, int frames) {
   (void)db;
-  (void)name;
-  ((conn *)arg)->frames = frames;
+  /* An ATTACHed database has a WAL of its own, which the pool does not count. */
+  if (name && strcmp(name, "main") == 0) ((conn *)arg)->frames = frames;
   return SQLITE_OK;
 }
 
@@ -579,10 +601,27 @@ static bool cached(conn *c, const char *sql, size_t len, uint64_t hash) {
 /* A letter in lowercase; any other byte as it is (`| 0x20` would make `_` a DEL). */
 static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c; }
 
-/* Whether SQL starts with WORD (any case), as a whole word, after white space; *AT is where the word ends. */
+/* Where SQL goes on from I past white space and comments: a line comment (two dashes, to the end of the line) and a
+   block comment (slash and star, to star and slash, or to the end of the text as SQLite allows). */
+static size_t skip_space(const char *sql, size_t len, size_t i) {
+  for (;;) {
+    while (i < len && (sql[i] == ' ' || (sql[i] >= '\t' && sql[i] <= '\r'))) i++;
+    if (i + 1 < len && sql[i] == '-' && sql[i + 1] == '-') {
+      while (i < len && sql[i] != '\n') i++;
+    } else if (i + 1 < len && sql[i] == '/' && sql[i + 1] == '*') {
+      i += 2;
+      while (i < len && !(sql[i] == '*' && i + 1 < len && sql[i + 1] == '/')) i++;
+      i = i < len ? i + 2 : len;
+    } else {
+      return i;
+    }
+  }
+}
+
+/* Whether SQL starts with WORD (any case), as a whole word, after white space and comments; *AT is where the word
+   ends. */
 static bool starts_with_word(const char *sql, size_t len, const char *word, size_t *at) {
-  size_t i = 0, n = strlen(word), k = 0;
-  while (i < len && (sql[i] == ' ' || (sql[i] >= '\t' && sql[i] <= '\r'))) i++;
+  size_t i = skip_space(sql, len, 0), n = strlen(word), k = 0;
   while (k < n && i + k < len && lower(sql[i + k]) == word[k]) k++;
   if (k != n) return false;
   *at = i + n;
@@ -604,12 +643,11 @@ static bool take_word(const char *sql, size_t len, size_t *at, const char *word)
   return true;
 }
 
-/* Whether nothing but white space and one `;` follows AT. */
+/* Whether nothing but white space, comments and one `;` follows AT. */
 static bool ends_at(const char *sql, size_t len, size_t at) {
-  const char *rest = sql + at, *stop = sql + len;
-  while (rest < stop && (*rest == ' ' || (*rest >= '\t' && *rest <= '\r'))) rest++;
-  if (rest < stop && *rest == ';') rest++;
-  return blank(rest, stop);
+  size_t rest = skip_space(sql, len, at);
+  if (rest < len && sql[rest] == ';') rest++;
+  return skip_space(sql, len, rest) == len;
 }
 
 /* Whether a statement that only reads may run in a short call: a SELECT, WITH or VALUES, or one of the PRAGMAs that
@@ -697,7 +735,7 @@ static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite
     /* Its finalize, which the caller makes, ends what its reset would. */
     if (slot->dirty) c->pending--;
   }
-  *slot = (entry){copy, len, hash, stmt, ++c->tick, true, K_NONE, false, -1, INT_MAX};
+  *slot = (entry){copy, len, hash, stmt, ++c->tick, true, K_NONE, false, -1, INT_MAX, false};
   return slot;
 }
 
@@ -727,6 +765,7 @@ static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit,
   bool finalize = e == NULL;
   lock_take(&c->lock);
   if (e && steps != NO_STEPS) e->steps = steps;
+  if (e && steps == INT_MAX) e->long_value = true;
   /* Only a short call counts a hit here, one that ran its statement whole. */
   if (hit) {
     c->hits++;
@@ -1111,8 +1150,8 @@ static int step(conn *c, sqlite3_stmt *stmt, bool short_call, outcome *o) {
   int rc = sq.step(stmt);
   if (rc == SQLITE_DONE) o->changes = sq.total_changes(c->db) == before ? 0 : sq.changes(c->db);
   if (c->share && c->frames > 0) {
-    int fresh = share_committed(c->share, gen, c->frames);
-    if (fresh > o->frames) o->frames = fresh;
+    int uncopied = share_committed(c->share, gen, c->frames);
+    if (uncopied > o->frames) o->frames = uncopied;
   }
   bool begun = fresh && !sq.get_autocommit(c->db);
   if (!sq.stmt_readonly(stmt) && !begun)
@@ -1402,6 +1441,7 @@ static sqlite3_stmt *acquire(conn *c, const char *sql, size_t len, bool cache, e
     unsigned char kind = classify(c, stmt, sql, len);
     lock_take(&c->lock);
     (*e)->kind = kind;
+    (*e)->long_value = false;
     (*e)->checked = prepared;
     lock_drop(&c->lock);
   }
@@ -1539,31 +1579,60 @@ static int64_t row_size(sqlite3_stmt *stmt, int n) {
   return size;
 }
 
-/* What a PRAGMA that changes how the connection commits does to the short writes, before it runs: journal_mode,
-   synchronous and locking_mode end them on the connection (level W_NONE, as without a WAL), and wal_checkpoint and
-   wal_autocheckpoint (a checkpoint that the share does not count, and commits that checkpoint) also on every
-   connection of the pool, for good (share_stick). A schema name before the pragma's name counts too. */
+/* The name at *AT after white space and comments, bare or quoted ("", ``, [], a doubled quote inside is one), in
+   lowercase into OUT of CAP bytes; *AT moves past it. False when there is none or it does not fit. */
+static bool take_name(const char *sql, size_t len, size_t *at, char *out, size_t cap) {
+  size_t i = skip_space(sql, len, *at), n = 0;
+  if (i >= len) return false;
+  char open = sql[i], close = open == '[' ? ']' : open;
+  if (open == '"' || open == '`' || open == '[') {
+    for (i++; i < len; i++) {
+      if (sql[i] == close) {
+        if (close != ']' && i + 1 < len && sql[i + 1] == close) {
+          i++;
+        } else {
+          break;
+        }
+      }
+      if (n + 1 >= cap) return false;
+      out[n++] = lower(sql[i]);
+    }
+    if (i >= len) return false;
+    i++;
+  } else {
+    while (i < len && (sql[i] == '_' || (lower(sql[i]) >= 'a' && lower(sql[i]) <= 'z') ||
+                       (sql[i] >= '0' && sql[i] <= '9'))) {
+      if (n + 1 >= cap) return false;
+      out[n++] = lower(sql[i++]);
+    }
+  }
+  if (n == 0) return false;
+  out[n] = '\0';
+  *at = i;
+  return true;
+}
+
+/* What a PRAGMA that changes how the connection commits does to the short writes, before it runs. Setting
+   journal_mode, synchronous or locking_mode (`= value` or `(value)`) ends them on the connection (level W_NONE, as
+   without a WAL); wal_checkpoint in any form (it checkpoints, which the share does not count) and setting
+   wal_autocheckpoint (commits that checkpoint) also on every connection of the pool, for good (share_stick). Reading
+   a value changes nothing. The name may be quoted and follow a schema name, with comments between the words. */
 static void pragma_effect(conn *c, const char *sql, size_t len) {
   static const char *const level[] = {"journal_mode", "synchronous", "locking_mode"};
-  static const char *const checkpoints[] = {"wal_checkpoint", "wal_autocheckpoint"};
+  char name[32];
   size_t at = 0;
-  if (!take_word(sql, len, &at, "pragma")) return;
-  size_t name = at;
-  while (name < len && (sql[name] == ' ' || (sql[name] >= '\t' && sql[name] <= '\r'))) name++;
-  while (name < len && (sql[name] == '_' || ((sql[name] | 0x20) >= 'a' && (sql[name] | 0x20) <= 'z') ||
-                        (sql[name] >= '0' && sql[name] <= '9')))
-    name++;
-  if (name < len && sql[name] == '.') at = name + 1;
-  bool stick = false, drop = false;
-  for (size_t w = 0; w < sizeof checkpoints / sizeof checkpoints[0] && !stick; w++) {
-    size_t from = at;
-    stick = take_word(sql, len, &from, checkpoints[w]);
+  if (!take_word(sql, len, &at, "pragma") || !take_name(sql, len, &at, name, sizeof name)) return;
+  size_t dot = skip_space(sql, len, at);
+  if (dot < len && sql[dot] == '.') {
+    at = dot + 1;
+    if (!take_name(sql, len, &at, name, sizeof name)) return;
   }
-  for (size_t w = 0; w < sizeof level / sizeof level[0] && !drop; w++) {
-    size_t from = at;
-    drop = take_word(sql, len, &from, level[w]);
-  }
-  if (!stick && !drop) return;
+  size_t next = skip_space(sql, len, at);
+  bool sets = next < len && (sql[next] == '=' || sql[next] == '(');
+  bool stick = strcmp(name, "wal_checkpoint") == 0 || (sets && strcmp(name, "wal_autocheckpoint") == 0);
+  bool drop = stick;
+  for (size_t w = 0; w < sizeof level / sizeof level[0] && !drop; w++) drop = sets && strcmp(name, level[w]) == 0;
+  if (!drop) return;
   sqlite3_mutex *m = sq.db_mutex(c->db);
   sq.mutex_enter(m);
   wal_share *share = c->share;
@@ -1675,16 +1744,22 @@ static an_term fn_finish(an_env *env, int argc, const an_term *argv) {
    that wrote in fewer than QUICK_TXN_WRITES short calls and none on the compute pool (its dirty pages stay few, so
    SQLite does not spill them to the WAL), or one that commits itself where the commits are short (W_COMMIT); a COMMIT
    where they are, of a transaction that wrote only in a few short calls. In a pool, none of them while the share
-   holds: a checkpoint runs, or the next write to the WAL starts it again and syncs its header. A BEGIN then waits on
-   the compute pool behind the checkpoint, so that its snapshot comes after it and its commit starts the WAL again;
-   one that began during the checkpoint would append to the WAL instead, and the WAL would only grow. Under SQLite's
-   mutex of the database, which guards txn_writes and share. */
+   holds: a checkpoint runs, or the next write to the WAL starts it again and syncs its header; and one that may runs
+   counted in the share (share_enter), which the caller ends with share_leave. A BEGIN writes no frame, so holding it
+   is not what keeps the sync off the scheduler: it keeps Db.transaction's BEGIN IMMEDIATE, which takes its snapshot
+   at once, from taking one while a checkpoint runs, whose commit would then append to the WAL rather than start it
+   again. With a compute pool of one thread such writers kept the WAL from starting again under 300 ms syncs. A
+   deferred BEGIN takes no snapshot, and holding it only costs a call on the compute pool. Under SQLite's mutex of
+   the database, which guards txn_writes and share. */
 static bool write_now(conn *c, unsigned char kind, int level) {
-  if (c->share && !share_calm(c->share)) return false;
-  if (kind == K_BEGIN) return true;
-  if (kind == K_WRITE)
-    return sq.get_autocommit(c->db) ? level >= W_COMMIT : c->txn_writes < QUICK_TXN_WRITES;
-  return level >= W_COMMIT && c->txn_writes <= QUICK_TXN_WRITES;
+  bool fits;
+  if (kind == K_BEGIN)
+    fits = true;
+  else if (kind == K_WRITE)
+    fits = sq.get_autocommit(c->db) ? level >= W_COMMIT : c->txn_writes < QUICK_TXN_WRITES;
+  else
+    fits = level >= W_COMMIT && c->txn_writes <= QUICK_TXN_WRITES;
+  return fits && (!c->share || share_enter(c->share));
 }
 
 /* quick(conn, sql, params, options): the whole result of a cached statement in this short call, or none for the
@@ -1708,7 +1783,7 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   int level = c->level;
   /* A dirty entry needs its reset, which may wait: fetch makes it. A write whose last run took more instructions than
      the budget of a read runs on the compute pool. */
-  bool unfit = e && (e->kind == K_NONE || (e->kind != K_READ && level == W_NONE) ||
+  bool unfit = e && (e->kind == K_NONE || e->long_value || (e->kind != K_READ && level == W_NONE) ||
                      (e->kind == K_WRITE && e->steps > opt.quick_steps));
   if (e && (unfit || e->dirty)) {
     e->busy = false;
@@ -1807,8 +1882,14 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
      rows too big, send the next runs to fetch until one of them is cheap again. */
   int steps = run_steps(stmt);
   if (toobig || big) steps = INT_MAX;
+  if (writes && c->share) share_leave(c->share);
   sq.mutex_leave(m);
   release(c, stmt, e, false, !fallback, (done && !fallback) || toobig ? steps : NO_STEPS);
+  if (fallback) {
+    lock_take(&c->lock);
+    c->fallbacks++;
+    lock_drop(&c->lock);
+  }
   an_term list = an_list_end(env, &rows);
   if (fallback) return an_none(env);
   if (!writes) o.changes = 0;
@@ -1938,12 +2019,13 @@ static an_term fn_cache_stats(an_env *env, int argc, const an_term *argv) {
   int64_t size = 0;
   lock_take(&c->lock);
   for (int i = 0; i < c->capacity; i++) size += c->entries[i].sql != NULL;
-  an_term fields[6] = {an_int(env, size),
+  an_term fields[7] = {an_int(env, size),
                        an_int(env, c->capacity),
                        an_int(env, (int64_t)c->hits),
                        an_int(env, (int64_t)c->misses),
                        an_int(env, (int64_t)c->evictions),
-                       an_int(env, (int64_t)c->shorts)};
+                       an_int(env, (int64_t)c->shorts),
+                       an_int(env, (int64_t)c->fallbacks)};
   lock_drop(&c->lock);
   return an_struct(env, CACHE_STATS, fields);
 }
@@ -1954,7 +2036,8 @@ static const an_type types[] = {
    "code: Int, extended: Int, upgrade: Bool, readonly: Bool, failure: String, rows: List[Map[String, Value]], "
    "changes: Int, frames: Int"},
   {"Fetch", AN_STRUCT, "keep: Bool, cache: Bool, rows: Int, bytes: Int, quick_rows: Int, quick_steps: Int"},
-  {"CacheStats", AN_STRUCT, "size: Int, capacity: Int, hits: Int, misses: Int, evictions: Int, shorts: Int"},
+  {"CacheStats", AN_STRUCT,
+   "size: Int, capacity: Int, hits: Int, misses: Int, evictions: Int, shorts: Int, fallbacks: Int"},
 };
 
 static const an_resource_type resources[] = {

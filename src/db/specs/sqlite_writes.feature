@@ -100,7 +100,8 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
 
   # A write of one row can still make or copy a long value in one instruction, which neither the plan nor the count
   # of instructions shows: in a short call a value or row over 256 KiB fails and the write runs again on the compute
-  # pool, in the same transaction. No checkpoint runs, which would send the next write to the compute pool anyway.
+  # pool, in the same transaction. Its later runs go there at once: only the first short call gives its statement back.
+  # No checkpoint runs, which would send the next write to the compute pool anyway.
   Scenario Outline: A write that makes or copies a long value runs on the compute pool, <what> on sqlite
     Given the environment variable "AGENTICA_SCHEDULERS" is "1"
     And a "sqlite" database
@@ -118,10 +119,17 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
     And I run these statements in a transaction of the pool, and no scheduler stops for 100 ms:
       | sql   |
       | <sql> |
+    And I run these statements in a transaction of the pool, and no scheduler stops for 100 ms:
+      | sql   |
+      | <sql> |
     And I query "select count(*) as n from t" in the pool
     Then the result is:
       | n     |
-      | Int 3 |
+      | Int 4 |
+    When I read how many short calls left their statement to the compute pool in the pool
+    Then the result is:
+      | fallbacks |
+      | Int 1     |
 
     Examples:
       | what               | sql                                               |
@@ -174,6 +182,61 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
     Then the result is:
       | shorts |
       | Int 6  |
+
+  # A transaction writes in at most 64 short calls: SQLite keeps its pages in memory until the commit, and more of them
+  # could spill to the WAL inside a short call. The BEGIN and 64 inserts run there, the other 6 and the COMMIT on the
+  # compute pool.
+  Scenario: A transaction runs at most 64 writes in short calls on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db" with:
+      | option | value |
+      | size   | 1     |
+    And I execute "create table t (n integer)" in the pool
+    And I run "insert into t (n) values (1)" 70 times in a transaction of the pool
+    And I run "insert into t (n) values (1)" 70 times in a transaction of the pool
+    And I read how many statements ran in a short call in the pool
+    Then the result is:
+      | shorts |
+      | Int 65 |
+
+  # A write that makes SQLite spill pages to the WAL before the commit (here a row of 25 pages, and a cache of 10)
+  # makes the rest of its transaction run on the compute pool: only the BEGIN and that first insert run short.
+  Scenario: A write that spills the page cache ends the short writes of its transaction on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db?cache_size=10" with:
+      | option | value |
+      | size   | 1     |
+    And I execute "create table t (b blob)" in the pool
+    And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
+    And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
+    And I read how many statements ran in a short call in the pool
+    Then the result is:
+      | shorts |
+      | Int 2  |
+
+  # A PRAGMA that sets how a connection commits, here synchronous=FULL, whose commits sync the WAL, sends the writes of
+  # that connection to the compute pool from then on, however it is written; one that only reads the value changes
+  # nothing. The second transaction runs 3 short calls (its BEGIN, its insert, its COMMIT), and the third as many, or
+  # none.
+  Scenario Outline: A PRAGMA that sets how commits sync ends the short writes, and one that reads does not, <what> on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db" with:
+      | option | value |
+      | size   | 1     |
+    And I execute "create table t (n integer)" in the pool
+    And I commit 2 transactions in the pool, each running "insert into t (n) values (1)"
+    And I execute "<pragma>" in the pool
+    And I commit 1 transactions in the pool, each running "insert into t (n) values (1)"
+    And I read how many statements ran in a short call in the pool
+    Then the result is:
+      | shorts       |
+      | Int <shorts> |
+
+    Examples:
+      | what                                 | pragma                                         | shorts |
+      | a set                                | PRAGMA synchronous = FULL                      | 3      |
+      | a set after a comment, schema, quote | /* sync */ PRAGMA main . [synchronous] = FULL  | 3      |
+      | a read                               | PRAGMA synchronous                             | 6      |
 
   # The writers take turns at the line of the pool while other blocks read: no reader sees half of a transaction, and
   # every row is there after a reopen. The checkpointer runs meanwhile, at a mark of a few frames.

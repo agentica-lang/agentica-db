@@ -38,7 +38,9 @@ export OK = "ok"
 ## number: the `timeout_ms` of the call; each runs in one block of the pool), `pool_script` (table: header and
 ## statements, run in one block), `pool_close_connection` (a block that closes its connection), `pool_crash` (a block
 ## that crashes), `pool_hold` (number: the milliseconds a block keeps its connection), `pool_query_while_held` (text:
-## sql, number: the milliseconds a task keeps a connection of the pool while this one queries), `pool_transaction`
+## sql, number: the milliseconds a task keeps a connection of the pool while this one queries), `pool_repeat` (text:
+## sql, number: how many times one transaction of the pool runs it), `pool_fallbacks` (the short calls of a connection
+## of the pool that left their statement to the compute pool), `pool_transaction`
 ## (table: statements run in a transaction of one block, number: the least scheduler stop in milliseconds that fails
 ## it, 0 for no ticker), `pool_commits` (number: transactions, text: the sql of each), `pool_writers_readers` (number:
 ## writers, cells: the transactions of each, text: the table), `pool_short_calls` and `short_calls` (the statements of

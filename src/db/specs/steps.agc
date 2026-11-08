@@ -53,6 +53,9 @@ def main() -> Void
     BDD.step("I commit {int} transactions in the pool, each running {string}") do |ctx, args|
       send(ctx, Request(op: "pool_commits", number: args[0].to_i!, text: args[1]))
     end,
+    BDD.step("I run {string} {int} times in a transaction of the pool") do |ctx, args|
+      send(ctx, Request(op: "pool_repeat", text: args[0], number: args[1].to_i!))
+    end,
     BDD.step(
       "{int} writers of the pool each commit {int} transactions of two rows into {string} while readers count them",
     ) do |ctx, args|
@@ -64,6 +67,7 @@ def main() -> Void
       send(ctx, Request(op: "transaction_while_locked", text: args[0], number: args[1].to_i!, table: BDD.table(ctx)))
     end,
     plain_step("I read how many statements ran in a short call in the pool", "pool_short_calls"),
+    plain_step("I read how many short calls left their statement to the compute pool in the pool", "pool_fallbacks"),
     plain_step("I read how many statements ran in a short call", "short_calls"),
     plain_step("I close the pool", "pool_close"),
     BDD.step("the file {string} holds at most {int} bytes") do |ctx, args|
