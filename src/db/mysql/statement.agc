@@ -6,7 +6,7 @@ COUNTING_VERBS = Set.new(["insert", "update", "delete", "replace"])
 
 ## MySQL has no error for a BEGIN inside a transaction: it commits the open one without a word. Transactions do not
 ## nest here, as in the other adapters, so a BEGIN or START TRANSACTION is refused while the server says that one is
-## open (`open`).
+## open (the `open` argument).
 export def check_begin(open: Bool, verb: String) -> Result[Void]
   if (verb == "begin" or verb == "start") and open
     return error("mysql error: a transaction is already in progress")
