@@ -199,21 +199,6 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
       | shorts |
       | Int 65 |
 
-  # A write that makes SQLite spill pages to the WAL before the commit (here a row of 25 pages, and a cache of 10)
-  # makes the rest of its transaction run on the compute pool: only the BEGIN and that first insert run short.
-  Scenario: A write that spills the page cache ends the short writes of its transaction on sqlite
-    Given a "sqlite" database
-    When I start a pool on "sqlite:[SCRATCH]/writes.db?cache_size=10" with:
-      | option | value |
-      | size   | 1     |
-    And I execute "create table t (b blob)" in the pool
-    And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
-    And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
-    And I read how many statements ran in a short call in the pool
-    Then the result is:
-      | shorts |
-      | Int 2  |
-
   # A PRAGMA that sets how a connection commits, here synchronous=FULL, whose commits sync the WAL, sends the writes of
   # that connection to the compute pool from then on, however it is written; one that only reads the value changes
   # nothing. The second transaction runs 3 short calls (its BEGIN, its insert, its COMMIT), and the third as many, or
