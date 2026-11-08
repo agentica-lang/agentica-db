@@ -200,8 +200,8 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
       | Int 65 |
 
   # A write that makes SQLite spill pages to the WAL before the commit (here a row of 25 pages, and a cache of 10
-  # that spills past 10) makes the rest of its transaction run on the compute pool: only the BEGIN and that first
-  # insert run short.
+  # that spills past 10) makes the rest of its transaction run on the compute pool. Only the BEGIN and the first
+  # insert or two run short (2 on Linux, 3 on macOS), where without the rule 42 would.
   Scenario: A write that spills the page cache ends the short writes of its transaction on sqlite
     Given a "sqlite" database
     When I start a pool on "sqlite:[SCRATCH]/writes.db?cache_size=10" with:
@@ -211,10 +211,7 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
     And I execute "create table t (b blob)" in the pool
     And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
     And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
-    And I read how many statements ran in a short call in the pool
-    Then the result is:
-      | shorts |
-      | Int 2  |
+    Then at most 5 statements ran in a short call in the pool
 
   # wal_autocheckpoint is one setting of the connection, whatever schema name comes before it, and setting it replaces
   # the WAL hook of the pool: the short writes end for good. The second transaction runs 3 short calls, and the two

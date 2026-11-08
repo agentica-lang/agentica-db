@@ -69,6 +69,9 @@ def main() -> Void
     plain_step("I read how many statements ran in a short call in the pool", "pool_short_calls"),
     plain_step("I read how many short calls left their statement to the compute pool in the pool", "pool_fallbacks"),
     plain_step("I read how many statements ran in a short call", "short_calls"),
+    BDD.step("at most {int} statements ran in a short call in the pool") do |ctx, args|
+      send(ctx, Request(op: "pool_short_calls_at_most", number: args[0].to_i!))
+    end,
     plain_step("I close the pool", "pool_close"),
     BDD.step("the file {string} holds at most {int} bytes") do |ctx, args|
       send(ctx, Request(op: "file_size", text: args[0], number: args[1].to_i!))

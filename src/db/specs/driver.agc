@@ -294,6 +294,7 @@ def act(state: State, req: Request) -> Handled
     "pool_close" -> return reply_ok(pool_close(state))
     "short_calls" -> return reply_ok(short_calls(state))
     "file_size" -> return file_size(state, req)
+    "pool_short_calls_at_most" -> return short_calls_at_most(pool_short_calls(state), req.number)
     "transaction_while_locked" -> return transaction_while_locked(state, req)
     "in_transaction" -> return check_connection(state, req.op)
     "not_in_transaction" -> return check_connection(state, req.op)
@@ -716,6 +717,20 @@ def pool_stat(state: State, name: String) -> State
       error(message) -> return failed(state, message)
       ok(row) -> return stat_row(state, name, row)
     end
+  end
+end
+
+# Checks the count that `pool_short_calls` just recorded against its most, `most`.
+def short_calls_at_most(state: State, most: Int) -> Handled
+  case state.last
+    Outcome.Failed(message) -> return Handled(state: state, reply: message)
+    Outcome.Rows(rows) ->
+      case rows.first.get("shorts")
+        some(Db.Value.Int(n)) if n > most -> return Handled(state: state, reply: "#{n} statements ran in a short call")
+        _ -> return reply_ok(state)
+      end
+
+    _ -> return Handled(state: state, reply: "no count of short calls")
   end
 end
 

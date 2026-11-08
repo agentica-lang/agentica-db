@@ -47,7 +47,8 @@ export OK = "ok"
 ## a connection of the pool, or of this one, that ran in a short call), `pool_close`, the SQLite op
 ## `transaction_while_locked` (text: a database url, table: statements, number: milliseconds; a connection of its own
 ## holds the write lock that long while this one runs the statements in a transaction, which must wait for it), and
-## the expectations `file_size` (text: a file, number: its most bytes), `expect_rows`
+## the expectations `file_size` (text: a file, number: its most bytes), `pool_short_calls_at_most` (number: the most
+## statements of a connection of the pool that ran in a short call), `expect_rows`
 ## (table: header and rows), `expect_last` (number, table), `expect_count` (number), `expect_ok`, `expect_timeout` (the
 ## failure is one that `Db.timeout?` knows), `expect_prefix`, `expect_exact`, `expect_mentions`, `expect_hides` and
 ## `expect_kind` (text; for the last, the kind that `Orm.classify` gives the failure, such as `Conflict`).
