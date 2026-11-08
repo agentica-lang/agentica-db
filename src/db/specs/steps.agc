@@ -301,7 +301,7 @@ def start(ctx: BDD.Context) -> BDD.Context
   # `[SCRATCH]` is a folder of this scenario under tmp/, so that test files that run at once never share, or empty,
   # one folder. The driver makes it when a scenario needs it; the hook removes it, and the scenario is not failed
   # when it cannot (Windows keeps an open database file).
-  scratch = "#{Path.cwd().unwrap!}/tmp/scratch-#{SecureRandom.hex(8)}"
+  scratch = "#{Path.cwd().unwrap!}/tmp/scratch-#{OpenSSL.Random.hex(8)}"
   named = BDD.after(BDD.given_env(ctx, SCRATCH_VARIABLE, scratch)) do |_|
     make_writable("#{scratch}/readonly.db")
     _ = Path.remove(scratch, IO_TIMEOUT_MS)

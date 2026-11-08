@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 env:
-  # The package needs Agentica 0.26.1 (native modules, and native resources in a package): .github/actions/agentica
-  # builds the commit of the tag 0.26.1 of agentica-lang/agentica.
-  AGENTICA_COMMIT: 88f8bb3498ca86959f3e8dc7626d89de17e74ddf
+  # The package needs Agentica 0.27.0 (the OpenSSL builtins): .github/actions/agentica
+  # builds the commit of the tag 0.27.0 of agentica-lang/agentica.
+  AGENTICA_COMMIT: d42f1d49a559aecf8adaaff713893399745b675b
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
