@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `AGENTICA_DB_MYSQL_DRIVER` is read by `Db.open` of a MySQL url: `ffi` (or unset) runs the FFI driver, the only one
+  for now; `native` (which waits for agentica-lang/agentica#1193) and any other value are an error.
 - `DbPool.Options` has `max_waiting` (default 1000, 0 or more; 0 lets nobody wait): how many callers may wait for a
   connection.
 

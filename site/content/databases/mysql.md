@@ -84,3 +84,5 @@ A transaction starts with `START TRANSACTION`. They do not nest: `BEGIN` and `ST
 The end of the task that opened the connection closes it, or call `Db.close` earlier. `mysql_close` talks to the server and blocks the scheduler while it runs, so open the connection in the task that keeps it. A connection used after `close` is `mysql error: the connection is closed`.
 
 `open`, `query` and `execute` wait for the server on the compute pool, so other tasks keep running. Use a connection from one task at a time, and never close it while a query runs.
+
+The adapter calls Connector/C through `extern` functions (the FFI driver). `AGENTICA_DB_MYSQL_DRIVER=ffi` names it; a native driver, like the [SQLite one](/databases/sqlite/#drivers), waits for `an_blocking` of Agentica's native API ([agentica#1193](https://github.com/agentica-lang/agentica/issues/1193)), so `AGENTICA_DB_MYSQL_DRIVER=native`, like any other value, is an error of `open`.
