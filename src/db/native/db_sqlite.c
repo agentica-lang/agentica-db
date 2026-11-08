@@ -432,8 +432,9 @@ enum { K_NONE, K_READ, K_WRITE, K_BEGIN, K_COMMIT };
    as read when SQLite had prepared it again `checked` times (after a schema change; -1: not read yet). `dirty` when
    a free function gave it back without its reset, which the next fetch makes. `steps` is the count of SQLite VM
    instructions of its last run (INT_MAX before the first one ends), which a write must keep within the budget of a
-   short call. `long_value` is set for good once a run made a value or row past QUICK_BYTES, or rows past the caps
-   (a cost of INT_MAX): the short calls leave it to fetch, until SQLite prepares it again. */
+   short call. `long_value` is set for good once a run of a write made a value or row past QUICK_BYTES, or rows past
+   the caps (a cost of INT_MAX): the short calls leave it to fetch, until SQLite prepares it again. A read is not
+   marked: a short call stops it at the caps, and the next key may give a small result. */
 typedef struct {
   char *sql;
   size_t len;
@@ -765,7 +766,7 @@ static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit,
   bool finalize = e == NULL;
   lock_take(&c->lock);
   if (e && steps != NO_STEPS) e->steps = steps;
-  if (e && steps == INT_MAX) e->long_value = true;
+  if (e && steps == INT_MAX && e->kind != K_READ) e->long_value = true;
   /* Only a short call counts a hit here, one that ran its statement whole. */
   if (hit) {
     c->hits++;
@@ -1579,10 +1580,20 @@ static int64_t row_size(sqlite3_stmt *stmt, int n) {
   return size;
 }
 
-/* The name at *AT after white space and comments, bare or quoted ("", ``, [], a doubled quote inside is one), in
-   lowercase into OUT of CAP bytes; *AT moves past it. False when there is none or it does not fit. */
-static bool take_name(const char *sql, size_t len, size_t *at, char *out, size_t cap) {
+/* Whether C may be in a bare SQLite name: a letter, `_`, a byte of a UTF-8 character and, after the first, a digit
+   or `$`. */
+static bool name_byte(char c, bool first) {
+  unsigned char b = (unsigned char)c;
+  if (b >= 0x80 || c == '_' || (lower(c) >= 'a' && lower(c) <= 'z')) return true;
+  return !first && ((c >= '0' && c <= '9') || c == '$');
+}
+
+/* The name at *AT after white space and comments, bare or quoted ("", ``, [], a doubled quote inside is one); *AT
+   moves past it, however long it is. Its first CAP - 1 bytes go to OUT in lowercase, and *FITS says whether it all
+   did. False when there is no name there (or its quote never closes). */
+static bool take_name(const char *sql, size_t len, size_t *at, char *out, size_t cap, bool *fits) {
   size_t i = skip_space(sql, len, *at), n = 0;
+  *fits = true;
   if (i >= len) return false;
   char open = sql[i], close = open == '[' ? ']' : open;
   if (open == '"' || open == '`' || open == '[') {
@@ -1594,16 +1605,22 @@ static bool take_name(const char *sql, size_t len, size_t *at, char *out, size_t
           break;
         }
       }
-      if (n + 1 >= cap) return false;
-      out[n++] = lower(sql[i]);
+      if (n + 1 < cap) {
+        out[n++] = lower(sql[i]);
+      } else {
+        *fits = false;
+      }
     }
     if (i >= len) return false;
     i++;
   } else {
-    while (i < len && (sql[i] == '_' || (lower(sql[i]) >= 'a' && lower(sql[i]) <= 'z') ||
-                       (sql[i] >= '0' && sql[i] <= '9'))) {
-      if (n + 1 >= cap) return false;
-      out[n++] = lower(sql[i++]);
+    while (i < len && name_byte(sql[i], n == 0)) {
+      if (n + 1 < cap) {
+        out[n++] = lower(sql[i]);
+      } else {
+        *fits = false;
+      }
+      i++;
     }
   }
   if (n == 0) return false;
@@ -1615,23 +1632,30 @@ static bool take_name(const char *sql, size_t len, size_t *at, char *out, size_t
 /* What a PRAGMA that changes how the connection commits does to the short writes, before it runs. Setting
    journal_mode, synchronous or locking_mode (`= value` or `(value)`) ends them on the connection (level W_NONE, as
    without a WAL); wal_checkpoint in any form (it checkpoints, which the share does not count) and setting
-   wal_autocheckpoint (commits that checkpoint) also on every connection of the pool, for good (share_stick). Reading
-   a value changes nothing. The name may be quoted and follow a schema name, with comments between the words. */
+   wal_autocheckpoint (commits that checkpoint, on every database of the connection whatever the schema name) also on
+   every connection of the pool, for good (share_stick). Reading a value changes nothing. The name may be quoted and
+   follow a schema name of any length, with comments between the words. A PRAGMA whose name cannot be read counts as
+   all of them. */
 static void pragma_effect(conn *c, const char *sql, size_t len) {
   static const char *const level[] = {"journal_mode", "synchronous", "locking_mode"};
   char name[32];
+  bool fits;
   size_t at = 0;
-  if (!take_word(sql, len, &at, "pragma") || !take_name(sql, len, &at, name, sizeof name)) return;
+  if (!take_word(sql, len, &at, "pragma")) return;
+  bool known = take_name(sql, len, &at, name, sizeof name, &fits);
   size_t dot = skip_space(sql, len, at);
-  if (dot < len && sql[dot] == '.') {
+  if (known && dot < len && sql[dot] == '.') {
     at = dot + 1;
-    if (!take_name(sql, len, &at, name, sizeof name)) return;
+    known = take_name(sql, len, &at, name, sizeof name, &fits);
   }
-  size_t next = skip_space(sql, len, at);
-  bool sets = next < len && (sql[next] == '=' || sql[next] == '(');
-  bool stick = strcmp(name, "wal_checkpoint") == 0 || (sets && strcmp(name, "wal_autocheckpoint") == 0);
-  bool drop = stick;
-  for (size_t w = 0; w < sizeof level / sizeof level[0] && !drop; w++) drop = sets && strcmp(name, level[w]) == 0;
+  bool stick = !known, drop = !known;
+  if (known && fits) {
+    size_t next = skip_space(sql, len, at);
+    bool sets = next < len && (sql[next] == '=' || sql[next] == '(');
+    stick = strcmp(name, "wal_checkpoint") == 0 || (sets && strcmp(name, "wal_autocheckpoint") == 0);
+    drop = stick;
+    for (size_t w = 0; w < sizeof level / sizeof level[0] && !drop; w++) drop = sets && strcmp(name, level[w]) == 0;
+  }
   if (!drop) return;
   sqlite3_mutex *m = sq.db_mutex(c->db);
   sq.mutex_enter(m);

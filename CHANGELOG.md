@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checkpoints itself, and the `COMMIT` of a transaction of short writes runs on the scheduler. A pool of 16 tasks
   posting short transactions serves about 1.3 times the commits per second. The FFI driver keeps SQLite's own
   checkpoints.
+- `CacheStats.fallbacks` of the native SQLite driver (`Sqlite.statement_cache`): the short calls that left their
+  statement to the compute pool.
 
 ## [0.6.0] - 2026-11-07
 

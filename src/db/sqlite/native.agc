@@ -47,8 +47,9 @@ end
 
 ## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
 ## statement, a `miss` prepared one, an `eviction` finalized the one used least long ago to make room, `shorts`
-## counts the statements that ran whole in a short call on the scheduler, and `fallbacks` the short calls that ran a
-## statement and then left it to the compute pool (a lock, a value too long, rows past the caps).
+## counts the statements that ran whole in a short call on the scheduler, and `fallbacks` the short calls that took a
+## statement and then left it to the compute pool: its bound data too big (before it ran), or a lock, a value too
+## long or rows past the caps (while it ran).
 export struct CacheStats
   size: Int
   capacity: Int

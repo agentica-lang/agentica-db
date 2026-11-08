@@ -199,6 +199,46 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
       | shorts |
       | Int 65 |
 
+  # A write that makes SQLite spill pages to the WAL before the commit (here a row of 25 pages, and a cache of 10
+  # that spills past 10) makes the rest of its transaction run on the compute pool: only the BEGIN and that first
+  # insert run short.
+  Scenario: A write that spills the page cache ends the short writes of its transaction on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db?cache_size=10" with:
+      | option | value |
+      | size   | 1     |
+    And I execute "PRAGMA cache_spill = 10" in the pool
+    And I execute "create table t (b blob)" in the pool
+    And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
+    And I run "insert into t (b) values (randomblob(100000))" 40 times in a transaction of the pool
+    And I read how many statements ran in a short call in the pool
+    Then the result is:
+      | shorts |
+      | Int 2  |
+
+  # wal_autocheckpoint is one setting of the connection, whatever schema name comes before it, and setting it replaces
+  # the WAL hook of the pool: the short writes end for good. The second transaction runs 3 short calls, and the two
+  # after the PRAGMA none (3 each without it).
+  Scenario Outline: wal_autocheckpoint set under any schema name ends the short writes, <what> on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db" with:
+      | option | value |
+      | size   | 1     |
+    And I execute "create table t (n integer)" in the pool
+    And I commit 2 transactions in the pool, each running "insert into t (n) values (1)"
+    And I execute "ATTACH DATABASE ':memory:' AS <schema>" in the pool
+    And I execute "PRAGMA <schema>.wal_autocheckpoint = 7" in the pool
+    And I commit 2 transactions in the pool, each running "insert into t (n) values (1)"
+    And I read how many statements ran in a short call in the pool
+    Then the result is:
+      | shorts |
+      | Int 3  |
+
+    Examples:
+      | what                     | schema                                               |
+      | a name of other letters  | ñ                                                    |
+      | a name over 31 bytes     | [a_schema_name_that_is_longer_than_thirty_one_bytes] |
+
   # A PRAGMA that sets how a connection commits, here synchronous=FULL, whose commits sync the WAL, sends the writes of
   # that connection to the compute pool from then on, however it is written; one that only reads the value changes
   # nothing. The second transaction runs 3 short calls (its BEGIN, its insert, its COMMIT), and the third as many, or
