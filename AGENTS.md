@@ -53,7 +53,7 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 
 ## Commands
 
-- Binary: developing and testing the package needs Agentica 0.27.0 or later (native modules) and a C compiler
+- Binary: developing and testing the package needs Agentica 0.27.0 or later (the OpenSSL builtins) and a C compiler
   (`cc`, or `CC`); the minimum for a project that uses the package is the one in the README. Download a release
   under `.tools/` (gitignored), never `/tmp`. CI builds Agentica at the commit `AGENTICA_COMMIT` of
   `.github/workflows/ci.yml`, the one of the tag 0.27.0 (`.github/actions/agentica`); a version bump sets it to the
