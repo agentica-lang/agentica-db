@@ -54,9 +54,11 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
   `.github/workflows/ci.yml`, the one of the tag 0.26.1 (`.github/actions/agentica`); a version bump sets it to the
   commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
-  sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver (CI does both). PostgreSQL the same, with
-  `AGENTICA_DB_POSTGRES_DRIVER=ffi agentica test --only "on postgres" --tags "not @native"` and `agentica test
-  specs/postgres.feature`. A C change: C11, every return code of the library checked, every statement, result and
+  sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver. PostgreSQL the same, with
+  `AGENTICA_DB_POSTGRES_DRIVER=ffi`. CI runs every scenario of both on both drivers (`native`, then `ffi` with `--tags
+  "not @native"`; MySQL and MariaDB have the FFI driver only until #77), naming the driver in the variable so that a
+  run cannot fall back to the other one; `specs/driver_choice.feature` fails when the connection runs another driver
+  than the variable names. A C change: C11, every return code of the library checked, every statement, result and
   connection freed exactly once, also on the error paths; a free function never waits (no lock that a call holds, no
   socket I/O that can block).
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check

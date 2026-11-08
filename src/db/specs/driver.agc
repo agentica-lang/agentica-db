@@ -332,6 +332,7 @@ def act(state: State, req: Request) -> Handled
     "on_other" -> return reply_ok(on_other(state, req))
     "query_big_json" -> return reply_ok(query_big_json(state, req))
     "statement_cache" -> return reply_ok(statement_cache(state))
+    "driver_named" -> return reply_ok(driver_named(state, req.text))
     "cancel_task" -> return reply_ok(cancel_task(state, req))
     "query_each" -> return reply_ok(query_each(state, req))
     "cache_beside_big" -> return reply_ok(cache_beside_big(state, req))
@@ -1890,6 +1891,38 @@ def statement_cache(state: State) -> State
       _ -> return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
     end
   end
+end
+
+# Fails unless the connection runs the driver that the variable `name` asks for (`native` or `ffi`). Only the native
+# driver has a statement cache, which tells them apart. A variable that is not set asks for none: the adapter takes the
+# native driver when it loads, and any run passes.
+def driver_named(state: State, name: String) -> State
+  wanted = System.env(name).unwrap_or("")
+  return with_conn(state) do |conn|
+    case conn
+      Db.Connection.Sqlite(sqlite) ->
+        case Sqlite.statement_cache(sqlite)
+          some(_) -> return driver_ran(state, name, wanted, "native")
+          none -> return driver_ran(state, name, wanted, "ffi")
+        end
+
+      Db.Connection.Postgres(postgres) ->
+        case Postgres.statement_cache(postgres)
+          some(_) -> return driver_ran(state, name, wanted, "native")
+          none -> return driver_ran(state, name, wanted, "ffi")
+        end
+
+      _ -> return failed(state, "only a SQLite or PostgreSQL connection has a driver to name")
+    end
+  end
+end
+
+def driver_ran(state: State, name: String, wanted: String, ran: String) -> State
+  if wanted != "" and wanted != ran
+    return failed(state, "#{name} is #{wanted}, but the connection runs the #{ran} driver")
+  end
+
+  return recorded(state, Outcome.Done)
 end
 
 def cache_row(state: State, found: Optional[List[Int]]) -> State
