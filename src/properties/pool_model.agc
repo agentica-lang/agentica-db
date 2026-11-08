@@ -315,9 +315,8 @@ def run_job(args: JobArgs) -> Void
 end
 
 # The body: it holds the resource, crashes, fails or hangs until the lease ends it. `holders` counts the resources in
-# use (the checkin gives one back), the keys `held_at_N` the most at once, and `violations` a resource lent while it
-# was in use or
-# after it ended.
+# use (the checkin gives one back), each key `held_at_N` marks a count reached (the highest is the peak), and
+# `violations` counts a resource lent while it was in use or after it ended.
 def use(cell: Cell, args: JobArgs) -> Result[Int]
   stats = cell.fake.stats
   job = args.job
