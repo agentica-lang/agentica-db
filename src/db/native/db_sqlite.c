@@ -559,20 +559,25 @@ static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite
   return slot;
 }
 
+#define NO_STEPS (-1)
+
+/* The SQLite VM instructions of the run of STMT that ends, and the count starts again for the next one. Under
+   SQLite's mutex of the database or on the compute pool: SQLite does not say that reading the counter never waits. */
+static int run_steps(sqlite3_stmt *stmt) { return sq.stmt_status(stmt, SQLITE_STMTSTATUS_VM_STEP, 1); }
+
 /* Gives a statement back after its run: reset, unbound, and idle in the cache, or finalized when it has no entry or
    the connection closed meanwhile (then its entry is emptied here, the only owner left). RESET is false when the
-   caller has reset it already; HIT counts a run of the cached statement (a short call counts only one that ended). */
-static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit) {
+   caller has reset it already; HIT counts a run of the cached statement (a short call counts only one that ended).
+   STEPS is the count of run_steps for the entry, or NO_STEPS to keep the one it has (the statement did not run). */
+static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit, int steps) {
   /* reset gives the error of the last step again, which the caller has read already. */
   if (reset) {
     (void)sq.reset(stmt);
     (void)sq.clear_bindings(stmt);
   }
-  /* The instructions of this run, and the count starts again for the next one. */
-  int steps = sq.stmt_status(stmt, SQLITE_STMTSTATUS_VM_STEP, 1);
   bool finalize = e == NULL;
   lock_take(&c->lock);
-  if (e) e->steps = steps;
+  if (e && steps != NO_STEPS) e->steps = steps;
   /* Only a short call counts a hit here, one that ran its statement whole. */
   if (hit) {
     c->hits++;
@@ -683,7 +688,7 @@ static void settle(conn *c) {
     lock_take(&c->lock);
     c->pending--;
     lock_drop(&c->lock);
-    release(c, e->stmt, e, false, false);
+    release(c, e->stmt, e, false, false, NO_STEPS);
   }
 }
 
@@ -1402,7 +1407,7 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
     bool over;
     if (!bind_all(env, stmt, argv[3], 3, SIZE_MAX, &over, &o.why) || (opt.keep && !check_names(stmt, &o, false))) {
       if (o.code == 0) o.code = -1;
-      release(c, stmt, e, true, false);
+      release(c, stmt, e, true, false, NO_STEPS);
       cur->started = true;
       return batch(env, &o, an_list_end(env, &rows));
     }
@@ -1425,7 +1430,7 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
       if (!named && !check_names(stmt, &o, !o.readonly)) {
         outcome rest = {0};
         while (!o.readonly && step(c, stmt, false, &rest) == SQLITE_ROW) continue;
-        release(c, stmt, cur->e, true, false);
+        release(c, stmt, cur->e, true, false, run_steps(stmt));
         cur->stmt = NULL;
         break;
       }
@@ -1438,14 +1443,14 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
       }
     } else if (rc == SQLITE_DONE) {
       o.code = SQLITE_DONE;
-      release(c, stmt, cur->e, true, false);
+      release(c, stmt, cur->e, true, false, run_steps(stmt));
       cur->stmt = NULL;
       break;
     } else if (lock_code(rc)) {
       /* The statement stays: the caller waits and fetches again, which steps it again, or gives up with finish. */
       break;
     } else {
-      release(c, stmt, cur->e, true, false);
+      release(c, stmt, cur->e, true, false, run_steps(stmt));
       cur->stmt = NULL;
       break;
     }
@@ -1461,7 +1466,7 @@ static an_term fn_finish(an_env *env, int argc, const an_term *argv) {
   conn *c = conn_of(env, argv[0]);
   if (!c) return an_badarg(env, 0);
   if (!an_get_resource(env, argv[1], CURSOR, (void **)&cur) || cur->c != c) return an_badarg(env, 1);
-  if (cur->stmt) release(c, cur->stmt, cur->e, true, false);
+  if (cur->stmt) release(c, cur->stmt, cur->e, true, false, NO_STEPS);
   cur->stmt = NULL;
   cur->started = true;
   return an_void(env);
@@ -1512,7 +1517,7 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   sqlite3_mutex *m = sq.db_mutex(c->db);
   if (sq.mutex_try(m) != SQLITE_OK) {
     /* An idle entry is reset already: a reset here would wait for the mutex that another thread holds. */
-    release(c, stmt, e, false, false);
+    release(c, stmt, e, false, false, NO_STEPS);
     return an_none(env);
   }
   bool writes = e->kind != K_READ;
@@ -1522,7 +1527,7 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
        this call's own step prepares it there, with a plan not read yet: that one run may meet a long instruction,
        and the next call falls back here. A write that may not run now (write_now) runs on the compute pool. */
     sq.mutex_leave(m);
-    release(c, stmt, e, false, false);
+    release(c, stmt, e, false, false, NO_STEPS);
     return an_none(env);
   }
   bool done = false, fallback = false, over;
@@ -1582,8 +1587,10 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
      reset of a write that a lock stopped undoes what it began. */
   (void)sq.reset(stmt);
   (void)sq.clear_bindings(stmt);
+  /* Only a run to its end counts: a write that a lock stopped took a few steps of what it does. */
+  int steps = run_steps(stmt);
   sq.mutex_leave(m);
-  release(c, stmt, e, false, !fallback);
+  release(c, stmt, e, false, !fallback, done && !fallback ? steps : NO_STEPS);
   an_term list = an_list_end(env, &rows);
   if (fallback) return an_none(env);
   if (!writes) o.changes = 0;
