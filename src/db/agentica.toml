@@ -41,7 +41,7 @@ macos = { system = "libdb_postgres.dylib" }
 windows = { system = "db_postgres.dll" }
 
 # The system MariaDB Connector/C (`libmariadb.so.3`), which speaks to MySQL and MariaDB servers; `extern "mariadb"`
-# in mysql/mysql.agc opens the entry of the running system. A macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH
+# in mysql/ffi.agc opens the entry of the running system. A macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH
 # only: with Homebrew's mariadb-connector-c, run with DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib".
 [native.mariadb]
 linux = { system = "libmariadb.so.3" }
@@ -49,8 +49,9 @@ macos = { system = "libmariadb.3.dylib" }
 windows = { system = "libmariadb.dll" }
 
 # The native MySQL driver (mysql/native.agc), built from native/db_mysql.c like db_sqlite. It opens the system
-# libmariadb itself (the library of [native.mariadb]), so the build needs no client headers. It runs on Linux only (see
-# the module); elsewhere, and when the library does not load, the adapter runs the FFI driver (mysql/ffi.agc).
+# libmariadb itself (the library of [native.mariadb]), so the build needs no client headers. It is off until it runs
+# the library under an_blocking (agentica-lang/agentica#1193): until then the adapter runs the FFI driver
+# (mysql/ffi.agc). Once on, it runs on Linux only; elsewhere, and when the library does not load, the FFI one runs.
 [native.db_mysql]
 build = { sources = ["native/db_mysql.c"] }
 linux = { system = "libdb_mysql.so" }

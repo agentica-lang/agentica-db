@@ -499,6 +499,8 @@ typedef struct {
 /* The most statements that one query closes before it runs: after a schema change lets a big cache go, the closes
    spread over the next queries instead of holding one short call. */
 #define CLOSE_BATCH 32
+/* The room for closes that `connect` reserves besides the capacity of the cache (see close_later). */
+#define CLOSE_SPARE 8
 /* The seconds that the connection of `cancel` may take to connect, and to send its KILL QUERY and read the reply. */
 #define CANCEL_WAIT_S 5
 /* Why `connect` refuses (see the top); the adapter says the same (mysql/native.agc). */
@@ -519,16 +521,16 @@ static int find_entry(conn *c, const char *sql, size_t len, uint64_t hash) {
   return -1;
 }
 
-/* Keeps STMT for the next CLOSE. Out of memory, it is closed at once with the blocking call, which only sends the
-   few bytes of COM_STMT_CLOSE (no reply) on a connection that waits for no answer here, and frees the statement. */
+/* Keeps STMT for the next CLOSE. `connect` reserves room for the whole cache and CLOSE_SPARE more: a flush of a full
+   cache and the statements of the query fit, and each query closes up to CLOSE_BATCH while it adds a few. Past that
+   the list grows; out of memory then, the statement is left to the end of the session (its client memory is lost).
+   It is never closed with the blocking mysql_stmt_close here: that reads the socket (madb_reset_stmt, net_stmt_close)
+   while the connection has result data unread. */
 static void close_later(conn *c, MYSQL_STMT *stmt) {
   if (c->closing_size == c->closing_capacity) {
     int grown = c->closing_capacity ? c->closing_capacity * 2 : 16;
     void *more = grown > c->closing_capacity ? realloc(c->closing, (size_t)grown * sizeof *c->closing) : NULL;
-    if (!more) {
-      (void)my.stmt_close(stmt);
-      return;
-    }
+    if (!more) return;
     c->closing = more;
     c->closing_capacity = grown;
   }
@@ -1436,12 +1438,13 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       if (op_start(env, c, q, OP_STORE)) return wait_step(env, c, q);
       continue;
     case P_FREED:
-      /* The server ran the statement before the library saw 2057. A cached statement that is not a write is prepared
-         again and runs once more, as a first run; that runs twice what it does besides reading (a NEXTVAL, a stored
-         function that writes). A statement of this query alone (prepared just now, or with statement_cache=0) and a
-         write give the 2057: running them again could write twice. */
+      /* The server ran the statement before the library saw 2057. A statement that the cache held before this query
+         (a hit: it has no sql of its own) and that is not a write is prepared again and runs once more, as a first
+         run; that runs twice what it does besides reading (a NEXTVAL, a stored function that writes). A statement
+         prepared in this query (it holds its sql, cached now or not, statement_cache=0 too) and a write give the
+         2057: running them again could write twice. */
       q->phase = P_FINISH;
-      if (q->freed || q->extra || q->discard || q->retried || q->owned || q->counts || q->slot < 0) continue;
+      if (q->freed || q->extra || q->discard || q->retried || q->owned || q->counts || q->slot < 0 || q->sql) continue;
       {
         const entry *e = &c->entries[q->slot];
         q->sql = malloc(e->len ? e->len : 1);
@@ -1655,12 +1658,14 @@ static an_term fn_connect(an_env *env, int argc, const an_term *argv) {
   char *database = login_text(env, argv[0], L_DATABASE);
   conn *c = calloc(1, sizeof *c);
   entry *entries = calloc((size_t)(capacity ? capacity : 1), sizeof *entries);
-  MYSQL *m = l.host && l.user && l.password && l.ca && database && c && entries ? my.init(NULL) : NULL;
+  MYSQL_STMT **closing = malloc((size_t)(capacity + CLOSE_SPARE) * sizeof *closing);
+  MYSQL *m = l.host && l.user && l.password && l.ca && database && c && entries && closing ? my.init(NULL) : NULL;
   if (!m) {
     free_login(&l);
     free(database);
     free(c);
     free(entries);
+    free(closing);
     return an_raise(env, "mysql: out of memory");
   }
   unsigned backstop = timeout_ms > 0 ? (unsigned)((timeout_ms + 999) / 1000 + 10) : 0;
@@ -1681,12 +1686,15 @@ static an_term fn_connect(an_env *env, int argc, const an_term *argv) {
     free_login(&l);
     free(c);
     free(entries);
+    free(closing);
     return an_error(env, message, strlen(message));
   }
   lock_init(&c->lock);
   c->my = m;
   c->entries = entries;
   c->capacity = (int)capacity;
+  c->closing = closing;
+  c->closing_capacity = (int)capacity + CLOSE_SPARE;
   c->login = l;
   query_reset(&c->q);
   an_term out;

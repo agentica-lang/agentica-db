@@ -93,22 +93,17 @@ jobs:
           (cd src/db && agentica test --jobs 4)
           (cd src/pool && agentica test --jobs 4)
 
-      # The SQLite, PostgreSQL and MySQL scenarios again on the FFI drivers, which run where the native library is
-      # missing (and MySQL's everywhere until agentica#1193); @native are the scenarios of what only the native drivers
-      # have (the statement cache, batches, cancels).
+      # The SQLite and PostgreSQL scenarios again on the FFI drivers, which run where the native library is missing;
+      # @native are the scenarios of what only the native drivers have (the statement cache, batches, cancels).
       - name: Test the FFI driver
         env:
           AGENTICA_DB_SQLITE_DRIVER: ffi
           AGENTICA_DB_POSTGRES_DRIVER: ffi
-          AGENTICA_DB_MYSQL_DRIVER: ffi
           AGENTICA_DB_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable
-          AGENTICA_DB_MYSQL_URL: mysql://root:pw@127.0.0.1:3306/mysql
         run: |
           (cd src/db && agentica test --jobs 4 --only "on sqlite" --tags "not @native")
           (cd src/db && agentica test --jobs 4 --only "on postgres" --tags "not @native")
           (cd src/db && agentica test --jobs 4 specs/postgres.feature)
-          (cd src/db && agentica test --jobs 4 --only "on mysql" --tags "not @native")
-          (cd src/db && agentica test --jobs 4 specs/mysql.feature)
 
   # The SQLite scenarios on macOS and Windows. A service container runs on Linux only, so the PostgreSQL and MySQL
   # scenarios stay in the job above; here `--only "on sqlite"` keeps the SQLite ones (every one has that in its name).
