@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A native MySQL and MariaDB driver on Linux (`src/db/native/db_mysql.c`), the default there for `mysql://` and
+  `mariadb://` urls: a query waits on the socket with no compute call, prepared statements are cached per connection,
+  and rows come many per call. Url parameters `statement_cache`, `batch_rows` and `batch_bytes`;
+  `AGENTICA_DB_MYSQL_DRIVER=native` or `ffi` picks the driver. macOS and Windows keep the FFI driver.
+- With the native MySQL driver, a query after one that a cancelled task left on the connection kills it on the server
+  (`KILL QUERY`) and goes on.
 - `DbPool.Options` has `max_waiting` (default 1000, 0 or more; 0 lets nobody wait): how many callers may wait for a
   connection.
 

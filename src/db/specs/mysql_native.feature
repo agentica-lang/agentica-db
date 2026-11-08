@@ -4,9 +4,9 @@ Feature: MySQL native driver
   by `statement_cache` (100 by default, 0 for none), results read in batches of `batch_rows` rows or about
   `batch_bytes` bytes, one call per batch, and waits on the socket instead of compute calls. Only SELECT, INSERT,
   UPDATE, DELETE, REPLACE, WITH, VALUES and TABLE are cached, and a statement that changes the schema (CREATE, ALTER,
-  DROP, RENAME, TRUNCATE) lets the whole cache go. The FFI driver has none of this, so these scenarios have the tag
-  @native (the FFI run leaves them out). These scenarios need a server: set AGENTICA_DB_MYSQL_URL. [URL] is its url
-  (`[URL]&name=value` adds a parameter). MariaDB takes packets of 16 MB at most by default, hence the sizes of the
+  DROP, RENAME, TRUNCATE) lets the whole cache go. The FFI driver has none of this, so these scenarios have the
+  tag @native (the FFI run leaves them out). These scenarios need a server: set AGENTICA_DB_MYSQL_URL. [URL] is its
+  url (`[URL]&name=value` adds a parameter). MariaDB takes packets of 16 MB at most by default, hence the sizes of the
   big values.
 
   Scenario: A statement that ran before comes from the cache on mysql
