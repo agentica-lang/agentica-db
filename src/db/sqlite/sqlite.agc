@@ -16,7 +16,9 @@
 ##
 ## Two drivers run the statements. The native one (`native.agc`, a native module built from `native/db_sqlite.c`)
 ## keeps a cache of prepared statements per connection (`statement_cache`, 100 by default) and reads many rows per
-## call (`batch_rows`, `batch_bytes`); the FFI one (`ffi.agc`) prepares each statement and steps it row by row. `open`
+## call (`batch_rows`, `batch_bytes`); in WAL mode it runs a cached write whose plan bounds its work, and a BEGIN, in a
+## short call on the scheduler, and a COMMIT too on a connection whose pool takes its checkpoints
+## (`own_checkpoints`). The FFI one (`ffi.agc`) prepares each statement and steps it row by row. `open`
 ## takes the native driver when its library loads and the FFI one only when it does not (compiled bytecode run where
 ## the built library is gone); `AGENTICA_DB_SQLITE_DRIVER=native` or `ffi` chooses one (with `native`, a library that
 ## does not load is an error).
@@ -56,13 +58,37 @@ NUL_SQL = "sqlite error: the sql contains a NUL character"
 ## An open database, the time its statements wait for a lock, and the limit of a statement (0: none). `link` is
 ## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
 ## opaque and pass the `Connection` around. `deadline` is set only on the copy that a bounded call works with.
-## `gate` is the line of the writers of a pool (`with_gate`).
+## `gate` is the line of the writers of a pool (`with_gate`). `wal` is true for a connection of the native driver in
+## WAL mode, whose checkpoints a pool can take (`own_checkpoints`, which sets `checkpoints`), and `sync_commits` when a
+## commit syncs the WAL (`synchronous` full or extra), which keeps the COMMIT on the compute pool.
 export struct Connection
   link: Link
   busy_timeout: Int
   timeout_ms: Int = 0
   deadline: Int = 0
   gate: Optional[Gate] = none
+  wal: Bool = false
+  sync_commits: Bool = true
+  checkpoints: Optional[Checkpoints] = none
+end
+
+## How a pool takes the WAL checkpoints of its connections: a commit that leaves `frames` frames or more in the WAL
+## that no checkpoint has copied wakes the checkpointer of the pool through `nudge` (a channel of one value, which it
+## never waits to send), and one that leaves `cap` frames or more checkpoints at once on its own connection, so the WAL
+## stays near `cap` when the checkpointer lags (while no reader holds an older snapshot, as with SQLite's own
+## checkpoints). `wal` is what the
+## connections and the checkpoints share in the native module (`checkpoints`).
+export struct Checkpoints
+  nudge: Channel[Int]
+  frames: Int
+  cap: Int
+  wal: SqliteNative.Wal
+end
+
+# What `configure` set: the journal mode in force (empty when not known) and the `synchronous` level (empty: SQLite's).
+struct Journal
+  mode: String
+  synchronous: String
 end
 
 # The line of the writers of a pool. `turn` is the pool's, with its one token; `held` is this connection's, and holds a
@@ -99,10 +125,53 @@ export def open(path: String) -> Result[Connection]
   conn = Connection(link: link, busy_timeout: target.settings.busy_timeout, timeout_ms: target.settings.timeout_ms)
   configured = configure(uncached(conn), target.settings)
   case configured
-    ok(_) -> return ok(conn)
+    ok(journal) -> return ok(with_journal(conn, journal))
     error(message) ->
       close(conn)
       return error(message)
+  end
+end
+
+## The checkpoints of a pool, none where the native driver does not load (its connections run the FFI driver, whose
+## checkpoints stay SQLite's).
+export def checkpoints(nudge: Channel[Int], frames: Int, cap: Int) -> Optional[Checkpoints]
+  if not SqliteNative.available?()
+    return none
+  end
+
+  return some(Checkpoints(nudge: nudge, frames: frames, cap: cap, wal: SqliteNative.wal()))
+end
+
+## The connection with its checkpoints taken by a pool (`plan`): SQLite's autocheckpoint is off, and each commit
+## wakes the pool's checkpointer or checkpoints at the cap (see `Checkpoints`). Where the commits do not sync the WAL,
+## a COMMIT, and a write that commits, can then run in a short call: no commit of the connection checkpoints. A
+## connection of the FFI driver, or not in WAL mode, is given back as it is (SQLite's autocheckpoint stays).
+export def own_checkpoints(conn: Connection, plan: Checkpoints) -> Connection
+  if not conn.wal or closed?(conn.link)
+    return conn
+  end
+
+  case conn.link
+    Link.Native(native, _) ->
+      SqliteNative.own_checkpoints(native, plan.wal)
+      SqliteNative.inline_writes(native, not conn.sync_commits)
+      return conn.with(checkpoints: some(plan))
+    Link.Ffi(_) -> return conn
+  end
+end
+
+## Whether a pool can take the checkpoints of the connection: the native driver runs it, in WAL mode.
+export def checkpointable?(conn: Connection) -> Bool
+  return conn.wal
+end
+
+## Runs a PASSIVE checkpoint of the WAL of a pool (`plan`), which copies to the database what the WAL holds and no
+## reader needs, and never waits for a lock. The checkpointer of a pool calls it on a connection of its own, and a
+## commit at the cap on its own. A connection of the FFI driver does nothing.
+export def checkpoint(conn: Connection, plan: Checkpoints) -> Void
+  case conn.link
+    Link.Native(native, _) -> SqliteNative.checkpoint(native, plan.wal)
+    Link.Ffi(_) -> return
   end
 end
 
@@ -271,7 +340,10 @@ def run_query(conn: Connection, sql: String, params: List[Value]) -> Result[List
 
   wait = wait_of(conn)
   case conn.link
-    Link.Native(native, fetch) -> return SqliteNative.query(native, wait, sql, params, fetch)
+    Link.Native(native, fetch) ->
+      done = try SqliteNative.query(native, wait, sql, params, fetch)
+      after_commit(conn, done.frames)
+      return ok(done.rows)
     Link.Ffi(handle) -> return SqliteFfi.query(handle, wait, sql, params)
   end
 end
@@ -283,8 +355,28 @@ def run_execute(conn: Connection, sql: String, params: List[Value]) -> Result[In
 
   wait = wait_of(conn)
   case conn.link
-    Link.Native(native, fetch) -> return SqliteNative.execute(native, wait, sql, params, fetch)
+    Link.Native(native, fetch) ->
+      done = try SqliteNative.execute(native, wait, sql, params, fetch)
+      after_commit(conn, done.frames)
+      return ok(done.changes)
     Link.Ffi(handle) -> return SqliteFfi.execute(handle, wait, sql, params)
+  end
+end
+
+# A commit that left `frames` frames that no checkpoint has copied in the WAL of a connection whose pool takes its
+# checkpoints: at the cap it checkpoints here, on the compute pool, and a writer of the pool still holds the turn of
+# the writers meanwhile, so the WAL cannot grow past the cap by more than one transaction (while no reader holds an
+# older snapshot); at the mark it wakes the checkpointer of the pool. The commit is done either way: a checkpoint that
+# fails (another one runs) changes nothing.
+def after_commit(conn: Connection, frames: Int) -> Void
+  case conn.checkpoints
+    none -> return
+    some(plan) ->
+      if frames >= plan.cap
+        checkpoint(conn, plan)
+      elsif frames >= plan.frames
+        _ = plan.nudge.send(1, 0)
+      end
   end
 end
 
@@ -335,7 +427,7 @@ def timed_out[R](done: Result[R], limit: Int, deadline: Int) -> Result[R]
   end
 end
 
-def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
+def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Journal]
   if settings.fts5 and not fts5?(conn)
     return error("sqlite error: this SQLite was built without FTS5 (fts5=required)")
   end
@@ -343,29 +435,47 @@ def configure(conn: Connection, settings: SqliteUrl.Settings) -> Result[Void]
   # Set in both cases: a build can turn foreign keys on by default.
   try run_execute(conn, "PRAGMA foreign_keys = #{on_off(settings.foreign_keys)}", [])
   mode = try set_journal_mode(conn, settings)
-  try set_synchronous(conn, settings, mode)
+  level = try set_synchronous(conn, settings, mode)
   try run_query(conn, "PRAGMA mmap_size = #{settings.mmap_size}", [])
   try run_query(conn, "PRAGMA cache_size = #{settings.cache_size}", [])
   try run_query(conn, "PRAGMA journal_size_limit = #{settings.journal_size_limit}", [])
-  return ok()
+  return ok(Journal(mode: mode, synchronous: level))
+end
+
+# A connection of the native driver in WAL mode runs its cheap writes inside a transaction, and its BEGIN, in short
+# calls: there such a write syncs no file and takes no lock that it waits for. In the other modes a write can sync the
+# journal when the page cache spills, so they stay on the compute pool.
+def with_journal(conn: Connection, journal: Journal) -> Connection
+  if journal.mode != "wal"
+    return conn
+  end
+
+  case conn.link
+    Link.Native(native, _) ->
+      SqliteNative.inline_writes(native, false)
+      quiet = journal.synchronous == "normal" or journal.synchronous == "off"
+      return conn.with(wal: true, sync_commits: not quiet)
+    Link.Ffi(_) -> return conn
+  end
 end
 
 # NORMAL in WAL does not sync the WAL file at each commit, only at a checkpoint: a power loss (not a crash of the
 # process) can lose the last commits, but never corrupts the database. That is why it is the default only there; in
 # the other modes SQLite's own FULL stays, and a url that names the level always wins. `mode` is the journal mode in
-# force, empty when it is not known (a database that cannot be written, which has nothing to sync).
-def set_synchronous(conn: Connection, settings: SqliteUrl.Settings, mode: String) -> Result[Void]
+# force, empty when it is not known (a database that cannot be written, which has nothing to sync). It gives the level
+# set, empty when SQLite's own stays.
+def set_synchronous(conn: Connection, settings: SqliteUrl.Settings, mode: String) -> Result[String]
   level = settings.synchronous
   if level.empty? and mode == "wal"
     level = "normal"
   end
 
   if level.empty?
-    return ok()
+    return ok("")
   end
 
   try run_execute(conn, "PRAGMA synchronous = #{level.upcase}", [])
-  return ok()
+  return ok(level)
 end
 
 def on_off(flag: Bool) -> String

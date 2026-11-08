@@ -13,6 +13,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `AGENTICA_DB_POSTGRES_DRIVER=native` or `ffi` picks the driver.
 - With the native PostgreSQL driver, a query after one that a cancelled task left on the connection cancels it on the
   server and goes on, and queries of several tasks on one connection run one after the other.
+- With the native SQLite driver in WAL mode, the `BEGIN` of a transaction and a cached write whose plan finds its rows
+  by key run in one short call on the scheduler, and go to the compute pool when they would wait for the lock or
+  make a value over 256 KiB.
+- A `DbPool` of a SQLite file takes the WAL checkpoints off the commits: a checkpointer task checkpoints when a commit
+  leaves `checkpoint_frames` uncopied pages in the WAL or every `checkpoint_ms`, a commit at `checkpoint_cap`
+  checkpoints itself, and the `COMMIT` of a transaction of short writes runs on the scheduler. A pool of 16 tasks
+  posting short transactions serves about 1.3 times the commits per second. The FFI driver keeps SQLite's own
+  checkpoints.
+- `CacheStats.fallbacks` of the native SQLite driver (`Sqlite.statement_cache`): the short calls that left their
+  statement to the compute pool.
 
 ## [0.6.0] - 2026-11-07
 

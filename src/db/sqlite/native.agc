@@ -2,8 +2,9 @@
 ## `agentica.toml`), which Agentica builds at the first run or compile of a program, a fetched package too. A
 ## connection keeps its prepared statements in a cache keyed by the sql text, so a statement it ran before is not
 ## prepared again. A read of a cached statement runs whole in one short call when it is small (`Fetch.quick_steps`,
-## `quick_rows`); any other statement runs on the compute pool, one call per batch of rows. A lock comes back at once,
-## and the wait is made here.
+## `quick_rows`), and so does a cached write whose plan bounds its work, once `inline_writes` allows it (the top of
+## `native/db_sqlite.c` says when); any other statement runs on the compute pool, one call per batch of rows. A lock
+## comes back at once, and the wait is made here.
 
 import SqliteWait from "wait"
 import {Row, Value} from "../support/value"
@@ -30,7 +31,9 @@ end
 
 # One call's part of a statement. `code` is SQLITE_ROW when more rows follow, SQLITE_DONE at the end, else the code of
 # the failure, whose text is `failure`. `upgrade` is a write refused because this connection holds a read lock, which
-# is not waited for. `changes` is the count of the statement at SQLITE_DONE.
+# is not waited for. `changes` is the count of the statement at SQLITE_DONE, and `frames` the frames in the WAL that no
+# checkpoint has copied after a commit of this call, on a connection whose pool takes its checkpoints
+# (`own_checkpoints`; else 0).
 struct Batch
   code: Int
   extended: Int
@@ -39,22 +42,30 @@ struct Batch
   failure: String
   rows: List[Row]
   changes: Int
+  frames: Int
 end
 
 ## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
-## statement, a `miss` prepared one, an `eviction` finalized the one used least long ago to make room.
+## statement, a `miss` prepared one, an `eviction` finalized the one used least long ago to make room, `shorts`
+## counts the statements that ran whole in a short call on the scheduler, and `fallbacks` the short calls that took a
+## statement and then left it to the compute pool: its bound data too big (before it ran), or a lock, a value too
+## long or rows past the caps (while it ran).
 export struct CacheStats
   size: Int
   capacity: Int
   hits: Int
   misses: Int
   evictions: Int
+  shorts: Int
+  fallbacks: Int
 end
 
-# The rows and the count of changes of a statement that ran to its end.
-struct Done
+## The rows and the count of changes of a statement that ran to its end, and the frames in the WAL that no checkpoint
+## has copied after its commit (0 when it did not commit, or the pool does not take the checkpoints of the connection).
+export struct Done
   rows: List[Row]
   changes: Int
+  frames: Int
 end
 
 extern module "db_sqlite"
@@ -65,6 +76,18 @@ extern module "db_sqlite"
   ## Whether no transaction is open.
   export def autocommit?(conn: Conn) -> Bool
   export def cache_stats(conn: Conn) -> CacheStats
+  ## Lets a short call run the cheap writes and the BEGIN of a transaction (a WAL database only), and with `commits`
+  ## a write that commits too (only after `own_checkpoints`, and where a commit does not sync the WAL).
+  export def inline_writes(conn: Conn, commits: Bool) -> Void
+  ## What the connections of a pool share about their WAL: whether a checkpoint runs, or the next write to the WAL
+  ## starts it again, which syncs it; no connection writes in a short call meanwhile.
+  export resource Wal
+  export def wal() -> Wal
+  ## Turns SQLite's autocheckpoint off for the connection: its pool takes the checkpoints of the WAL that it shares in
+  ## `wal`, and each commit gives the frames in the WAL that no checkpoint has copied (`Done.frames`).
+  export compute def own_checkpoints(conn: Conn, wal: Wal) -> Void
+  ## A PASSIVE checkpoint of the WAL shared in `wal`: it copies what no reader needs and waits for nobody.
+  export compute def checkpoint(conn: Conn, wal: Wal) -> Void
 end
 
 ## Whether the module opens: false where the built library does not load, and the FFI driver runs.
@@ -78,25 +101,12 @@ export def open(path: String, flags: Int, cache: Int) -> Result[Conn]
 end
 
 ## Runs one statement and gives its rows.
-export def query(
-  conn: Conn,
-  wait: SqliteWait.Wait,
-  sql: String,
-  params: List[Value],
-  options: Fetch,
-) -> Result[List[Row]]
+export def query(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
   if SqliteWait.expired?(wait)
     return error(SqliteWait.INTERRUPTED)
   end
 
-  if options.quick_steps > 0
-    case quick(conn, sql, params, options)
-      some(batch) -> return rows_of(batch)
-      none -> return all_rows(conn, wait, sql, params, options)
-    end
-  end
-
-  return all_rows(conn, wait, sql, params, options)
+  return run_short(conn, wait, sql, params, options)
 end
 
 ## Ends what a cancelled query left on the connection: a statement that a lock stopped holds a write that SQLite never
@@ -108,14 +118,14 @@ export def settle(conn: Conn) -> Void
   end
 end
 
-## Runs one statement for its effect and gives the number of rows it inserted, updated or deleted.
-export def execute(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Int]
+## Runs one statement for its effect: its rows are stepped over, and `Done.changes` is the number of rows it inserted,
+## updated or deleted.
+export def execute(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
   if SqliteWait.expired?(wait)
     return error(SqliteWait.INTERRUPTED)
   end
 
-  done = try run(conn, wait, sql, params, options.with(keep: false, quick_steps: 0))
-  return ok(done.changes)
+  return run_short(conn, wait, sql, params, options.with(keep: false))
 end
 
 # The calls that only this file makes. A Cursor holds the statement of one query between its fetch calls; the last
@@ -132,14 +142,21 @@ extern module "db_sqlite"
   def quick(conn: Conn, sql: String, params: List[Value], options: Fetch) -> Optional[Batch]
 end
 
-def all_rows(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[List[Row]]
-  done = try run(conn, wait, sql, params, options)
-  return ok(done.rows)
+# The statement in one short call when the module can run it there, else on the compute pool.
+def run_short(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
+  if options.quick_steps > 0
+    case quick(conn, sql, params, options)
+      some(batch) -> return done_of(batch)
+      none -> return run(conn, wait, sql, params, options)
+    end
+  end
+
+  return run(conn, wait, sql, params, options)
 end
 
-def rows_of(batch: Batch) -> Result[List[Row]]
+def done_of(batch: Batch) -> Result[Done]
   if batch.code == SQLITE_DONE
-    return ok(batch.rows)
+    return ok(Done(rows: batch.rows, changes: batch.changes, frames: batch.frames))
   end
 
   return error(batch.failure)
@@ -152,9 +169,14 @@ def run(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], opt
   cur = cursor(conn)
   rows: List[Row] = []
   started = 0
+  frames = 0
   waited = false
   while true
     batch = fetch(conn, cur, sql, params, options)
+    if batch.frames > frames
+      frames = batch.frames
+    end
+
     if waited and not batch.readonly
       rows = batch.rows
     else
@@ -164,7 +186,7 @@ def run(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], opt
     waited = false
     if batch.code == SQLITE_DONE
       Native.close(cur)
-      return ok(Done(rows: rows, changes: batch.changes))
+      return ok(Done(rows: rows, changes: batch.changes, frames: frames))
     elsif batch.code == SQLITE_ROW
       started = 0
     else
@@ -188,5 +210,5 @@ def run(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], opt
   end
 
   Native.close(cur)
-  return ok(Done(rows: rows, changes: 0))
+  return ok(Done(rows: rows, changes: 0, frames: frames))
 end

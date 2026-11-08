@@ -12,6 +12,7 @@ import Postgres from "../postgres/postgres"
 import Protocol from "protocol"
 import {Request} from "protocol"
 import Sqlite from "../sqlite/sqlite"
+import SqliteNative from "../sqlite/native"
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
@@ -79,6 +80,8 @@ ARRIVAL_MS = 50
 TURN_HOLD_MS = 150
 # `pool_turn_after`: a block that sleeps this long in its transaction runs past its lease.
 STALL_MS = 10_000
+# `pool_writers_readers`: the tasks that count the rows while the writers write.
+READERS = 2
 
 # The struct of the Orm scenarios: the table `people`, whose age is a value or NULL.
 struct Person
@@ -208,6 +211,27 @@ struct Hold
   ms: Int
 end
 
+# A connection whose write lock a task gives back after `ms` milliseconds.
+struct Locked
+  conn: Db.Connection
+  ms: Int
+end
+
+# A writer of the pool that commits `count` transactions, each of two rows of its number `writer`, into `table`.
+struct PoolWriter
+  pool: DbPool.Pool
+  table: String
+  writer: Int
+  count: Int
+end
+
+# A reader of the pool that counts the rows of `table` until `done` closes; every count must be even.
+struct PoolReader
+  pool: DbPool.Pool
+  table: String
+  done: Channel[Int]
+end
+
 def main() -> Void
   # The folder is the scenario's own (see `scratch_dir`): this removes it if it exists, so a driver that runs alone
   # starts from nothing.
@@ -261,6 +285,17 @@ def act(state: State, req: Request) -> Handled
     "pool_crash" -> return reply_ok(pool_crash(state))
     "pool_hold" -> return reply_ok(pool_hold(state, req.number))
     "pool_query_while_held" -> return reply_ok(pool_query_while_held(state, req))
+    "pool_transaction" -> return reply_ok(pool_transaction(state, req))
+    "pool_commits" -> return reply_ok(pool_commits(state, req))
+    "pool_writers_readers" -> return reply_ok(pool_writers_readers(state, req))
+    "pool_short_calls" -> return reply_ok(pool_short_calls(state))
+    "pool_fallbacks" -> return reply_ok(pool_fallbacks(state))
+    "pool_repeat" -> return reply_ok(pool_repeat(state, req))
+    "pool_close" -> return reply_ok(pool_close(state))
+    "short_calls" -> return reply_ok(short_calls(state))
+    "file_size" -> return file_size(state, req)
+    "pool_short_calls_at_most" -> return short_calls_at_most(pool_short_calls(state), req.number)
+    "transaction_while_locked" -> return transaction_while_locked(state, req)
     "in_transaction" -> return check_connection(state, req.op)
     "not_in_transaction" -> return check_connection(state, req.op)
     "healthy" -> return check_connection(state, req.op)
@@ -440,6 +475,10 @@ def pool_setting(options: DbPool.Options, name: String, value: String) -> Result
     "max_overflow" -> return ok(options.with(max_overflow: try value.to_i))
     "checkout_ms" -> return ok(options.with(checkout_ms: try value.to_i))
     "lease_ms" -> return ok(options.with(lease_ms: try value.to_i))
+    "health_ms" -> return ok(options.with(health_ms: try value.to_i))
+    "checkpoint_frames" -> return ok(options.with(checkpoint_frames: try value.to_i))
+    "checkpoint_ms" -> return ok(options.with(checkpoint_ms: try value.to_i))
+    "checkpoint_cap" -> return ok(options.with(checkpoint_cap: try value.to_i))
     _ -> return error("unknown pool option #{name.inspect}")
   end
 end
@@ -542,6 +581,248 @@ def pool_query_while_held(state: State, req: Request) -> State
     asked = pool_query(state, req.with(number: Db.CONNECTION_DEFAULT))
     _ = Task.await(holder)
     return asked
+  end
+end
+
+# The statements of the table (the header row is skipped) run in one transaction in one block of the pool. With a
+# `number` above 0, a ticker task runs meanwhile, and the outcome is a failure when the scheduler stopped for that many
+# milliseconds or more: a write that runs long must not run in a short call.
+def pool_transaction(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    rows = req.table.drop(1)
+    if req.number <= 0
+      return checked(state, DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, rows) end end)
+    end
+
+    ticker = Task.spawn(&longest_pause, TICKER_MS)
+    Task.sleep(TICKER_START_MS)
+    done = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, rows) end end
+    case Task.await(ticker)
+      error(message) -> return failed(state, message)
+      ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
+      ok(_) -> return checked(state, done)
+    end
+  end
+end
+
+# `req.number` transactions, one after the other, each in a block of the pool, each running the statement `req.text`.
+def pool_commits(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    sql = sql_of(state, req.text)
+    for _ in 0...req.number
+      done = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| Db.execute(tx, sql, []) end end
+      if not done.ok?
+        return failed(state, done.message)
+      end
+    end
+
+    return recorded(state, Outcome.Done)
+  end
+end
+
+# `req.number` writers of the pool commit `req.cells[0]` transactions each, of two rows, into the table `req.text`,
+# while READERS readers count its rows in other blocks of the pool: a reader that sees an odd count saw half of a
+# transaction. The outcome is the first failure, if any.
+def pool_writers_readers(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    count = req.cells[0].to_i!
+    done: Channel[Int] = Channel.new(1)
+    readers: List[Task[Result[Int]]] = []
+    for _ in 0...READERS
+      readers = readers.push(Task.spawn(&count_rows, PoolReader(pool: pool, table: req.text, done: done)))
+    end
+
+    writers: List[Task[Result[Void]]] = []
+    for writer in 1..req.number
+      job = PoolWriter(pool: pool, table: req.text, writer: writer, count: count)
+      writers = writers.push(Task.spawn(&write_rows, job))
+    end
+
+    failures: List[String] = []
+    for task in writers
+      written = Task.await(task)
+      if not written.ok?
+        failures = failures.push(written.message)
+      end
+    end
+
+    done.close
+    for task in readers
+      read = Task.await(task)
+      if not read.ok?
+        failures = failures.push(read.message)
+      end
+    end
+
+    if not failures.empty?
+      return failed(state, failures[0])
+    end
+
+    return recorded(state, Outcome.Done)
+  end
+end
+
+def write_rows(job: PoolWriter) -> Result[Void]
+  sql = "insert into #{job.table} (writer) values (?)"
+  for _ in 0...job.count
+    try DbPool.with(job.pool) do |conn|
+      Db.transaction(conn) do |tx|
+        try Db.execute(tx, sql, [Db.Value.Int(job.writer)])
+        Db.execute(tx, sql, [Db.Value.Int(job.writer)])
+      end
+    end
+  end
+
+  return ok()
+end
+
+# The counts it read, each even, until the writers are done.
+def count_rows(job: PoolReader) -> Result[Int]
+  reads = 0
+  sql = "select count(*) as n from #{job.table}"
+  while not job.done.closed?
+    found = try DbPool.with(job.pool) do |conn| Db.query(conn, sql, []) end
+    n = try int_of(found)
+    if n % 2 != 0
+      return error("a reader saw #{n} rows, half of a transaction")
+    end
+
+    reads += 1
+    Task.sleep(1)
+  end
+
+  return ok(reads)
+end
+
+def pool_close(state: State) -> State
+  state.pools.each do |pool| DbPool.close(pool, POOL_DRAIN_MS) end
+  return State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
+end
+
+# How many statements ran whole in a short call on the connection of a block of the pool, as one row.
+def pool_short_calls(state: State) -> State
+  return pool_stat(state, "shorts")
+end
+
+# How many short calls ran a statement and then left it to the compute pool (a value too long, rows past the caps, a
+# lock), on the connection of a block of the pool, as one row.
+def pool_fallbacks(state: State) -> State
+  return pool_stat(state, "fallbacks")
+end
+
+def pool_stat(state: State, name: String) -> State
+  return with_pool(state) do |pool|
+    found = DbPool.with(pool) do |conn| ok(stat_of(conn, name)) end
+    case found
+      error(message) -> return failed(state, message)
+      ok(row) -> return stat_row(state, name, row)
+    end
+  end
+end
+
+# Checks the count that `pool_short_calls` just recorded against its most, `most`.
+def short_calls_at_most(state: State, most: Int) -> Handled
+  case state.last
+    Outcome.Failed(message) -> return Handled(state: state, reply: message)
+    Outcome.Rows(rows) ->
+      case rows.first.get("shorts")
+        some(Db.Value.Int(n)) if n > most -> return Handled(state: state, reply: "#{n} statements ran in a short call")
+        _ -> return reply_ok(state)
+      end
+
+    _ -> return Handled(state: state, reply: "no count of short calls")
+  end
+end
+
+def short_calls(state: State) -> State
+  return with_conn(state) do |conn| stat_row(state, "shorts", stat_of(conn, "shorts")) end
+end
+
+def stat_of(conn: Db.Connection, name: String) -> Optional[Int]
+  case conn
+    Db.Connection.Sqlite(sqlite) -> return Sqlite.statement_cache(sqlite).map do |c| pick_stat(c, name) end
+    _ -> return none
+  end
+end
+
+def pick_stat(stats: SqliteNative.CacheStats, name: String) -> Int
+  if name == "fallbacks"
+    return stats.fallbacks
+  end
+
+  return stats.shorts
+end
+
+def stat_row(state: State, name: String, found: Optional[Int]) -> State
+  case found
+    none -> return failed(state, "only the native SQLite driver runs short calls")
+    some(n) if name == "fallbacks" -> return recorded(state, Outcome.Rows([{"fallbacks": Db.Value.Int(n)}]))
+    some(n) -> return recorded(state, Outcome.Rows([{"shorts": Db.Value.Int(n)}]))
+  end
+end
+
+# One transaction in a block of the pool that runs the statement `req.text` `req.number` times.
+def pool_repeat(state: State, req: Request) -> State
+  return with_pool(state) do |pool|
+    sql = sql_of(state, req.text)
+    done = DbPool.with(pool) do |conn|
+      Db.transaction(conn) do |tx|
+        for _ in 0...req.number
+          try Db.execute(tx, sql, [])
+        end
+
+        return ok()
+      end
+    end
+
+    return checked(state, done)
+  end
+end
+
+# A connection of its own to `req.text` takes the write lock, and a task gives it back after `req.number` ms, while
+# the statements of the table run in a transaction on the connection of the scenario: its BEGIN must wait for the lock,
+# for at least half of that time, and then work.
+def transaction_while_locked(state: State, req: Request) -> Handled
+  if state.conns.empty?
+    return reply_ok(failed(state, NO_DATABASE))
+  end
+
+  case Db.open(expand(state, req.text))
+    error(message) -> return Handled(state: state, reply: message)
+    ok(other) ->
+      taken = Db.execute(other, "BEGIN IMMEDIATE", [])
+      if not taken.ok?
+        Db.close(other)
+        return Handled(state: state, reply: taken.message)
+      end
+
+      holder = Task.spawn(&unlock_after, Locked(conn: other, ms: req.number))
+      started = Time.monotonic_ms()
+      done = Db.transaction(state.conns[0]) do |tx| run_rows(tx, req.table.drop(1)) end
+      waited = Time.monotonic_ms() - started
+      _ = Task.await(holder)
+      Db.close(other)
+      if waited < req.number / 2
+        return Handled(state: state, reply: "the transaction took #{waited} ms, it did not wait for the lock")
+      end
+
+      return reply_ok(checked(state, done))
+  end
+end
+
+def unlock_after(job: Locked) -> Result[Int]
+  Task.sleep(job.ms)
+  return Db.execute(job.conn, "COMMIT", [])
+end
+
+# An expectation: the file `req.text` (with its markers) exists and holds at most `req.number` bytes.
+def file_size(state: State, req: Request) -> Handled
+  path = expand(state, req.text)
+  case File.stat(path, IO_TIMEOUT_MS)
+    error(message) -> return Handled(state: state, reply: message)
+    ok(info) if info.size_bytes > req.number ->
+      return Handled(state: state, reply: "it holds #{info.size_bytes} bytes")
+    ok(_) -> return reply_ok(state)
   end
 end
 

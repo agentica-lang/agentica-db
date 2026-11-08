@@ -10,12 +10,24 @@
  *   - quick, a short call on the scheduler, for a cached statement that only reads (SELECT, WITH, VALUES, a PRAGMA
  *     that sets nothing): it binds, steps and reads every row within a budget of SQLite VM instructions and a row and
  *     byte cap, or gives none (the budget ran out, the result is too big, a lock, or the connection is busy on another
- *     thread) and the caller runs fetch. The budget is counted, not timed: a clock read can be a system call;
+ *     thread) and the caller runs fetch. The budget is counted, not timed: a clock read can be a system call.
+ *     The same call runs a cached write whose plan bounds its own work (no scan of a table or an index, no trigger,
+ *     no virtual table: see short_plan) and a BEGIN, in a WAL database (inline_writes); a write that commits (a
+ *     COMMIT, or a write outside a transaction) only when the pool takes the checkpoints of the connection, so the
+ *     commit never checkpoints, the commit does not sync the WAL, and the transaction ran only such writes
+ *     (write_now). A write cannot be stopped midway (SQLite rolls back the whole transaction that an interrupted write
+ *     is in), so it has no budget of instructions: its plan bounds it, and so do the instructions of its last run, at
+ *     most QUICK_TXN_WRITES of them in a transaction, and a value or row of at most QUICK_BYTES (a longer one fails
+ *     the statement alone, which fetch runs again). In a pool, no write runs there while a checkpoint runs or the WAL
+ *     is to start again, which syncs it (wal_share). A lock comes back at once there, and the caller runs fetch.
+ *     Accepted: a schema change by another connection between two runs makes SQLite prepare the statement again inside
+ *     the step, so that one run follows a plan not read yet; the runs after it go to fetch, which reads it;
  *   - fetch, a dirty call on the compute pool, with a Cursor: it prepares (or takes the cached statement), binds,
  *     steps and reads up to the caps, and the next fetch goes on from there. A lock (SQLITE_BUSY, SQLITE_LOCKED) comes
  *     back at once with the rows so far, so the caller waits outside SQLite and fetches again.
  * Lock order: the lock of a connection (`conn.lock`) is never taken while SQLite's own mutex of the database is held
- * (the mutex may be taken under the lock: finalize does).
+ * (the mutex may be taken under the lock: finalize does). The lock of a wal_share is taken last, under either, and
+ * nothing is taken under it.
  */
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -28,9 +40,11 @@
 #endif
 #include <dlfcn.h>
 #include <pthread.h>
+#include <time.h>
 #endif
 
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,12 +75,17 @@ enum {
   SQLITE_BLOB = 4,
   SQLITE_UTF8 = 1,
   SQLITE_TXN_READ = 1,
+  SQLITE_STMTSTATUS_VM_STEP = 4,
+  SQLITE_DBSTATUS_CACHE_WRITE = 9,
   SQLITE_STMTSTATUS_REPREPARE = 5,
   SQLITE_OPEN_NOMUTEX = 0x8000,
   SQLITE_OPEN_FULLMUTEX = 0x10000,
 };
 /* sqlite3_txn_state came in 3.34.0; an older library does not have it, and a write is then waited for. */
 #define TXN_STATE_VERSION 3034000
+/* sqlite3_limit's id of the longest string, blob or row; sqlite3_wal_checkpoint_v2's mode that waits for nobody. */
+#define SQLITE_LIMIT_LENGTH 0
+#define SQLITE_CHECKPOINT_PASSIVE 0
 #define SQLITE_TRANSIENT ((sqlite3_destructor)-1)
 
 typedef struct {
@@ -107,6 +126,10 @@ typedef struct {
   void (*mutex_leave)(sqlite3_mutex *);
   int (*mutex_try)(sqlite3_mutex *);
   int (*stmt_status)(sqlite3_stmt *, int, int);
+  void *(*wal_hook)(sqlite3 *, int (*)(void *, sqlite3 *, const char *, int), void *);
+  int (*wal_checkpoint_v2)(sqlite3 *, const char *, int, int *, int *);
+  int (*limit)(sqlite3 *, int, int);
+  int (*db_status)(sqlite3 *, int, int *, int *, int);
   /* Optional: NULL in a library older than 3.34.0. */
   int (*txn_state)(sqlite3 *, const char *);
 } sqlite_api;
@@ -156,6 +179,10 @@ static const struct {
   SYM("mutex_leave", mutex_leave),
   SYM("mutex_try", mutex_try),
   SYM("stmt_status", stmt_status),
+  SYM("wal_hook", wal_hook),
+  SYM("wal_checkpoint_v2", wal_checkpoint_v2),
+  SYM("limit", limit),
+  SYM("db_status", db_status),
   SYM("txn_state", txn_state),
 };
 #define SYMBOL_COUNT (sizeof SYMBOLS / sizeof SYMBOLS[0])
@@ -265,12 +292,149 @@ static bool library_ready(void) {
   return load_error[0] == '\0';
 }
 
+/* ---- The WAL of a pool. ---- */
+
+/* What the connections of a pool and its checkpointer share about their WAL (the Wal resource). A commit that
+   writes the first frame of the WAL also writes its header and syncs it, a disk flush even with synchronous NORMAL,
+   so it must not run in a short call. That happens to a new WAL, and once a checkpoint has copied every frame: the
+   next writer whose snapshot has every frame copied starts the WAL again from its first frame.
+   - `hold` counts the reasons that no connection of the pool may write in a short call: each checkpoint while it
+     runs, and `restart`.
+   - `inflight` counts the short calls that run a write now (share_enter, share_leave). A checkpoint holds first and
+     then waits for them to end, so that none takes its snapshot after the checkpoint and commits in a short call:
+     share_enter counts itself before it looks at `hold`, and the checkpoint holds before it looks at `inflight`
+     (sequentially consistent atomics), so at least one of them sees the other.
+   - `restart` is set by a checkpoint that copied every frame (and for a new WAL), and keeps that checkpoint's hold.
+     The first commit that starts after it ends it (share_committed): that commit starts the WAL again or appends to
+     it, and either way no writer after it can start it again before another checkpoint.
+   - `gen` counts the checkpoints that copied every frame, so that a commit that started before one does not end the
+     hold that it left.
+   - `copied` is the count of frames that the last checkpoint left copied, and `last` the frames in the WAL after the
+     last commit, so that a commit tells how many frames of the WAL no checkpoint has copied yet: those past
+     `copied`, or all of them once the WAL may have started again.
+   - `stuck` is set for good by a PRAGMA that checkpoints or changes the checkpoints on a connection of the pool
+     (wal_checkpoint, wal_autocheckpoint), which the share does not see.
+   `hold`, `inflight`, `stuck` and `gen` are atomics, read without the lock (a short call never waits for it, and every
+   step reads `gen`); `lock` guards the updates of `hold`, `restart`, `gen`, `copied`, `last` and `refs`. It is held
+   for a few instructions, never while SQLite's mutex is wanted. */
+typedef struct {
+  lock_t lock;
+  int refs;
+  atomic_int hold;
+  atomic_int inflight;
+  atomic_bool stuck;
+  atomic_uint_fast64_t gen;
+  bool restart;
+  int copied, last;
+} wal_share;
+
+/* A new share, for a WAL that may be empty: its first commit holds. NULL when out of memory. */
+static wal_share *share_new(void) {
+  wal_share *s = calloc(1, sizeof *s);
+  if (!s) return NULL;
+  lock_init(&s->lock);
+  s->refs = 1;
+  atomic_init(&s->hold, 1);
+  atomic_init(&s->inflight, 0);
+  atomic_init(&s->stuck, false);
+  atomic_init(&s->gen, 0);
+  s->restart = true;
+  return s;
+}
+
+static void share_ref(wal_share *s) {
+  lock_take(&s->lock);
+  s->refs++;
+  lock_drop(&s->lock);
+}
+
+static void share_unref(wal_share *s) {
+  lock_take(&s->lock);
+  bool last = --s->refs == 0;
+  lock_drop(&s->lock);
+  if (!last) return;
+  lock_destroy(&s->lock);
+  free(s);
+}
+
+/* A short call may write when nothing holds the writes: then it counts in `inflight` until share_leave. It never
+   waits. */
+static bool share_enter(wal_share *s) {
+  atomic_fetch_add(&s->inflight, 1);
+  if (atomic_load(&s->hold) == 0 && !atomic_load(&s->stuck)) return true;
+  atomic_fetch_sub(&s->inflight, 1);
+  return false;
+}
+
+static void share_leave(wal_share *s) { atomic_fetch_sub(&s->inflight, 1); }
+
+static uint64_t share_gen(wal_share *s) { return (uint64_t)atomic_load(&s->gen); }
+
+/* A moment of the compute pool's thread, while a checkpoint waits for the short writes that run to end. */
+static void pause_briefly(void) {
+#if defined(_WIN32)
+  Sleep(0);
+#else
+  struct timespec t = {0, 50000};
+  (void)nanosleep(&t, NULL);
+#endif
+}
+
+/* A checkpoint starts: it holds the short writes until share_checkpointed, and waits for those that run (each a
+   bounded write, which never waits itself). On the compute pool. */
+static void share_checkpoint(wal_share *s) {
+  lock_take(&s->lock);
+  atomic_fetch_add(&s->hold, 1);
+  lock_drop(&s->lock);
+  while (atomic_load(&s->inflight) > 0) pause_briefly();
+}
+
+/* A checkpoint ended, with COPIED frames of the WAL copied (-1: it failed). One that copied every frame (WHOLE)
+   leaves its hold to `restart`, or gives it back when `restart` holds already; any other gives it back. */
+static void share_checkpointed(wal_share *s, bool whole, int copied) {
+  lock_take(&s->lock);
+  if (copied >= 0) s->copied = copied;
+  if (whole) atomic_fetch_add(&s->gen, 1);
+  if (whole && !s->restart)
+    s->restart = true;
+  else
+    atomic_fetch_sub(&s->hold, 1);
+  lock_drop(&s->lock);
+}
+
+/* A commit of a connection of the pool left FRAMES frames in the WAL; GEN is what share_gen gave before its step. The
+   frames that no checkpoint has copied. A commit that ends `restart` may have started the WAL again, whatever its
+   frames, and so may one with fewer frames than the last (or two commits that report out of order): `copied` then
+   counts nothing, which only counts more frames, and so checkpoints sooner. */
+static int share_committed(wal_share *s, uint64_t gen, int frames) {
+  lock_take(&s->lock);
+  bool again = frames < s->last;
+  if (s->restart && (uint64_t)atomic_load(&s->gen) == gen) {
+    s->restart = false;
+    atomic_fetch_sub(&s->hold, 1);
+    again = true;
+  }
+  if (again) s->copied = 0;
+  s->last = frames;
+  int uncopied = frames > s->copied ? frames - s->copied : frames;
+  lock_drop(&s->lock);
+  return uncopied;
+}
+
+static void share_stick(wal_share *s) { atomic_store(&s->stuck, true); }
+
 /* ---- Connections and their statement cache. ---- */
 
-/* A cached statement. `busy` while a call or a Cursor runs it; `quick` when it may run in a short call: it only
-   reads, gives columns with distinct names, its sql passes quick_text and its plan has no long instruction, as read
-   when SQLite had prepared it again `checked` times (after a schema change; -1: not read yet). `dirty` when a free
-   function gave it back without its reset, which the next fetch makes. */
+/* What a short call may run of a cached statement (entry.kind): nothing, a read, a write, a BEGIN or a COMMIT. */
+enum { K_NONE, K_READ, K_WRITE, K_BEGIN, K_COMMIT };
+
+/* A cached statement. `busy` while a call or a Cursor runs it; `kind` is what a short call may run of it (classify),
+   as read when SQLite had prepared it again `checked` times (after a schema change; -1: not read yet). `dirty` when
+   a free function gave it back without its reset, which the next fetch makes. `steps` is the count of SQLite VM
+   instructions of its last run (INT_MAX before the first one ends), which a write must keep within the budget of a
+   short call. `long_value` is set for good once a run of a write made a value or row past QUICK_BYTES, or rows past
+   the caps (a cost of INT_MAX): the short calls leave it to fetch, until SQLite prepares it again. A read is not
+   marked: a short call stops it at the caps, and the next key may give a small result. */
 typedef struct {
   char *sql;
   size_t len;
@@ -278,9 +442,11 @@ typedef struct {
   sqlite3_stmt *stmt;
   uint64_t used;
   bool busy;
-  bool quick;
+  unsigned char kind;
   bool dirty;
   int checked;
+  int steps;
+  bool long_value;
 } entry;
 
 /* A statement that a free function could not finalize, left for the next fetch or the last free. */
@@ -290,10 +456,13 @@ typedef struct orphan {
 } orphan;
 
 /* The C state of a connection, shared by its Conn and its Cursors, and freed when the last of them is (`refs`).
-   `lock` guards refs, closed, the entries, the orphans, `pending` (the dirty entries and the orphans) and the
-   counters. quick_left and quick_over belong to the
-   quick call that holds SQLite's mutex of the database, the only place they are written, so the progress handler
-   (which runs inside sqlite3_step, under that mutex) reads them safely. */
+   `lock` guards refs, closed, the entries, the orphans, `pending` (the dirty entries and the orphans), `level` (the
+   writes that a short call may run), `hooked` and the counters. quick_left and quick_over belong to the quick call
+   that holds SQLite's mutex of the database, the only place they are written, so the progress handler (which runs
+   inside sqlite3_step, under that mutex) reads them safely. `frames` (what the WAL hook saw) and `txn_writes` (the
+   steps of writes in the open transaction, TXN_HEAVY once one ran on the compute pool) are read and written only under
+   that mutex too, and so is `share` (the WAL of the pool, set once by own_checkpoints), which the connection holds a
+   reference to. */
 typedef struct {
   lock_t lock;
   int refs;
@@ -303,10 +472,19 @@ typedef struct {
   int capacity;
   orphan *orphans;
   int pending;
-  uint64_t tick, hits, misses, evictions;
+  uint64_t tick, hits, misses, evictions, shorts, fallbacks;
+  int level;
+  bool hooked;
   int64_t quick_left;
   bool quick_over;
+  int frames;
+  int txn_writes;
+  wal_share *share;
 } conn;
+
+/* The writes that a short call may run (conn.level): none; a write inside a transaction and a BEGIN; also a write that
+   commits. */
+enum { W_NONE, W_TRANSACTION, W_COMMIT };
 
 typedef struct {
   conn *c;
@@ -318,7 +496,13 @@ typedef struct {
   sqlite3_stmt *stmt;
   entry *e;
   bool started;
+  int64_t bytes;
 } cursor_state;
+
+/* The state of a Wal resource: its reference to the share. */
+typedef struct {
+  wal_share *s;
+} wal_state;
 
 /* The largest statement cache, as the url's statement_cache allows (sqlite/url.agc). */
 #define MAX_CACHE 10000
@@ -326,12 +510,31 @@ typedef struct {
 #define PROGRESS_OPS 200
 /* The bytes that a value costs besides its text or blob, for the byte cap of a batch. */
 #define VALUE_COST 16
+/* A transaction whose COMMIT may run in a short call wrote in at most this many steps of short calls: its commit then
+   writes the few pages that such writes touch to the WAL. A write on the compute pool makes it TXN_HEAVY. */
+#define QUICK_TXN_WRITES 64
+#define TXN_HEAVY INT_MAX
+/* What a short call may read at most, whatever the batch allows: a bigger row is copied on the compute pool. It is
+   also the longest value or row that a short call makes (SQLITE_LIMIT_LENGTH), and the most bytes of rows that a
+   write may have given in its last run to run in one. */
+#define QUICK_BYTES 262144
 
 static int progress(void *arg) {
   conn *c = arg;
   if (c->quick_left == 0 || --c->quick_left > 0) return 0;
   c->quick_over = true;
   return 1;
+}
+
+/* The WAL hook of a connection whose pool takes its checkpoints (own_checkpoints). It replaces SQLite's
+   autocheckpoint, which would checkpoint inside the COMMIT, and only notes the frames in the WAL after the commit;
+   the batch gives the adapter those that no checkpoint has copied (share_committed). SQLite calls it at the end of
+   the step that committed, under its mutex of the database, where step() reads it. */
+static int wal_frames(void *arg, sqlite3 *db, const char *name, int frames) {
+  (void)db;
+  /* An ATTACHed database has a WAL of its own, which the pool does not count. */
+  if (name && strcmp(name, "main") == 0) ((conn *)arg)->frames = frames;
+  return SQLITE_OK;
 }
 
 static uint64_t hash_text(const char *s, size_t n) {
@@ -370,6 +573,7 @@ static void conn_unref(conn *c) {
   finalize_orphans(c);
   for (int i = 0; i < c->capacity; i++) free(c->entries[i].sql);
   free(c->entries);
+  if (c->share) share_unref(c->share);
   lock_destroy(&c->lock);
   free(c);
 }
@@ -398,10 +602,27 @@ static bool cached(conn *c, const char *sql, size_t len, uint64_t hash) {
 /* A letter in lowercase; any other byte as it is (`| 0x20` would make `_` a DEL). */
 static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c; }
 
-/* Whether SQL starts with WORD (any case), as a whole word, after white space; *AT is where the word ends. */
+/* Where SQL goes on from I past white space and comments: a line comment (two dashes, to the end of the line) and a
+   block comment (slash and star, to star and slash, or to the end of the text as SQLite allows). */
+static size_t skip_space(const char *sql, size_t len, size_t i) {
+  for (;;) {
+    while (i < len && (sql[i] == ' ' || (sql[i] >= '\t' && sql[i] <= '\r'))) i++;
+    if (i + 1 < len && sql[i] == '-' && sql[i + 1] == '-') {
+      while (i < len && sql[i] != '\n') i++;
+    } else if (i + 1 < len && sql[i] == '/' && sql[i + 1] == '*') {
+      i += 2;
+      while (i < len && !(sql[i] == '*' && i + 1 < len && sql[i + 1] == '/')) i++;
+      i = i < len ? i + 2 : len;
+    } else {
+      return i;
+    }
+  }
+}
+
+/* Whether SQL starts with WORD (any case), as a whole word, after white space and comments; *AT is where the word
+   ends. */
 static bool starts_with_word(const char *sql, size_t len, const char *word, size_t *at) {
-  size_t i = 0, n = strlen(word), k = 0;
-  while (i < len && (sql[i] == ' ' || (sql[i] >= '\t' && sql[i] <= '\r'))) i++;
+  size_t i = skip_space(sql, len, 0), n = strlen(word), k = 0;
   while (k < n && i + k < len && lower(sql[i + k]) == word[k]) k++;
   if (k != n) return false;
   *at = i + n;
@@ -415,6 +636,21 @@ static bool blank(const char *s, const char *end) {
   return s == end;
 }
 
+/* Whether SQL from *AT starts with WORD as a whole word; *AT moves past it when it does. */
+static bool take_word(const char *sql, size_t len, size_t *at, const char *word) {
+  size_t end;
+  if (!starts_with_word(sql + *at, len - *at, word, &end)) return false;
+  *at += end;
+  return true;
+}
+
+/* Whether nothing but white space, comments and one `;` follows AT. */
+static bool ends_at(const char *sql, size_t len, size_t at) {
+  size_t rest = skip_space(sql, len, at);
+  if (rest < len && sql[rest] == ';') rest++;
+  return skip_space(sql, len, rest) == len;
+}
+
 /* Whether a statement that only reads may run in a short call: a SELECT, WITH or VALUES, or one of the PRAGMAs that
    read a counter (`PRAGMA data_version`, `user_version`), with nothing after it but a `;`. A short call can be stopped
    and run again from its start (the progress handler interrupts it), which only a statement without effects allows;
@@ -422,17 +658,38 @@ static bool blank(const char *s, const char *end) {
 static bool quick_text(const char *sql, size_t len) {
   static const char *const words[] = {"select", "with", "values"};
   static const char *const pragmas[] = {"data_version", "user_version"};
-  size_t at, end;
+  size_t at = 0;
   for (size_t w = 0; w < sizeof words / sizeof words[0]; w++)
-    if (starts_with_word(sql, len, words[w], &at)) return true;
-  if (!starts_with_word(sql, len, "pragma", &at)) return false;
-  for (size_t w = 0; w < sizeof pragmas / sizeof pragmas[0]; w++) {
-    if (!starts_with_word(sql + at, len - at, pragmas[w], &end)) continue;
-    const char *rest = sql + at + end, *stop = sql + len;
-    while (rest < stop && (*rest == ' ' || (*rest >= '\t' && *rest <= '\r'))) rest++;
-    if (rest < stop && *rest == ';') rest++;
-    return blank(rest, stop);
+    if (take_word(sql, len, &at, words[w])) return true;
+  if (!take_word(sql, len, &at, "pragma")) return false;
+  for (size_t w = 0; w < sizeof pragmas / sizeof pragmas[0]; w++)
+    if (take_word(sql, len, &at, pragmas[w])) return ends_at(sql, len, at);
+  return false;
+}
+
+/* K_BEGIN for `BEGIN [DEFERRED | IMMEDIATE] [TRANSACTION]`, K_COMMIT for `COMMIT` or `END [TRANSACTION]`, each with
+   nothing after it but a `;`; else K_NONE. BEGIN EXCLUSIVE, ROLLBACK and the savepoints run on the compute pool. */
+static unsigned char control_kind(const char *sql, size_t len) {
+  size_t at = 0;
+  if (take_word(sql, len, &at, "begin")) {
+    if (!take_word(sql, len, &at, "deferred")) (void)take_word(sql, len, &at, "immediate");
+    (void)take_word(sql, len, &at, "transaction");
+    return ends_at(sql, len, at) ? K_BEGIN : K_NONE;
   }
+  if (take_word(sql, len, &at, "commit") || take_word(sql, len, &at, "end")) {
+    (void)take_word(sql, len, &at, "transaction");
+    return ends_at(sql, len, at) ? K_COMMIT : K_NONE;
+  }
+  return K_NONE;
+}
+
+/* Whether a statement that writes may run in a short call by its words: an INSERT, UPDATE, DELETE or REPLACE (a
+   WITH before it, a DDL statement or a PRAGMA never does). Its plan decides the rest (write_plan). */
+static bool write_text(const char *sql, size_t len) {
+  static const char *const words[] = {"insert", "update", "delete", "replace"};
+  size_t at = 0;
+  for (size_t w = 0; w < sizeof words / sizeof words[0]; w++)
+    if (take_word(sql, len, &at, words[w])) return true;
   return false;
 }
 
@@ -479,14 +736,28 @@ static entry *insert(conn *c, const char *sql, size_t len, uint64_t hash, sqlite
     /* Its finalize, which the caller makes, ends what its reset would. */
     if (slot->dirty) c->pending--;
   }
-  *slot = (entry){copy, len, hash, stmt, ++c->tick, true, false, false, -1};
+  *slot = (entry){copy, len, hash, stmt, ++c->tick, true, K_NONE, false, -1, INT_MAX, false};
   return slot;
+}
+
+#define NO_STEPS (-1)
+
+/* The SQLite VM instructions of the run of STMT that ends, and the count starts again for the next one. Under
+   SQLite's mutex of the database or on the compute pool: SQLite does not say that reading the counter never waits. */
+static int run_steps(sqlite3_stmt *stmt) { return sq.stmt_status(stmt, SQLITE_STMTSTATUS_VM_STEP, 1); }
+
+/* The cost of a run that ends (entry.steps): its instructions, or INT_MAX when its rows took more than QUICK_BYTES
+   (the RETURNING of a write, which a short call cannot stop midway). Where run_steps may be called. */
+static int run_cost(sqlite3_stmt *stmt, int64_t bytes) {
+  int steps = run_steps(stmt);
+  return bytes > QUICK_BYTES ? INT_MAX : steps;
 }
 
 /* Gives a statement back after its run: reset, unbound, and idle in the cache, or finalized when it has no entry or
    the connection closed meanwhile (then its entry is emptied here, the only owner left). RESET is false when the
-   caller has reset it already; HIT counts a run of the cached statement (a short call counts only one that ended). */
-static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit) {
+   caller has reset it already; HIT counts a run of the cached statement (a short call counts only one that ended).
+   STEPS is the count of run_steps for the entry, or NO_STEPS to keep the one it has (the statement did not run). */
+static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit, int steps) {
   /* reset gives the error of the last step again, which the caller has read already. */
   if (reset) {
     (void)sq.reset(stmt);
@@ -494,7 +765,13 @@ static void release(conn *c, sqlite3_stmt *stmt, entry *e, bool reset, bool hit)
   }
   bool finalize = e == NULL;
   lock_take(&c->lock);
-  if (hit) c->hits++;
+  if (e && steps != NO_STEPS) e->steps = steps;
+  if (e && steps == INT_MAX && e->kind != K_READ) e->long_value = true;
+  /* Only a short call counts a hit here, one that ran its statement whole. */
+  if (hit) {
+    c->hits++;
+    c->shorts++;
+  }
   if (e && c->closed) {
     finalize = true;
     free(e->sql);
@@ -600,7 +877,7 @@ static void settle(conn *c) {
     lock_take(&c->lock);
     c->pending--;
     lock_drop(&c->lock);
-    release(c, e->stmt, e, false, false);
+    release(c, e->stmt, e, false, false, NO_STEPS);
   }
 }
 
@@ -615,7 +892,7 @@ static void cursor_free(void *state) {
 
 enum { VALUE, BATCH, FETCH, CACHE_STATS };
 enum { V_NULL, V_INT, V_FLOAT, V_TEXT, V_BLOB, V_BOOL };
-enum { CONN, CURSOR };
+enum { CONN, CURSOR, WAL };
 enum { F_KEEP, F_CACHE, F_ROWS, F_BYTES, F_QUICK_ROWS, F_QUICK_STEPS };
 
 /* The length of the UTF-8 character at S, or 0 for a byte that does not start one (as the VM reads text). */
@@ -700,12 +977,13 @@ typedef struct {
   bool upgrade, readonly;
   failure why;
   int changes;
+  int frames;
 } outcome;
 
 static an_term batch(an_env *env, const outcome *o, an_term rows) {
-  an_term fields[7] = {
+  an_term fields[8] = {
     an_int(env, o->code),       an_int(env, o->extended), an_bool(env, o->upgrade), an_bool(env, o->readonly),
-    text0(env, o->why.text),    rows,                     an_int(env, o->changes),
+    text0(env, o->why.text),    rows,                     an_int(env, o->changes),  an_int(env, o->frames),
   };
   return an_struct(env, BATCH, fields);
 }
@@ -856,13 +1134,29 @@ static an_term read_row(an_env *env, sqlite3_stmt *stmt, columns *cols, int64_t 
 
 /* One step under SQLite's mutex of the database, so that the error code and message are this step's, and so are the
    changes: SQLite counts them when the statement ends, in the step that gives SQLITE_DONE, and a statement that writes
-   nothing leaves the total as it was (sqlite3_changes then still holds an earlier statement's count). */
-static int step(conn *c, sqlite3_stmt *stmt, outcome *o) {
+   nothing leaves the total as it was (sqlite3_changes then still holds an earlier statement's count). The frames that
+   the WAL hook saw in a commit of this step go to O. A step that starts outside a transaction starts the count of the
+   writes of the next one (a BEGIN, or a write that commits itself); a write counts one more step when SHORT_CALL ran
+   it, and makes the transaction heavy when the compute pool did. A BEGIN IMMEDIATE is not read-only for SQLite, but
+   it only opens the transaction: it counts nothing. A commit to the WAL of a pool tells its share
+   (share_committed). */
+static int step(conn *c, sqlite3_stmt *stmt, bool short_call, outcome *o) {
   sqlite3_mutex *m = sq.db_mutex(c->db);
   sq.mutex_enter(m);
+  uint64_t gen = c->share ? share_gen(c->share) : 0;
+  bool fresh = sq.get_autocommit(c->db) != 0;
+  if (fresh) c->txn_writes = 0;
+  c->frames = 0;
   int before = sq.total_changes(c->db);
   int rc = sq.step(stmt);
   if (rc == SQLITE_DONE) o->changes = sq.total_changes(c->db) == before ? 0 : sq.changes(c->db);
+  if (c->share && c->frames > 0) {
+    int uncopied = share_committed(c->share, gen, c->frames);
+    if (uncopied > o->frames) o->frames = uncopied;
+  }
+  bool begun = fresh && !sq.get_autocommit(c->db);
+  if (!sq.stmt_readonly(stmt) && !begun)
+    c->txn_writes = short_call && c->txn_writes < TXN_HEAVY - 1 ? c->txn_writes + 1 : TXN_HEAVY;
   if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
     o->code = rc;
     o->extended = sq.extended_errcode(c->db);
@@ -920,43 +1214,185 @@ static sqlite3_stmt *prepare(conn *c, const char *sql, size_t len, outcome *o) {
   return stmt;
 }
 
-/* Whether the plan of SQL has an instruction that can run long by itself, where the progress handler never runs:
-   OP_Count, the count(*) of a whole table, which reads its pages in one instruction. Such a read never runs in a short
-   call. A plan that cannot be read counts as long. */
-static bool long_instruction(conn *c, const char *sql, size_t len) {
+/* What ends a plan for a write in a short call (short_plan): a count(*) of a whole table, a trigger or a foreign key
+   action (OP_Program, whose instructions the plan does not show), a DELETE of a whole table, a sort, a two-pass UPDATE
+   or DELETE, a virtual table (FTS5 merges its segments in a write and at the COMMIT, a work that no plan bounds) and
+   the statements that change the schema. */
+static const char *const WRITE_LONG[] = {
+  "Count",   "Program",  "Clear",      "Destroy",   "Sort",        "SorterSort",  "SorterNext", "RowSetRead",
+  "VBegin",  "VOpen",    "VFilter",    "VNext",     "VUpdate",     "VCreate",     "VDestroy",   "ParseSchema",
+  "Checkpoint", "Vacuum", "IncrVacuum", "JournalMode", "IntegrityCk",
+};
+static bool opcode_in(const char *op, const char *const *list, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (strcmp(op, list[i]) == 0) return true;
+  return false;
+}
+
+/* The root page of sqlite_sequence in the main database, 0 when there is none. Under SQLite's mutex. */
+static sqlite3_int64 sequence_root(conn *c) {
+  static const char SQL[] = "SELECT rootpage FROM main.sqlite_master WHERE name = 'sqlite_sequence'";
+  sqlite3_stmt *stmt = NULL;
+  sqlite3_int64 root = 0;
+  if (sq.prepare_v2(c->db, SQL, (int)sizeof SQL - 1, &stmt, NULL) == SQLITE_OK && stmt &&
+      sq.step(stmt) == SQLITE_ROW)
+    root = sq.column_int64(stmt, 0);
+  /* finalize gives the error of the step, which leaves root at 0. */
+  if (stmt) (void)sq.finalize(stmt);
+  return root;
+}
+
+/* What the first pass of a write plan finds at each address (plan_scan.ops): an OP_Yield, or an instruction that opens
+   cursor `cursors[addr]` on a table or an index (P_REAL) or on a transient table (P_TRANSIENT); `guarded` when an
+   OP_FkIfZero before it skips it while no foreign key is broken. `fk_end` is where the last such region ends. */
+enum { P_OTHER, P_YIELD, P_REAL, P_TRANSIENT };
+
+typedef struct {
+  unsigned char *ops;
+  bool *guarded;
+  sqlite3_int64 *cursors;
+  sqlite3_int64 count;
+  sqlite3_int64 room;
+  sqlite3_int64 fk_end;
+} plan_scan;
+
+/* Whether an instruction at AT that loops over cursor CURSOR scans a table or an index. SQLite numbers its cursors per
+   statement and gives a number to another table in another part of the plan, so the cursor is the one of the nearest
+   instruction before AT that opens that number, or of the nearest after it (a transient table that the setup at the
+   end of the plan opens). A cursor that nothing opens counts as a scan. */
+static bool scans(const plan_scan *scan, sqlite3_int64 at, sqlite3_int64 cursor) {
+  for (sqlite3_int64 i = at - 1; i >= 0; i--)
+    if (scan->ops[i] >= P_REAL && scan->cursors[i] == cursor) return scan->ops[i] == P_REAL;
+  for (sqlite3_int64 i = at + 1; i < scan->count; i++)
+    if (scan->ops[i] >= P_REAL && scan->cursors[i] == cursor) return scan->ops[i] == P_REAL;
+  return true;
+}
+
+/* Notes what the instruction OP at ADDR is in SCAN, which grows to hold it; false when out of memory. SEQUENCE is the
+   root page of sqlite_sequence, whose cursor is not a scan (see short_plan). */
+static bool note_op(plan_scan *scan, sqlite3_int64 addr, const char *op, sqlite3_int64 p1, sqlite3_int64 p2,
+                    sqlite3_int64 p3, sqlite3_int64 sequence) {
+  if (addr >= scan->room) {
+    /* The room doubles, so that a long plan costs a few reallocs. addr is at most INT_MAX (short_plan). */
+    sqlite3_int64 room = scan->room > 0 ? scan->room * 2 : 64;
+    if (room <= addr) room = addr + 1;
+    unsigned char *ops = realloc(scan->ops, (size_t)room);
+    if (!ops) return false;
+    scan->ops = ops;
+    bool *guarded = realloc(scan->guarded, (size_t)room * sizeof *guarded);
+    if (!guarded) return false;
+    scan->guarded = guarded;
+    sqlite3_int64 *cursors = realloc(scan->cursors, (size_t)room * sizeof *cursors);
+    if (!cursors) return false;
+    scan->cursors = cursors;
+    for (sqlite3_int64 i = scan->room; i < room; i++) {
+      ops[i] = P_OTHER;
+      guarded[i] = false;
+      cursors[i] = -1;
+    }
+    scan->room = room;
+  }
+  if (addr >= scan->count) scan->count = addr + 1;
+  scan->guarded[addr] = addr < scan->fk_end;
+  if (strcmp(op, "FkIfZero") == 0 && p2 > scan->fk_end) scan->fk_end = p2;
+  static const char *const REAL[] = {"OpenRead", "OpenWrite", "ReopenIdx", "OpenDup"};
+  static const char *const TRANSIENT[] = {"OpenEphemeral", "OpenAutoindex", "OpenPseudo", "SorterOpen"};
+  /* OpenDup copies another cursor and has no root page of its own; p3 is the database, 0 for main. */
+  bool counter = strcmp(op, "OpenDup") != 0 && sequence != 0 && p2 == sequence && p3 == 0;
+  if (strcmp(op, "Yield") == 0) {
+    scan->ops[addr] = P_YIELD;
+  } else if (opcode_in(op, REAL, sizeof REAL / sizeof REAL[0])) {
+    scan->ops[addr] = counter ? P_TRANSIENT : P_REAL;
+    scan->cursors[addr] = p1;
+  } else if (opcode_in(op, TRANSIENT, sizeof TRANSIENT / sizeof TRANSIENT[0])) {
+    scan->ops[addr] = P_TRANSIENT;
+    scan->cursors[addr] = p1;
+  }
+  return true;
+}
+
+/* Whether the plan of SQL (EXPLAIN: one row per instruction, with its address, opcode, p1, p2 and p3) lets the
+   statement run in a short call; a plan that cannot be read does not. A read (WRITE false) must not have OP_Count, the
+   count(*) of a whole table, which reads its pages in one instruction where the progress handler never runs: the
+   budget bounds the rest. A write cannot be stopped midway, so its plan must bound its work by itself:
+   - none of WRITE_LONG;
+   - no OP_Rewind, OP_Last, OP_Next or OP_Prev on a cursor of a table or an index (a scan, whole or of a range: only
+     the lookups of one row, by key or by a unique index, are left), except sqlite_sequence, the one row per table
+     that an INSERT into an AUTOINCREMENT table reads and writes, and the OP_Next or OP_Prev that an OP_FkIfZero
+     skips while no foreign key is broken: the rows of an index of a child table that point to the new key of an
+     INSERT into a parent table, which exist only when the statement fails on its own foreign key or deferred
+     violations wait. That loop starts at a seek of the key; one that starts at OP_Rewind or OP_Last (a child table
+     with no index on its key, scanned whole when deferred violations wait) is refused like any other scan;
+   - no OP_Goto back, but to the start (the one jump back of every plan) or to an OP_Yield: the loop that takes the
+     rows of a coroutine (INSERT ... SELECT, a list of VALUES rows). The rows of a coroutine come from the scans that
+     the rules above refuse, or from the text of the statement; a recursive CTE loops back to its queue, and is long.
+   A loop over a transient table stays, which the rules above bound: the rows of RETURNING, of an `IN (?, ?)` list, of
+   a coroutine. The count of instructions of the last run (entry.steps) is the check of what the plan does not show.
+   The first pass notes the cursors and the OP_Yield, which a jump can reach before the address that has them. */
+static bool short_plan(conn *c, const char *sql, size_t len, bool write) {
   static const char PREFIX[] = "EXPLAIN ";
   size_t n = sizeof PREFIX - 1;
-  if (len > INT_MAX - n) return true;
+  if (len > INT_MAX - n) return false;
   char *text = malloc(n + len);
-  if (!text) return true;
+  if (!text) return false;
   memcpy(text, PREFIX, n);
   memcpy(text + n, sql, len);
   sqlite3_stmt *plan = NULL;
-  bool found = true;
-  int rc = SQLITE_DONE;
+  bool ok = false;
+  plan_scan scan = {NULL, NULL, NULL, 0, 0, 0};
   sqlite3_mutex *m = sq.db_mutex(c->db);
   sq.mutex_enter(m);
+  sqlite3_int64 sequence = write ? sequence_root(c) : 0;
   if (sq.prepare_v2(c->db, text, (int)(n + len), &plan, NULL) == SQLITE_OK && plan) {
-    found = false;
-    /* The opcode is column 1 of each row of the plan. */
-    while (!found && (rc = sq.step(plan)) == SQLITE_ROW) {
-      const unsigned char *op = sq.column_text(plan, 1);
-      found = op && strcmp((const char *)op, "Count") == 0;
+    int rc = SQLITE_DONE;
+    ok = true;
+    for (int pass = write ? 0 : 1; pass < 2 && ok; pass++) {
+      /* reset gives the error of the last step, which the loop has read. */
+      (void)sq.reset(plan);
+      while (ok && (rc = sq.step(plan)) == SQLITE_ROW) {
+        const char *op = (const char *)sq.column_text(plan, 1);
+        sqlite3_int64 addr = sq.column_int64(plan, 0), p1 = sq.column_int64(plan, 2), p2 = sq.column_int64(plan, 3);
+        if (!op || addr < 0 || addr > INT_MAX) {
+          ok = false;
+        } else if (!write) {
+          ok = strcmp(op, "Count") != 0;
+        } else if (pass == 0) {
+          ok = note_op(&scan, addr, op, p1, p2, sq.column_int64(plan, 4), sequence);
+        } else if (opcode_in(op, WRITE_LONG, sizeof WRITE_LONG / sizeof WRITE_LONG[0])) {
+          ok = false;
+        } else if (strcmp(op, "Rewind") == 0 || strcmp(op, "Last") == 0) {
+          ok = !scans(&scan, addr, p1);
+        } else if (strcmp(op, "Next") == 0 || strcmp(op, "Prev") == 0) {
+          ok = scan.guarded[addr] || !scans(&scan, addr, p1);
+        } else if (strcmp(op, "Goto") == 0 && p2 < addr) {
+          ok = p2 == 1 || (p2 >= 0 && p2 < scan.count && scan.ops[p2] == P_YIELD);
+        }
+      }
+      if (ok && rc != SQLITE_DONE) ok = false;
     }
-    if (!found && rc != SQLITE_DONE) found = true;
   }
-  /* finalize gives the error of the last step, which only decides `found`. */
+  /* finalize gives the error of the last step, which only decides `ok`. */
   if (plan) (void)sq.finalize(plan);
   sq.mutex_leave(m);
+  free(scan.ops);
+  free(scan.guarded);
+  free(scan.cursors);
   free(text);
-  return found;
+  return ok;
 }
 
-/* Whether a statement may run in a short call (entry.quick). */
-static bool quick_plan(conn *c, sqlite3_stmt *stmt, const char *sql, size_t len) {
-  int repeated;
-  return sq.stmt_readonly(stmt) && sq.column_count(stmt) > 0 && quick_text(sql, len) &&
-         distinct_names(stmt, &repeated) && !long_instruction(c, sql, len);
+/* What a short call may run of a statement (entry.kind). A BEGIN or a COMMIT by its words (control_kind; SQLite
+   counts a BEGIN IMMEDIATE as a write). Else its columns must have distinct names, and a read needs its words
+   (quick_text), columns, and a plan without a long instruction; a write its words (write_text) and a plan that bounds
+   it (short_plan). */
+static unsigned char classify(conn *c, sqlite3_stmt *stmt, const char *sql, size_t len) {
+  int repeated, columns = sq.column_count(stmt);
+  unsigned char control = control_kind(sql, len);
+  if (control != K_NONE) return control;
+  if (columns > 0 && !distinct_names(stmt, &repeated)) return K_NONE;
+  if (sq.stmt_readonly(stmt))
+    return columns > 0 && quick_text(sql, len) && short_plan(c, sql, len, false) ? K_READ : K_NONE;
+  return write_text(sql, len) && short_plan(c, sql, len, true) ? K_WRITE : K_NONE;
 }
 
 /* The statement of SQL for a fetch: the cached one when it is idle, else a new one, cached when there is room (and
@@ -1003,9 +1439,10 @@ static sqlite3_stmt *acquire(conn *c, const char *sql, size_t len, bool cache, e
      can bring in a long instruction). The entry is busy, so this call is its only reader meanwhile. */
   int prepared = sq.stmt_status(stmt, SQLITE_STMTSTATUS_REPREPARE, 0);
   if (*e && prepared != (*e)->checked) {
-    bool quick = quick_plan(c, stmt, sql, len);
+    unsigned char kind = classify(c, stmt, sql, len);
     lock_take(&c->lock);
-    (*e)->quick = quick;
+    (*e)->kind = kind;
+    (*e)->long_value = false;
     (*e)->checked = prepared;
     lock_drop(&c->lock);
   }
@@ -1143,6 +1580,93 @@ static int64_t row_size(sqlite3_stmt *stmt, int n) {
   return size;
 }
 
+/* Whether C may be in a bare SQLite name: a letter, `_`, a byte of a UTF-8 character and, after the first, a digit
+   or `$`. */
+static bool name_byte(char c, bool first) {
+  unsigned char b = (unsigned char)c;
+  if (b >= 0x80 || c == '_' || (lower(c) >= 'a' && lower(c) <= 'z')) return true;
+  return !first && ((c >= '0' && c <= '9') || c == '$');
+}
+
+/* The name at *AT after white space and comments, bare or quoted ("", ``, [], a doubled quote inside is one); *AT
+   moves past it, however long it is. Its first CAP - 1 bytes go to OUT in lowercase, and *FITS says whether it all
+   did. False when there is no name there (or its quote never closes). */
+static bool take_name(const char *sql, size_t len, size_t *at, char *out, size_t cap, bool *fits) {
+  size_t i = skip_space(sql, len, *at), n = 0;
+  *fits = true;
+  if (i >= len) return false;
+  char open = sql[i], close = open == '[' ? ']' : open;
+  if (open == '"' || open == '`' || open == '[') {
+    for (i++; i < len; i++) {
+      if (sql[i] == close) {
+        if (close != ']' && i + 1 < len && sql[i + 1] == close) {
+          i++;
+        } else {
+          break;
+        }
+      }
+      if (n + 1 < cap) {
+        out[n++] = lower(sql[i]);
+      } else {
+        *fits = false;
+      }
+    }
+    if (i >= len) return false;
+    i++;
+  } else {
+    while (i < len && name_byte(sql[i], n == 0)) {
+      if (n + 1 < cap) {
+        out[n++] = lower(sql[i]);
+      } else {
+        *fits = false;
+      }
+      i++;
+    }
+  }
+  if (n == 0) return false;
+  out[n] = '\0';
+  *at = i;
+  return true;
+}
+
+/* What a PRAGMA that changes how the connection commits does to the short writes, before it runs. Setting
+   journal_mode, synchronous or locking_mode (`= value` or `(value)`) ends them on the connection (level W_NONE, as
+   without a WAL); wal_checkpoint in any form (it checkpoints, which the share does not count) and setting
+   wal_autocheckpoint (commits that checkpoint, on every database of the connection whatever the schema name) also on
+   every connection of the pool, for good (share_stick). Reading a value changes nothing. The name may be quoted and
+   follow a schema name of any length, with comments between the words. A PRAGMA whose name cannot be read counts as
+   all of them. */
+static void pragma_effect(conn *c, const char *sql, size_t len) {
+  static const char *const level[] = {"journal_mode", "synchronous", "locking_mode"};
+  char name[32];
+  bool fits;
+  size_t at = 0;
+  if (!take_word(sql, len, &at, "pragma")) return;
+  bool known = take_name(sql, len, &at, name, sizeof name, &fits);
+  size_t dot = skip_space(sql, len, at);
+  if (known && dot < len && sql[dot] == '.') {
+    at = dot + 1;
+    known = take_name(sql, len, &at, name, sizeof name, &fits);
+  }
+  bool stick = !known, drop = !known;
+  if (known && fits) {
+    size_t next = skip_space(sql, len, at);
+    bool sets = next < len && (sql[next] == '=' || sql[next] == '(');
+    stick = strcmp(name, "wal_checkpoint") == 0 || (sets && strcmp(name, "wal_autocheckpoint") == 0);
+    drop = stick;
+    for (size_t w = 0; w < sizeof level / sizeof level[0] && !drop; w++) drop = sets && strcmp(name, level[w]) == 0;
+  }
+  if (!drop) return;
+  sqlite3_mutex *m = sq.db_mutex(c->db);
+  sq.mutex_enter(m);
+  wal_share *share = c->share;
+  sq.mutex_leave(m);
+  lock_take(&c->lock);
+  c->level = W_NONE;
+  lock_drop(&c->lock);
+  if (stick && share) share_stick(share);
+}
+
 /* fetch(conn, cursor, sql, params, options): the next batch of the query, preparing and binding it at its first
    call. */
 static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
@@ -1167,12 +1691,13 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
     entry *e = NULL;
     sqlite3_stmt *stmt = acquire(c, sql, len, opt.cache, &e, &o);
     if (!stmt) return batch(env, &o, an_list_end(env, &rows));
+    pragma_effect(c, sql, len);
     /* The names are checked before the first step too, so that a write whose result cannot be read is refused
        before it writes; after a schema change only the first step shows the new columns (see below). */
     bool over;
     if (!bind_all(env, stmt, argv[3], 3, SIZE_MAX, &over, &o.why) || (opt.keep && !check_names(stmt, &o, false))) {
       if (o.code == 0) o.code = -1;
-      release(c, stmt, e, true, false);
+      release(c, stmt, e, true, false, NO_STEPS);
       cur->started = true;
       return batch(env, &o, an_list_end(env, &rows));
     }
@@ -1186,7 +1711,7 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
   bool named = false;
   int64_t count = 0, bytes = 0;
   for (;;) {
-    int rc = step(c, stmt, &o);
+    int rc = step(c, stmt, false, &o);
     if (rc == SQLITE_ROW) {
       if (!opt.keep) continue;
       /* The columns are read after the step: SQLite prepares a statement again when the schema changed, and the new
@@ -1194,8 +1719,8 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
          too, so it runs to its end and the error says that it ran. */
       if (!named && !check_names(stmt, &o, !o.readonly)) {
         outcome rest = {0};
-        while (!o.readonly && step(c, stmt, &rest) == SQLITE_ROW) continue;
-        release(c, stmt, cur->e, true, false);
+        while (!o.readonly && step(c, stmt, false, &rest) == SQLITE_ROW) continue;
+        release(c, stmt, cur->e, true, false, run_cost(stmt, cur->bytes + bytes));
         cur->stmt = NULL;
         break;
       }
@@ -1204,18 +1729,20 @@ static an_term fn_fetch(an_env *env, int argc, const an_term *argv) {
       an_list_push(env, &rows, read_row(env, stmt, &cols, &bytes));
       if (++count >= opt.rows || bytes >= opt.bytes) {
         o.code = SQLITE_ROW;
+        cur->bytes += bytes;
         break;
       }
     } else if (rc == SQLITE_DONE) {
       o.code = SQLITE_DONE;
-      release(c, stmt, cur->e, true, false);
+      release(c, stmt, cur->e, true, false, run_cost(stmt, cur->bytes + bytes));
       cur->stmt = NULL;
       break;
     } else if (lock_code(rc)) {
       /* The statement stays: the caller waits and fetches again, which steps it again, or gives up with finish. */
+      cur->bytes += bytes;
       break;
     } else {
-      release(c, stmt, cur->e, true, false);
+      release(c, stmt, cur->e, true, false, run_cost(stmt, cur->bytes + bytes));
       cur->stmt = NULL;
       break;
     }
@@ -1231,18 +1758,39 @@ static an_term fn_finish(an_env *env, int argc, const an_term *argv) {
   conn *c = conn_of(env, argv[0]);
   if (!c) return an_badarg(env, 0);
   if (!an_get_resource(env, argv[1], CURSOR, (void **)&cur) || cur->c != c) return an_badarg(env, 1);
-  if (cur->stmt) release(c, cur->stmt, cur->e, true, false);
+  if (cur->stmt) release(c, cur->stmt, cur->e, true, false, NO_STEPS);
   cur->stmt = NULL;
   cur->started = true;
   return an_void(env);
 }
 
-/* What a short call may read at most, whatever the batch allows: a bigger row is copied on the compute pool. */
-#define QUICK_BYTES 262144
+/* Whether a short call may run a write of KIND now (see the top of this file): a BEGIN; a write inside a transaction
+   that wrote in fewer than QUICK_TXN_WRITES short calls and none on the compute pool (its dirty pages stay few, so
+   SQLite does not spill them to the WAL), or one that commits itself where the commits are short (W_COMMIT); a COMMIT
+   where they are, of a transaction that wrote only in a few short calls. In a pool, none of them while the share
+   holds: a checkpoint runs, or the next write to the WAL starts it again and syncs its header; and one that may runs
+   counted in the share (share_enter), which the caller ends with share_leave. A BEGIN writes no frame, so holding it
+   is not what keeps the sync off the scheduler: it keeps Db.transaction's BEGIN IMMEDIATE, which takes its snapshot
+   at once, from taking one while a checkpoint runs, whose commit would then append to the WAL rather than start it
+   again. With a compute pool of one thread such writers kept the WAL from starting again under 300 ms syncs. A
+   deferred BEGIN takes no snapshot, and holding it only costs a call on the compute pool. Under SQLite's mutex of
+   the database, which guards txn_writes and share. */
+static bool write_now(conn *c, unsigned char kind, int level) {
+  bool fits;
+  if (kind == K_BEGIN)
+    fits = true;
+  else if (kind == K_WRITE)
+    fits = sq.get_autocommit(c->db) ? level >= W_COMMIT : c->txn_writes < QUICK_TXN_WRITES;
+  else
+    fits = level >= W_COMMIT && c->txn_writes <= QUICK_TXN_WRITES;
+  return fits && (!c->share || share_enter(c->share));
+}
 
-/* quick(conn, sql, params, options): the whole result of a cached read in this short call, or none for the caller
-   to fetch it: not cached, not a read, busy on another thread, over the budget or the caps, or a lock. It never
-   waits for a lock or SQLite's mutex, so the scheduler that runs it never stops for another thread. */
+/* quick(conn, sql, params, options): the whole result of a cached statement in this short call, or none for the
+   caller to fetch it: not cached, not one that a short call may run (classify, write_now), busy on another thread,
+   a read over the budget or the caps, or a lock. It never waits for a lock or SQLite's mutex, so the scheduler that
+   runs it never stops for another thread. A write has no budget and no row cap: once it has stepped it runs to its
+   end here, and a lock, which comes before it has done anything that its reset does not undo, is the one fallback. */
 static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   const char *sql;
   size_t len;
@@ -1256,8 +1804,12 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   if (!opt.cache || opt.quick_steps <= 0 || opt.quick_rows <= 0 || !lock_try(&c->lock)) return an_none(env);
   /* What a free function left needs a fetch first (settle), which may wait. */
   entry *e = c->pending > 0 ? NULL : find_idle(c, sql, len, hash_text(sql, len));
-  /* A dirty entry needs its reset, which may wait: fetch makes it. */
-  if (e && (!e->quick || e->dirty)) {
+  int level = c->level;
+  /* A dirty entry needs its reset, which may wait: fetch makes it. A write whose last run took more instructions than
+     the budget of a read runs on the compute pool. */
+  bool unfit = e && (e->kind == K_NONE || e->long_value || (e->kind != K_READ && level == W_NONE) ||
+                     (e->kind == K_WRITE && e->steps > opt.quick_steps));
+  if (e && (unfit || e->dirty)) {
     e->busy = false;
     e = NULL;
   }
@@ -1267,18 +1819,21 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
   sqlite3_mutex *m = sq.db_mutex(c->db);
   if (sq.mutex_try(m) != SQLITE_OK) {
     /* An idle entry is reset already: a reset here would wait for the mutex that another thread holds. */
-    release(c, stmt, e, false, false);
+    release(c, stmt, e, false, false, NO_STEPS);
     return an_none(env);
   }
-  if (sq.stmt_status(stmt, SQLITE_STMTSTATUS_REPREPARE, 0) != e->checked) {
+  bool writes = e->kind != K_READ;
+  bool stale = sq.stmt_status(stmt, SQLITE_STMTSTATUS_REPREPARE, 0) != e->checked;
+  if (stale || (writes && !write_now(c, e->kind, level))) {
     /* SQLite prepared it again since its plan was read: fetch reads the plan again. A schema change that lands in
        this call's own step prepares it there, with a plan not read yet: that one run may meet a long instruction,
-       and the next call falls back here. */
+       and the next call falls back here. A write that may not run now (write_now) runs on the compute pool. */
     sq.mutex_leave(m);
-    release(c, stmt, e, false, false);
+    release(c, stmt, e, false, false, NO_STEPS);
     return an_none(env);
   }
-  bool done = false, fallback = false, over;
+  bool done = false, fallback = false, toobig = false, big = false, over;
+  o.readonly = sq.stmt_readonly(stmt) != 0;
   an_list_builder rows;
   an_list_begin(env, &rows, 0);
   columns cols;
@@ -1291,44 +1846,160 @@ static an_term fn_quick(an_env *env, int argc, const an_term *argv) {
     int64_t count = 0, bytes = 0;
     int64_t cap = opt.rows < opt.quick_rows ? opt.rows : opt.quick_rows;
     int64_t most = opt.bytes < QUICK_BYTES ? opt.bytes : QUICK_BYTES;
-    bool named = false, repeated = false;
+    bool named = false;
     c->quick_over = false;
-    /* At least one call of the progress handler, which stops the statement at its first. */
-    c->quick_left = opt.quick_steps > PROGRESS_OPS ? opt.quick_steps / PROGRESS_OPS : 1;
+    /* At least one call of the progress handler, which stops a read at its first; none for a write. */
+    c->quick_left = writes ? 0 : opt.quick_steps > PROGRESS_OPS ? opt.quick_steps / PROGRESS_OPS : 1;
+    /* One instruction can make or copy a value of any size (randomblob, a blob column), which neither the budget nor
+       the plan bounds: a longer value or row fails with SQLITE_TOOBIG, which aborts only the statement, and fetch
+       runs it again. A page that SQLite writes to the WAL before the commit (a spill of the page cache, which
+       CACHE_WRITE counts in every version, CACHE_SPILL only in some) makes the transaction heavy. */
+    int length = sq.limit(c->db, SQLITE_LIMIT_LENGTH, QUICK_BYTES);
+    int written = 0, unused = 0;
+    bool counts = writes && sq.db_status(c->db, SQLITE_DBSTATUS_CACHE_WRITE, &written, &unused, 0) == SQLITE_OK;
     while (!done && !fallback) {
-      int rc = step(c, stmt, &o);
+      int rc = step(c, stmt, true, &o);
       if (rc == SQLITE_ROW) {
-        /* Read after the step, as fetch does; columns that repeat a name since the schema changed are fetch's to
-           report. */
+        if (!opt.keep) continue;
+        /* Read after the step, as fetch does. Columns that repeat a name since the schema changed are fetch's to
+           report for a read; a write has run by its first row, so it runs to its end and says so, as fetch does. */
         int which;
-        if (!named) repeated = !distinct_names(stmt, &which);
+        if (!named && !distinct_names(stmt, &which)) {
+          fallback = !writes;
+          if (fallback) break;
+          (void)check_names(stmt, &o, true);
+          outcome rest = {0};
+          while (step(c, stmt, true, &rest) == SQLITE_ROW) continue;
+          if (rest.frames > o.frames) o.frames = rest.frames;
+          done = true;
+          break;
+        }
         if (!named) columns_begin(env, stmt, &cols);
         named = true;
-        /* A row past the caps: the result takes more than one batch, which only fetch gives. */
-        fallback = repeated || count >= cap || bytes + row_size(stmt, cols.n) > most;
+        /* A row of a read past the caps: the result takes more than one batch, which only fetch gives. The rows of a
+           write are its RETURNING, which its plan bounds. */
+        fallback = !writes && (count >= cap || bytes + row_size(stmt, cols.n) > most);
         if (fallback) break;
+        /* The rows of a write are read whatever they take, since it ran: past the caps, its next run is fetch's. */
+        if (writes && (count >= cap || bytes + row_size(stmt, cols.n) > most)) big = true;
         an_list_push(env, &rows, read_row(env, stmt, &cols, &bytes));
         count++;
       } else if (rc == SQLITE_DONE) {
         o.code = SQLITE_DONE;
         done = true;
       } else {
-        fallback = lock_code(rc) || (rc == SQLITE_INTERRUPT && c->quick_over);
+        toobig = rc == SQLITE_TOOBIG;
+        fallback = lock_code(rc) || toobig || (!writes && rc == SQLITE_INTERRUPT && c->quick_over);
         done = !fallback;
       }
     }
     c->quick_left = 0;
+    (void)sq.limit(c->db, SQLITE_LIMIT_LENGTH, length);
+    int now = 0;
+    if (counts && !sq.get_autocommit(c->db) &&
+        sq.db_status(c->db, SQLITE_DBSTATUS_CACHE_WRITE, &now, &unused, 0) == SQLITE_OK && now != written)
+      c->txn_writes = TXN_HEAVY;
   }
-  /* Reset under the mutex this call holds, so that giving the statement back never waits for another thread. */
+  /* Reset under the mutex this call holds, so that giving the statement back never waits for another thread. The
+     reset of a write that a lock stopped undoes what it began. */
   (void)sq.reset(stmt);
   (void)sq.clear_bindings(stmt);
+  /* Only a run to its end counts: a write that a lock stopped took a few steps of what it does. A value too long, or
+     rows too big, send the next runs to fetch until one of them is cheap again. */
+  int steps = run_steps(stmt);
+  if (toobig || big) steps = INT_MAX;
+  if (writes && c->share) share_leave(c->share);
   sq.mutex_leave(m);
-  release(c, stmt, e, false, !fallback);
+  release(c, stmt, e, false, !fallback, (done && !fallback) || toobig ? steps : NO_STEPS);
+  if (fallback) {
+    lock_take(&c->lock);
+    c->fallbacks++;
+    lock_drop(&c->lock);
+  }
   an_term list = an_list_end(env, &rows);
   if (fallback) return an_none(env);
-  o.readonly = true;
-  o.changes = 0;
+  if (!writes) o.changes = 0;
   return an_some(env, batch(env, &o, list));
+}
+
+/* inline_writes(conn, commits): lets the short calls run the writes and the BEGIN of a transaction, and with COMMITS
+   (only once own_checkpoints ran) a write that commits too. The adapter asks for it in a WAL database only, where a
+   write inside a transaction never syncs a file (see the top of this file). */
+static an_term fn_inline_writes(an_env *env, int argc, const an_term *argv) {
+  bool commits;
+  (void)argc;
+  conn *c = conn_of(env, argv[0]);
+  if (!c) return an_badarg(env, 0);
+  if (!an_get_bool(env, argv[1], &commits)) return an_badarg(env, 1);
+  lock_take(&c->lock);
+  c->level = commits && c->hooked ? W_COMMIT : W_TRANSACTION;
+  lock_drop(&c->lock);
+  return an_void(env);
+}
+
+static void wal_free(void *state) {
+  wal_state *w = state;
+  if (w->s) share_unref(w->s);
+}
+
+/* The share of a Wal resource, or NULL (a bad argument). */
+static wal_share *wal_of(an_env *env, an_term t) {
+  wal_state *w;
+  if (!an_get_resource(env, t, WAL, (void **)&w)) return NULL;
+  return w->s;
+}
+
+/* wal(): a new share for the connections of a pool and its checkpointer. */
+static an_term fn_wal(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  (void)argv;
+  an_term out;
+  wal_state *w = an_resource_new(env, WAL, &out);
+  if (!w) return out;
+  w->s = share_new();
+  if (!w->s) return an_raise(env, "sqlite: out of memory");
+  return out;
+}
+
+/* own_checkpoints(conn, wal): the pool takes the checkpoints of this connection, whose WAL it shares in WAL. The WAL
+   hook replaces SQLite's autocheckpoint (which is also a WAL hook), so no commit of the connection checkpoints, and
+   gives the frames in the WAL after each commit (Batch.frames). On the compute pool: it takes SQLite's mutex of the
+   database. A second call keeps the first share. */
+static an_term fn_own_checkpoints(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  conn *c = conn_of(env, argv[0]);
+  if (!c) return an_badarg(env, 0);
+  wal_share *share = wal_of(env, argv[1]);
+  if (!share) return an_badarg(env, 1);
+  sqlite3_mutex *m = sq.db_mutex(c->db);
+  sq.mutex_enter(m);
+  /* The previous hook (SQLite's autocheckpoint) is what it gives back, which nothing needs. */
+  (void)sq.wal_hook(c->db, wal_frames, c);
+  if (!c->share) {
+    share_ref(share);
+    c->share = share;
+  }
+  sq.mutex_leave(m);
+  lock_take(&c->lock);
+  c->hooked = true;
+  lock_drop(&c->lock);
+  return an_void(env);
+}
+
+/* checkpoint(conn, wal): a PASSIVE checkpoint of the WAL that the pool shares in WAL, on the compute pool. It copies
+   what no reader needs and waits for nobody; while it runs, and after it when it copied every frame, the share holds
+   the short writes of the pool. A failure (another checkpoint runs) changes nothing, and the next one goes on. */
+static an_term fn_checkpoint(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  conn *c = conn_of(env, argv[0]);
+  if (!c) return an_badarg(env, 0);
+  wal_share *share = wal_of(env, argv[1]);
+  if (!share) return an_badarg(env, 1);
+  int log = -1, copied = -1;
+  share_checkpoint(share);
+  int rc = sq.wal_checkpoint_v2(c->db, NULL, SQLITE_CHECKPOINT_PASSIVE, &log, &copied);
+  share_checkpointed(share, rc == SQLITE_OK && log >= 0 && copied == log, rc == SQLITE_OK ? copied : -1);
+  return an_void(env);
 }
 
 /* pending?(conn): whether free functions left statements to settle. */
@@ -1374,8 +2045,13 @@ static an_term fn_cache_stats(an_env *env, int argc, const an_term *argv) {
   int64_t size = 0;
   lock_take(&c->lock);
   for (int i = 0; i < c->capacity; i++) size += c->entries[i].sql != NULL;
-  an_term fields[5] = {an_int(env, size), an_int(env, c->capacity), an_int(env, (int64_t)c->hits),
-                       an_int(env, (int64_t)c->misses), an_int(env, (int64_t)c->evictions)};
+  an_term fields[7] = {an_int(env, size),
+                       an_int(env, c->capacity),
+                       an_int(env, (int64_t)c->hits),
+                       an_int(env, (int64_t)c->misses),
+                       an_int(env, (int64_t)c->evictions),
+                       an_int(env, (int64_t)c->shorts),
+                       an_int(env, (int64_t)c->fallbacks)};
   lock_drop(&c->lock);
   return an_struct(env, CACHE_STATS, fields);
 }
@@ -1384,14 +2060,16 @@ static const an_type types[] = {
   {"Value", AN_ENUM, "Null | Int(Int) | Float(Float) | Text(String) | Blob(Bytes) | Bool(Bool)"},
   {"Batch", AN_STRUCT,
    "code: Int, extended: Int, upgrade: Bool, readonly: Bool, failure: String, rows: List[Map[String, Value]], "
-   "changes: Int"},
+   "changes: Int, frames: Int"},
   {"Fetch", AN_STRUCT, "keep: Bool, cache: Bool, rows: Int, bytes: Int, quick_rows: Int, quick_steps: Int"},
-  {"CacheStats", AN_STRUCT, "size: Int, capacity: Int, hits: Int, misses: Int, evictions: Int"},
+  {"CacheStats", AN_STRUCT,
+   "size: Int, capacity: Int, hits: Int, misses: Int, evictions: Int, shorts: Int, fallbacks: Int"},
 };
 
 static const an_resource_type resources[] = {
   {"Conn", sizeof(conn_state), conn_free},
   {"Cursor", sizeof(cursor_state), cursor_free},
+  {"Wal", sizeof(wal_state), wal_free},
 };
 
 static const an_function functions[] = {
@@ -1402,6 +2080,10 @@ static const an_function functions[] = {
   {"pending?", "(Conn) -> Bool", fn_pending, AN_SHORT},
   {"tidy", "(Conn) -> Void", fn_tidy, AN_DIRTY},
   {"quick", "(Conn, String, List[Value], Fetch) -> Optional[Batch]", fn_quick, AN_SHORT},
+  {"inline_writes", "(Conn, Bool) -> Void", fn_inline_writes, AN_SHORT},
+  {"wal", "() -> Wal", fn_wal, AN_SHORT},
+  {"own_checkpoints", "(Conn, Wal) -> Void", fn_own_checkpoints, AN_DIRTY},
+  {"checkpoint", "(Conn, Wal) -> Void", fn_checkpoint, AN_DIRTY},
   {"interrupt", "(Conn) -> Void", fn_interrupt, AN_SHORT},
   {"autocommit?", "(Conn) -> Bool", fn_autocommit, AN_SHORT},
   {"cache_stats", "(Conn) -> CacheStats", fn_cache_stats, AN_SHORT},

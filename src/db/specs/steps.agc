@@ -44,6 +44,38 @@ def main() -> Void
     BDD.step("I run these statements in one block of the pool:") do |ctx, _args|
       send(ctx, Request(op: "pool_script", table: BDD.table(ctx)))
     end,
+    BDD.step("I run these statements in a transaction of the pool:") do |ctx, _args|
+      send(ctx, Request(op: "pool_transaction", table: BDD.table(ctx)))
+    end,
+    BDD.step(
+      "I run these statements in a transaction of the pool, and no scheduler stops for {int} ms:",
+    ) do |ctx, args| send(ctx, Request(op: "pool_transaction", table: BDD.table(ctx), number: args[0].to_i!)) end,
+    BDD.step("I commit {int} transactions in the pool, each running {string}") do |ctx, args|
+      send(ctx, Request(op: "pool_commits", number: args[0].to_i!, text: args[1]))
+    end,
+    BDD.step("I run {string} {int} times in a transaction of the pool") do |ctx, args|
+      send(ctx, Request(op: "pool_repeat", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step(
+      "{int} writers of the pool each commit {int} transactions of two rows into {string} while readers count them",
+    ) do |ctx, args|
+      send(ctx, Request(op: "pool_writers_readers", number: args[0].to_i!, cells: [args[1]], text: args[2]))
+    end,
+    BDD.step(
+      "another connection to {string} holds the write lock for {int} ms while I run these in a transaction:",
+    ) do |ctx, args|
+      send(ctx, Request(op: "transaction_while_locked", text: args[0], number: args[1].to_i!, table: BDD.table(ctx)))
+    end,
+    plain_step("I read how many statements ran in a short call in the pool", "pool_short_calls"),
+    plain_step("I read how many short calls left their statement to the compute pool in the pool", "pool_fallbacks"),
+    plain_step("I read how many statements ran in a short call", "short_calls"),
+    BDD.step("at most {int} statements ran in a short call in the pool") do |ctx, args|
+      send(ctx, Request(op: "pool_short_calls_at_most", number: args[0].to_i!))
+    end,
+    plain_step("I close the pool", "pool_close"),
+    BDD.step("the file {string} holds at most {int} bytes") do |ctx, args|
+      send(ctx, Request(op: "file_size", text: args[0], number: args[1].to_i!))
+    end,
     plain_step("I run a block that crashes in the pool", "pool_crash"),
     plain_step("I run a block that closes its connection in the pool", "pool_close_connection"),
     BDD.step("I keep a connection of the pool for {int} ms") do |ctx, args|
