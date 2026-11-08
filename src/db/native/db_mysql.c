@@ -120,13 +120,14 @@ enum {
   STATUS_IN_TRANS = 1,
   CLIENT_FOUND_ROWS = 2,
   ATTR_UPDATE_MAX_LENGTH = 0,
-  WAIT_READ = 1,
-  WAIT_WRITE = 2,
-  WAIT_EXCEPT = 4,
-  WAIT_TIMEOUT = 8,
+  EV_READ = 1,
+  EV_WRITE = 2,
+  EV_EXCEPT = 4,
+  EV_TIMEOUT = 8,
   FETCH_NO_DATA = 100,
   FETCH_TRUNCATED = 101,
   UNSUPPORTED_PREPARE = 1295,
+  NEW_METADATA = 2057,
   UNSIGNED_FLAG = 32,
   BINARY_CHARSET = 63,
 };
@@ -202,6 +203,8 @@ typedef struct {
   unsigned int (*stmt_errno)(MYSQL_STMT *);
   const char *(*stmt_error)(MYSQL_STMT *);
   my_bool (*stmt_free_result)(MYSQL_STMT *);
+  int (*stmt_free_result_start)(my_bool *, MYSQL_STMT *);
+  int (*stmt_free_result_cont)(my_bool *, MYSQL_STMT *, int);
   my_bool (*stmt_more_results)(MYSQL_STMT *);
   int (*stmt_next_result_start)(int *, MYSQL_STMT *);
   int (*stmt_next_result_cont)(int *, MYSQL_STMT *, int);
@@ -263,6 +266,8 @@ static const struct {
   SYM("mysql_stmt_errno", stmt_errno),
   SYM("mysql_stmt_error", stmt_error),
   SYM("mysql_stmt_free_result", stmt_free_result),
+  SYM("mysql_stmt_free_result_start", stmt_free_result_start),
+  SYM("mysql_stmt_free_result_cont", stmt_free_result_cont),
   SYM("mysql_stmt_more_results", stmt_more_results),
   SYM("mysql_stmt_next_result_start", stmt_next_result_start),
   SYM("mysql_stmt_next_result_cont", stmt_next_result_cont),
@@ -348,19 +353,19 @@ static void signals_restore(const signals *saved) {
 /* The events of WAIT that the socket has now, without waiting: an error or a hang-up counts as every one of them, so
    that the library meets it. */
 static int ready_events(int fd, int wait) {
-  if (fd < 0) return wait & (WAIT_READ | WAIT_WRITE | WAIT_EXCEPT);
+  if (fd < 0) return wait & (EV_READ | EV_WRITE | EV_EXCEPT);
   struct pollfd p = {fd, 0, 0};
-  if (wait & WAIT_READ) p.events |= POLLIN;
-  if (wait & WAIT_WRITE) p.events |= POLLOUT;
-  if (wait & WAIT_EXCEPT) p.events |= POLLPRI;
+  if (wait & EV_READ) p.events |= POLLIN;
+  if (wait & EV_WRITE) p.events |= POLLOUT;
+  if (wait & EV_EXCEPT) p.events |= POLLPRI;
   int n;
   do {
     n = poll(&p, 1, 0);
   } while (n < 0 && errno == EINTR);
   if (n <= 0) return 0;
-  if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) return wait & (WAIT_READ | WAIT_WRITE | WAIT_EXCEPT);
-  return ((p.revents & POLLIN) ? WAIT_READ : 0) | ((p.revents & POLLOUT) ? WAIT_WRITE : 0) |
-         ((p.revents & POLLPRI) ? WAIT_EXCEPT : 0);
+  if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) return wait & (EV_READ | EV_WRITE | EV_EXCEPT);
+  return ((p.revents & POLLIN) ? EV_READ : 0) | ((p.revents & POLLOUT) ? EV_WRITE : 0) |
+         ((p.revents & POLLPRI) ? EV_EXCEPT : 0);
 }
 
 static void shut_socket(int fd) {
@@ -396,7 +401,7 @@ typedef struct {
   uint64_t used;
 } entry;
 
-enum { OP_NONE, OP_PREPARE, OP_EXECUTE, OP_STORE, OP_NEXT, OP_CLOSE, OP_QUERY, OP_TEXT_STORE, OP_TEXT_NEXT };
+enum { OP_NONE, OP_PREPARE, OP_EXECUTE, OP_STORE, OP_NEXT, OP_CLOSE, OP_FREE, OP_QUERY, OP_TEXT_STORE, OP_TEXT_NEXT };
 
 enum {
   P_START,
@@ -405,6 +410,7 @@ enum {
   P_PREPARED,
   P_EXEC,
   P_EXECUTED,
+  P_FREED,
   P_STORED,
   P_ROWS,
   P_MORE,
@@ -446,13 +452,15 @@ typedef struct {
 /* The query that runs on a connection, from `start` to its end. OP is the call of the library that waits for the
    socket (WAIT, and DEADLINE when the library has a timeout), and PHASE what comes after it. STMT is the cache's
    (`slot`) or the query's own (`owned`, closed at its end). A query with DISCARD is one that a cancelled task left: it
-   is read to its end and sends nothing new. */
+   is read to its end and sends nothing new. SPOILED marks a statement that failed after its execute: the library may
+   then read the socket for rows that never come at its next execute, so the cache lets it go at the end of the query.
+   RETRIED: the statement ran again once after its table changed. */
 typedef struct {
   int phase, op, wait;
   uint64_t deadline;
-  bool keep, cache, flush, counts, owned, text, extra, discard, killed, dirty, big, pending;
-  int ret;
-  my_bool closed;
+  bool keep, cache, flush, counts, owned, text, extra, discard, killed, dirty, big, pending, spoiled, retried;
+  int ret, closes;
+  my_bool closed, freed;
   MYSQL_RES *res;
   MYSQL_STMT *stmt, *closing;
   int slot;
@@ -501,6 +509,9 @@ typedef struct {
    room (a signed decimal, or a datetime with microseconds), as in the FFI adapter. */
 #define TEXT_WIDTH_LIMIT 256
 #define TEXT_ROOM 32
+/* The most statements that one query closes before it runs: after a schema change lets a big cache go, the closes
+   spread over the next queries instead of holding one short call. */
+#define CLOSE_BATCH 32
 /* The seconds that the connection of `cancel` may take to connect, and to send its KILL QUERY and read the reply. */
 #define CANCEL_WAIT_S 5
 
@@ -589,9 +600,10 @@ static void query_reset(query *q) {
   q->phase = P_DONE;
 }
 
-/* Ends the query of the connection: its own statement goes to the next CLOSE. */
+/* Ends the query of the connection: its own statement, or a cached one that is spoiled, goes to the next CLOSE. */
 static void end_query(conn *c, query *q) {
   if (q->owned && q->stmt) close_later(c, q->stmt);
+  if (q->spoiled && q->slot >= 0 && c->entries[q->slot].stmt == q->stmt) forget(c, q->slot);
   query_reset(q);
   c->inflight = false;
 }
@@ -1027,20 +1039,31 @@ static an_term whole_value(an_env *env, const char *cell, size_t len) {
   return an_enum(env, VALUE, V_TEXT, &payload);
 }
 
-/* A float of the text protocol: digits with an optional sign and fraction, as String#to_f reads them; anything else
-   (an exponent) stays text. */
+/* The end of a run of digits from AT, or AT when there is none. */
+static size_t digits_end(const char *cell, size_t len, size_t at) {
+  while (at < len && cell[at] >= '0' && cell[at] <= '9') at++;
+  return at;
+}
+
+/* A float of the text protocol where String#to_f reads one (a sign, digits, then an optional fraction of digits and
+   an optional exponent); anything else stays text. */
 static an_term float_value(an_env *env, const char *cell, size_t len) {
   char digits[64];
   an_term payload;
-  size_t i = len > 0 && cell[0] == '-' ? 1 : 0, start = i;
-  while (i < len && cell[i] >= '0' && cell[i] <= '9') i++;
-  bool good = i > start;
-  if (good && i < len && cell[i] == '.') {
-    size_t fraction = ++i;
-    while (i < len && cell[i] >= '0' && cell[i] <= '9') i++;
-    good = i > fraction;
+  size_t i = len > 0 && (cell[0] == '-' || cell[0] == '+') ? 1 : 0;
+  size_t end = digits_end(cell, len, i);
+  bool good = end > i;
+  if (good && end < len && cell[end] == '.') {
+    i = end + 1;
+    end = digits_end(cell, len, i);
+    good = end > i;
   }
-  if (good && i == len && len < sizeof digits) {
+  if (good && end < len && (cell[end] == 'e' || cell[end] == 'E')) {
+    i = end + 1 < len && (cell[end + 1] == '-' || cell[end + 1] == '+') ? end + 2 : end + 1;
+    end = digits_end(cell, len, i);
+    good = end > i;
+  }
+  if (good && end == len && len < sizeof digits) {
     memcpy(digits, cell, len);
     digits[len] = '\0';
     payload = an_float(env, strtod(digits, NULL));
@@ -1129,6 +1152,10 @@ static int op_call(conn *c, query *q, int events) {
   case OP_CLOSE:
     wait = events ? my.stmt_close_cont(&q->closed, q->closing, events) : my.stmt_close_start(&q->closed, q->closing);
     break;
+  case OP_FREE:
+    wait = events ? my.stmt_free_result_cont(&q->freed, q->stmt, events)
+                  : my.stmt_free_result_start(&q->freed, q->stmt);
+    break;
   case OP_QUERY:
     wait = events ? my.real_query_cont(&q->ret, c->my, events)
                   : my.real_query_start(&q->ret, c->my, q->sql, (unsigned long)q->len);
@@ -1153,7 +1180,7 @@ static int op_settle(conn *c, query *q, int wait) {
     return 0;
   }
   q->wait = wait;
-  q->deadline = (wait & WAIT_TIMEOUT) ? now_ms() + my.get_timeout_value_ms(c->my) : 0;
+  q->deadline = (wait & EV_TIMEOUT) ? now_ms() + my.get_timeout_value_ms(c->my) : 0;
   return wait;
 }
 
@@ -1166,7 +1193,7 @@ static int op_start(conn *c, query *q, int op) {
 /* Goes on with the operation that waits when its socket is ready or its timeout passed. */
 static int op_resume(conn *c, query *q) {
   int events = ready_events(my.get_socket(c->my), q->wait);
-  if (!events && q->deadline && now_ms() >= q->deadline) events = WAIT_TIMEOUT;
+  if (!events && q->deadline && now_ms() >= q->deadline) events = EV_TIMEOUT;
   if (!events) return q->wait;
   return op_settle(c, q, op_call(c, q, events));
 }
@@ -1177,7 +1204,7 @@ static an_term wait_step(an_env *env, conn *c, query *q) {
     q->killed = true;
     return step_state(env, c, S_CANCEL);
   }
-  return step_state(env, c, (q->wait & WAIT_WRITE) ? S_WRITE : S_READ);
+  return step_state(env, c, (q->wait & EV_WRITE) ? S_WRITE : S_READ);
 }
 
 /* ---- The phases. ---- */
@@ -1266,11 +1293,12 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       q->phase = P_CLOSE;
       continue;
     case P_CLOSE:
-      if (q->discard || c->closing_size == 0) {
+      if (q->discard || c->closing_size == 0 || q->closes == CLOSE_BATCH) {
         q->phase = q->discard ? P_FINISH : P_SEND;
         continue;
       }
       q->closing = c->closing[--c->closing_size];
+      q->closes++;
       if (op_start(c, q, OP_CLOSE)) return wait_step(env, c, q);
       continue;
     case P_SEND:
@@ -1327,7 +1355,9 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
           q->phase = P_FINISH;
           continue;
         }
-        if (q->cache && c->capacity > 0 && insert(c, q, (int)wanted)) q->owned = false;
+        /* A write with a result (INSERT ... RETURNING) is not cached: P_FREED may run a cached statement again. */
+        bool rerun_safe = !q->counts || my.stmt_field_count(q->stmt) == 0;
+        if (q->cache && rerun_safe && c->capacity > 0 && insert(c, q, (int)wanted)) q->owned = false;
       }
       q->phase = P_EXEC;
       continue;
@@ -1357,6 +1387,14 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       if (q->ret != 0) {
         if (!q->extra) fail_stmt(q);
         q->phase = P_FINISH;
+        if (my.stmt_errno(q->stmt) == NEW_METADATA) {
+          /* Another connection changed a table of the statement: the server ran it, and its rows, with more or fewer
+             columns than the prepare said, wait on the socket. They are read and dropped (the free reads the socket),
+             and the statement goes. */
+          q->spoiled = true;
+          q->phase = P_FREED;
+          if (op_start(c, q, OP_FREE)) return wait_step(env, c, q);
+        }
         continue;
       }
       if (my.stmt_field_count(q->stmt) == 0) {
@@ -1367,7 +1405,35 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       q->phase = P_STORED;
       if (op_start(c, q, OP_STORE)) return wait_step(env, c, q);
       continue;
+    case P_FREED:
+      /* The sql is prepared again and runs once more, as a first run: only a statement with a result gets here, and
+         the cache keeps no write that has one. */
+      q->phase = P_FINISH;
+      if (q->freed || q->extra || q->discard || q->retried) continue;
+      if (!q->sql) {
+        const entry *e = &c->entries[q->slot];
+        q->sql = malloc(e->len ? e->len : 1);
+        if (!q->sql) continue;
+        memcpy(q->sql, e->sql, e->len);
+      }
+      if (q->owned) {
+        close_later(c, q->stmt);
+      } else {
+        forget(c, q->slot);
+        q->cache = true;
+        c->misses++;
+      }
+      q->stmt = NULL;
+      q->owned = q->spoiled = false;
+      q->slot = -1;
+      q->retried = true;
+      q->failure[0] = 0;
+      q->phase = P_SEND;
+      continue;
     case P_STORED:
+      /* A failed store leaves the statement waiting for rows that the free below gives up on (it does not read the
+         socket then); a next execute would read the socket for them. */
+      if (q->ret != 0) q->spoiled = true;
       if (q->ret != 0 && !q->extra) fail_stmt(q);
       if (!q->extra && !q->failure[0]) q->changes = q->counts ? (int64_t)my.stmt_affected_rows(q->stmt) : 0;
       if (q->keep && !q->extra && !q->failure[0] && !q->discard) {
@@ -1405,6 +1471,7 @@ static an_term advance(an_env *env, conn *c, query *q, int64_t max_rows, int64_t
       continue;
     case P_NEXTED:
       /* 0: one more result, -1: none, else a failure that comes after the answer and is dropped. */
+      if (q->ret > 0) q->spoiled = true;
       q->phase = q->ret == 0 ? P_EXECUTED : P_FINISH;
       continue;
     case P_TEXT:
