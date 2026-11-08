@@ -45,7 +45,7 @@ agentica test
 
 `make check` runs `agentica check` on every `.agc` file. `agentica test`, run in `src/db`, the package folder, runs the features and the unit tests.
 
-Developing the package needs Agentica 0.26.1 or later and a C compiler, and CI runs `agentica test --jobs 4` (four test files at once, which the specs allow); using the package still needs only the version in the README.
+Developing the package needs Agentica 0.27.0 or later and a C compiler, and CI runs `agentica test --jobs 4` (four test files at once, which the specs allow); using the package still needs only the version in the README.
 
 - SQLite needs no server. Without a PostgreSQL or MySQL server run only the SQLite scenarios, which have "on sqlite" in their name: `agentica test --only "on sqlite"`.
 - The PostgreSQL scenarios read `AGENTICA_DB_POSTGRES_URL`, and the MySQL ones read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail: no scenario is skipped.

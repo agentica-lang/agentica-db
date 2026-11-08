@@ -4,6 +4,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Needs Agentica 0.27.0 or later.
+
 ### Added
 
 - `AGENTICA_DB_MYSQL_DRIVER` is read by `Db.open` of a MySQL url: `ffi` (or unset) runs the FFI driver, the only one
@@ -13,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** needs Agentica 0.27.0 or later (the crypto builtins are the `OpenSSL` family there; `Migrate` uses
+  `OpenSSL.Digest`). Checksums of migrations do not change.
 - The MySQL adapter checks a statement without quotes, comments or `;` in a few VM steps, not about 60 for each byte
   (7000 for a typical insert): it runs at every call.
 - The queue-full error of `DbPool.with` now ends with ` (max_waiting N)`, which says which limit was hit: a caller that

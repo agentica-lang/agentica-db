@@ -53,10 +53,10 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 
 ## Commands
 
-- Binary: developing and testing the package needs Agentica 0.26.1 or later (native modules) and a C compiler
+- Binary: developing and testing the package needs Agentica 0.27.0 or later (the OpenSSL builtins) and a C compiler
   (`cc`, or `CC`); the minimum for a project that uses the package is the one in the README. Download a release
   under `.tools/` (gitignored), never `/tmp`. CI builds Agentica at the commit `AGENTICA_COMMIT` of
-  `.github/workflows/ci.yml`, the one of the tag 0.26.1 (`.github/actions/agentica`); a version bump sets it to the
+  `.github/workflows/ci.yml`, the one of the tag 0.27.0 (`.github/actions/agentica`); a version bump sets it to the
   commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
   sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver. PostgreSQL the same, with

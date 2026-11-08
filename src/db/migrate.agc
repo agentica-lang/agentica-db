@@ -216,8 +216,8 @@ end
 
 def checksum(migration: Migration) -> String
   case migration.action
-    Action.Statements(statements) -> return Digest.sha256_hexdigest(statements.join(";\n").bytes)
-    Action.Code(_) -> return Digest.sha256_hexdigest("code #{migration.name}".bytes)
+    Action.Statements(statements) -> return OpenSSL.Digest.sha256_hexdigest(statements.join(";\n").bytes)
+    Action.Code(_) -> return OpenSSL.Digest.sha256_hexdigest("code #{migration.name}".bytes)
   end
 end
 
