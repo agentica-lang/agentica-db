@@ -14,7 +14,12 @@ def test_a_row_reads_back_as_written_on_postgres() -> Result[Void]
   return Store.reads_back(Store.Adapter.Postgres, RUNS)
 end
 
-# MySQL and MariaDB have the FFI driver only (agentica-lang/agentica-db#77).
+# MySQL and MariaDB have the FFI driver only (agentica-lang/agentica-db#77), which makes a call for each value: 50 rows
+# fit the step budget of a test with room to spare, so the 100 are two tests.
 def test_a_row_reads_back_as_written_on_mysql() -> Result[Void]
-  return Store.reads_back(Store.Adapter.Mysql, RUNS)
+  return Store.reads_back(Store.Adapter.Mysql, RUNS / 2)
+end
+
+def test_a_second_row_reads_back_as_written_on_mysql() -> Result[Void]
+  return Store.reads_back(Store.Adapter.Mysql, RUNS / 2)
 end

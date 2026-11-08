@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The MySQL adapter checks a statement without quotes, comments or `;` in a few VM steps, not about 60 for each byte
+  (7000 for a typical insert): it runs at every call.
 - The queue-full error of `DbPool.with` now ends with ` (max_waiting N)`, which says which limit was hit: a caller that
   compares the whole text with `==` must use `start_with?`.
 

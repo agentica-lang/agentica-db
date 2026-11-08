@@ -37,6 +37,19 @@ def main() -> Void
       # `--` without a space after it is two minus signs, not a comment.
       return refused("select 1; --1", MORE_THAN_ONE)
     end,
+    # A step budget (2.5 million for a test) is the measure: the scan took about 7000 steps for this statement, so 1000
+    # of them did not fit, and a statement of an application runs this check at every call.
+    Test.test("a plain statement is checked in a few steps, whatever its length") do
+      sql = "insert into notes (room_id, author_id, body, created_at) values (?, ?, ?, ?)"
+      for _ in 0...1000
+        try MysqlSql.inspect(sql)
+      end
+
+      try verb_of("\t\n select" + " " * 200 + "1", "select")
+      try verb_of("Delete from t", "delete")
+      try verb_of("1 + 1", "")
+      return refused(" \r\n\t ", NO_STATEMENT)
+    end,
     Test.test("sql with only a # comment, which only MySQL has, has no statement") do
       return refused("# only a comment", NO_STATEMENT)
     end,
