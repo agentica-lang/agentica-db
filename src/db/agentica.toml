@@ -2,10 +2,10 @@ name = "db"
 
 # db_pool.agc is a pool of connections on the generic pool (src/pool, a member of the workspace of the root
 # agentica.toml). In the repository the workspace reads it from its folder, so an edit there is seen at once; a project
-# outside the repository fetches the tag below, which holds the pool at src/pool (the pool of that tag takes `max_waiting` but words the
-# queue-full error without the limit; the tag moves with the next release).
+# outside the repository fetches the commit below, which must hold the pool at src/pool with the queue-full error that
+# names `max_waiting` (the commit of the pull request that added the option; move it to a tag at a release).
 [dependencies]
-pool = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.4.0", subdir = "src/pool" }
+pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf", subdir = "src/pool" }
 
 # The system SQLite; `extern "sqlite3"` in sqlite/sqlite.agc opens the entry of the running system.
 [native.sqlite3]

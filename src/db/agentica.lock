@@ -4,5 +4,5 @@ version = 1
 name = "pool"
 git = "https://github.com/agentica-lang/agentica-db"
 subdir = "src/pool"
-tag = "0.4.0"
+ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf"
 workspace = true

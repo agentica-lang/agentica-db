@@ -129,7 +129,7 @@ Feature: Pooling
       | v     |
       | Int 1 |
 
-  Scenario Outline: A caller is refused when max_waiting callers wait already on <adapter>
+  Scenario Outline: Nobody may wait when max_waiting is 0, so a busy pool refuses the caller on <adapter>
     Given a "<adapter>" database
     When I start a pool on "[URL]" with:
       | option      | value |

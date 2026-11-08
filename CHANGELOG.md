@@ -7,7 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `DbPool.Options` has `max_waiting` (default 1000, 0 or more; 0 lets nobody wait): how many callers may wait for a
-  connection. The refusal says which limit was hit: `pool error: queue full (max_waiting N)`.
+  connection.
+
+### Changed
+
+- The queue-full error of `DbPool.with` now ends with ` (max_waiting N)`, which says which limit was hit: a caller that
+  compares the whole text with `==` must use `start_with?`.
 
 ## [0.7.0] - 2026-11-08
 

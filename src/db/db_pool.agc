@@ -116,7 +116,7 @@ end
 ## is an `error`; so is more than one connection to a private in-memory SQLite database (`sqlite::memory:`,
 ## `sqlite:file::memory:`, a `file:` name with `mode=memory`), each of which would be an empty database of its
 ## own. With `cache=shared` in the name the database is one to all, and the size is free. A checkpoint option below
-## 0, or a `checkpoint_ms` of 0, is an error too.
+## 0, or a `checkpoint_ms` of 0, is an error too, and so is a negative `max_waiting`.
 export def start(options: Options) -> Result[Pool]
   size = options.size
   if size == 0
