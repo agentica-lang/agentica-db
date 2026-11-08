@@ -1,6 +1,5 @@
-## The FFI driver of the MySQL adapter: the system MariaDB Connector/C (`libmariadb.so.3`) through extern calls,
-## one call per value. Every call that waits for the server is a compute call. It runs where the native driver
-## (`native.agc`) does not: compiled bytecode run where the built library is gone, or a system other than Linux.
+## The FFI driver of the MySQL adapter (`mysql.agc`): the system MariaDB Connector/C (`libmariadb.so.3`) through
+## extern calls, one call per value. Every call that waits for the server is a compute call.
 ##
 ## `open` gives a `Handle`, which the task that opened it owns: the end of the task closes it (`mysql_close`, the free
 ## function of the resource), or `Native.close` earlier.

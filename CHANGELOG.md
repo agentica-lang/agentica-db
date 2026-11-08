@@ -6,11 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `AGENTICA_DB_MYSQL_DRIVER` is read by `Db.open` of a MySQL url: `ffi` (or unset) runs the FFI driver, the only one
+  for now; `native` (which waits for agentica-lang/agentica#1193) and any other value are an error.
 - A native MySQL and MariaDB driver (`src/db/native/db_mysql.c`), built but off until Agentica ships `an_blocking`
   (agentica-lang/agentica#1193): the FFI driver still runs everywhere. Once on, a query waits on the socket with no
   compute call, prepared statements are cached per connection and rows come many per call. The url parameters
-  `statement_cache`, `batch_rows` and `batch_bytes` are read for it; `AGENTICA_DB_MYSQL_DRIVER=ffi` picks the FFI
-  driver, and `native` is an error until then.
+  `statement_cache`, `batch_rows` and `batch_bytes` are read for it.
 - `DbPool.Options` has `max_waiting` (default 1000, 0 or more; 0 lets nobody wait): how many callers may wait for a
   connection.
 
