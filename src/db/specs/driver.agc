@@ -7,6 +7,7 @@ import Cells from "cells"
 import Db from "../db"
 import DbPool from "../db_pool"
 import Migrate from "../migrate"
+import Mysql from "../mysql/mysql"
 import Orm from "../orm"
 import Postgres from "../postgres/postgres"
 import Protocol from "protocol"
@@ -1887,7 +1888,9 @@ def statement_cache(state: State) -> State
       Db.Connection.Postgres(postgres) ->
         found = Postgres.statement_cache(postgres).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
         return cache_row(state, found)
-      _ -> return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
+      Db.Connection.Mysql(mysql) ->
+        found = Mysql.statement_cache(mysql).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
+        return cache_row(state, found)
     end
   end
 end
@@ -1957,16 +1960,17 @@ def cache_beside_big(state: State, req: Request) -> State
 end
 
 def read_cache(conn: Db.Connection) -> Result[Int]
-  case conn
-    Db.Connection.Postgres(postgres) ->
-      for _ in 0...CACHE_READS
-        _ = Postgres.statement_cache(postgres)
-        Task.sleep(1)
-      end
+  for _ in 0...CACHE_READS
+    case conn
+      Db.Connection.Postgres(postgres) -> _ = Postgres.statement_cache(postgres)
+      Db.Connection.Mysql(mysql) -> _ = Mysql.statement_cache(mysql)
+      _ -> return error("only a PostgreSQL or MySQL connection is read here")
+    end
 
-      return ok(CACHE_READS)
-    _ -> return error("only a PostgreSQL connection is read here")
+    Task.sleep(1)
   end
+
+  return ok(CACHE_READS)
 end
 
 # A task executes `req.text` on the connection, a second one executes `req.cells[0]` there, which waits for the first,

@@ -4,7 +4,8 @@
 ## percent-decoded (`%40` is `@`), so a password may hold any character. The host is required (`localhost` uses
 ## the local socket of the client library); an IPv6 host is written `[::1]`. The parameters are
 ## `connect_timeout`, in seconds, `timeout_ms` (the limit of each statement, in milliseconds, none by default),
-## `ssl_mode` and `ssl_ca`. `ssl_mode=required` uses TLS and accepts any certificate.
+## `ssl_mode` and `ssl_ca`, and for the native driver `statement_cache` (statements, at most 10000, 0 for none),
+## `batch_rows` (1 to 1000) and `batch_bytes` (1 to 262144). `ssl_mode=required` uses TLS and accepts any certificate.
 ## `ssl_mode=verify` uses TLS and checks the certificate of the server against the authorities in the PEM file that
 ## `ssl_ca=PATH` names: libmariadb checks nothing when it has no authority file, so `verify` without `ssl_ca` (and
 ## `ssl_ca` without `verify`) is an error. Without `ssl_mode` the client library decides. An error names the problem
@@ -24,6 +25,13 @@ UPPER_F = 70
 LOWER_A = 97
 LOWER_F = 102
 LETTER_OFFSET = 10
+MAX_STATEMENT_CACHE = 10_000
+# The most that one short call of the native driver turns into values (QUICK_ROWS and QUICK_BYTES of the module): a
+# bigger batch would hold the scheduler longer.
+MAX_BATCH_ROWS = 1_000
+MAX_BATCH_BYTES = 262_144
+# At most nine digits, far from the limit of an Int.
+MAX_DIGITS = 9
 
 ## The TLS mode of a connection: what the client library does by default, TLS with any certificate, or TLS with a
 ## certificate that the system authorities vouch for.
@@ -33,7 +41,9 @@ export enum Tls
   Verify
 end
 
-## Where and how to connect. An empty `user` is the user of the process, and an empty `database` selects none.
+## Where and how to connect. An empty `user` is the user of the process, and an empty `database` selects none. The
+## native driver keeps `statement_cache` prepared statements per connection and gives at most `batch_rows` rows or
+## about `batch_bytes` bytes of values per call; the FFI driver has no cache and reads a result at once.
 export struct Target
   host: String
   port: Int
@@ -44,6 +54,9 @@ export struct Target
   timeout_ms: Int = 0
   tls: Tls = Tls.Default
   ca: String = ""
+  statement_cache: Int = 100
+  batch_rows: Int = 100
+  batch_bytes: Int = 262_144
 end
 
 struct Address
@@ -56,6 +69,9 @@ struct Options
   timeout_ms: Int
   tls: Tls
   ca: String
+  statement_cache: Int = 100
+  batch_rows: Int = 100
+  batch_bytes: Int = 262_144
 end
 
 ## Reads the url. An error is `mysql error: <message>`.
@@ -96,6 +112,9 @@ export def parse(url: String) -> Result[Target]
       timeout_ms: options.timeout_ms,
       tls: options.tls,
       ca: options.ca,
+      statement_cache: options.statement_cache,
+      batch_rows: options.batch_rows,
+      batch_bytes: options.batch_bytes,
     ),
   )
 end
@@ -232,10 +251,16 @@ def read_query(query: String) -> Result[Options]
     elsif halves[0] == "ssl_ca" and not halves[1].empty?
       ca = try decode(halves[1])
       options = options.with(ca: ca)
+    elsif halves[0] == "statement_cache"
+      options = options.with(statement_cache: try read_bounded(halves[1], halves[0], 0, MAX_STATEMENT_CACHE))
+    elsif halves[0] == "batch_rows"
+      options = options.with(batch_rows: try read_bounded(halves[1], halves[0], 1, MAX_BATCH_ROWS))
+    elsif halves[0] == "batch_bytes"
+      options = options.with(batch_bytes: try read_bounded(halves[1], halves[0], 1, MAX_BATCH_BYTES))
     else
       return error(
         "mysql error: the url has an unknown parameter, the ones that exist are connect_timeout, " +
-        "timeout_ms, ssl_mode and ssl_ca",
+        "timeout_ms, ssl_mode, ssl_ca, statement_cache, batch_rows and batch_bytes",
       )
     end
   end
@@ -249,6 +274,25 @@ def read_query(query: String) -> Result[Options]
   end
 
   return ok(options)
+end
+
+# A whole number of up to MAX_DIGITS digits from `low` to `high`.
+def read_bounded(text: String, name: String, low: Int, high: Int) -> Result[Int]
+  number = digits(text)
+  if not number.ok? or text.length > MAX_DIGITS
+    return error("mysql error: the url #{name} is not a whole number")
+  end
+
+  n = number.unwrap_or(0)
+  if n < low
+    return error("mysql error: the url #{name} is below #{low}: #{n}")
+  end
+
+  if n > high
+    return error("mysql error: the url #{name} is over #{high}: #{n}")
+  end
+
+  return ok(n)
 end
 
 # Decodes `%XX` escapes into bytes, which must make UTF-8.
