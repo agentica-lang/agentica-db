@@ -98,6 +98,83 @@ Feature: SQLite writes in short calls and the checkpoints of a pool
       | an insert of a select | insert into u select n from t                                                                       |
       | a recursive CTE       | insert into u with recursive c(v) as (select 1 union all select v + 1 from c where v < 1000000) select v from c |
 
+  # A write of one row can still make or copy a long value in one instruction, which neither the plan nor the count
+  # of instructions shows: in a short call a value or row over 256 KiB fails and the write runs again on the compute
+  # pool, in the same transaction. No checkpoint runs, which would send the next write to the compute pool anyway.
+  Scenario Outline: A write that makes or copies a long value runs on the compute pool, <what> on sqlite
+    Given the environment variable "AGENTICA_SCHEDULERS" is "1"
+    And a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db" with:
+      | option            | value   |
+      | size              | 1       |
+      | checkpoint_frames | 1000000 |
+      | checkpoint_ms     | 600000  |
+      | checkpoint_cap    | 1000000 |
+    And I execute "create table t (b blob)" in the pool
+    And I execute "insert into t (b) values (randomblob(64000000))" in the pool
+    And I run these statements in a transaction of the pool:
+      | sql   |
+      | <sql> |
+    And I run these statements in a transaction of the pool, and no scheduler stops for 100 ms:
+      | sql   |
+      | <sql> |
+    And I query "select count(*) as n from t" in the pool
+    Then the result is:
+      | n     |
+      | Int 3 |
+
+    Examples:
+      | what               | sql                                               |
+      | made by a function | insert into t (b) values (randomblob(64000000))   |
+      | copied from a row  | insert into t (b) select b from t where rowid = 1 |
+
+  # An insert into a parent table looks for the child rows that point to its new key while deferred violations of a
+  # foreign key wait, here the child row that the transaction inserted first. With no index on the child's key that
+  # scans the whole child table, so the insert runs on the compute pool, however cheap its last run was.
+  Scenario: An insert that may scan a child table for its foreign key runs on the compute pool on sqlite
+    Given the environment variable "AGENTICA_SCHEDULERS" is "1"
+    And a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db" with:
+      | option | value |
+      | size   | 1     |
+    And I execute "create table parents (id integer primary key)" in the pool
+    And I execute "create table children (parent_id integer references parents (id) deferrable initially deferred)" in the pool
+    And I execute "insert into children with recursive c(v) as (select 1 union all select v + 1 from c where v < 4000000) select null from c" in the pool
+    And I run these statements in a transaction of the pool:
+      | sql                                 |
+      | insert into parents (id) values (7) |
+    And I run these statements in a transaction of the pool:
+      | sql                                         |
+      | insert into children (parent_id) values (7) |
+    And I execute "delete from children where parent_id = 7" in the pool
+    And I execute "delete from parents where id = 7" in the pool
+    And I run these statements in a transaction of the pool, and no scheduler stops for 100 ms:
+      | sql                                         |
+      | insert into children (parent_id) values (7) |
+      | insert into parents (id) values (7)         |
+    Then it succeeds
+
+  # A commit that writes the first frame of the WAL writes its header and syncs it, a disk flush even with
+  # synchronous=normal: the first commit of a new WAL, and the first one after a checkpoint that copied every frame.
+  # So after such a checkpoint the next transaction runs on the compute pool, its BEGIN too, so that its snapshot comes
+  # after the checkpoint and its commit is the one that starts the WAL again. Here each transaction leaves two frames
+  # that no checkpoint has copied, the cap, and checkpoints the whole WAL, so only every other one runs in short calls
+  # after the first: 3 + 0 + 3 + 0 short calls (its BEGIN, its insert and its COMMIT).
+  Scenario: The commit after a checkpoint of the whole WAL runs on the compute pool on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/writes.db" with:
+      | option            | value   |
+      | size              | 1       |
+      | checkpoint_frames | 1000000 |
+      | checkpoint_ms     | 600000  |
+      | checkpoint_cap    | 2       |
+    And I execute "create table t (n integer)" in the pool
+    And I commit 5 transactions in the pool, each running "insert into t (n) values (1)"
+    And I read how many statements ran in a short call in the pool
+    Then the result is:
+      | shorts |
+      | Int 6  |
+
   # The writers take turns at the line of the pool while other blocks read: no reader sees half of a transaction, and
   # every row is there after a reopen. The checkpointer runs meanwhile, at a mark of a few frames.
   Scenario: Writers and readers of a pool see whole transactions, and every row stays after a reopen on sqlite

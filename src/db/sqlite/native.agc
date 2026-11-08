@@ -31,8 +31,9 @@ end
 
 # One call's part of a statement. `code` is SQLITE_ROW when more rows follow, SQLITE_DONE at the end, else the code of
 # the failure, whose text is `failure`. `upgrade` is a write refused because this connection holds a read lock, which
-# is not waited for. `changes` is the count of the statement at SQLITE_DONE, and `frames` the frames in the WAL after
-# a commit of this call, on a connection whose pool takes its checkpoints (`own_checkpoints`; else 0).
+# is not waited for. `changes` is the count of the statement at SQLITE_DONE, and `frames` the frames in the WAL that no
+# checkpoint has copied after a commit of this call, on a connection whose pool takes its checkpoints
+# (`own_checkpoints`; else 0).
 struct Batch
   code: Int
   extended: Int
@@ -56,8 +57,8 @@ export struct CacheStats
   shorts: Int
 end
 
-## The rows and the count of changes of a statement that ran to its end, and the frames in the WAL after its commit
-## (0 when it did not commit, or the pool does not take the checkpoints of the connection).
+## The rows and the count of changes of a statement that ran to its end, and the frames in the WAL that no checkpoint
+## has copied after its commit (0 when it did not commit, or the pool does not take the checkpoints of the connection).
 export struct Done
   rows: List[Row]
   changes: Int
@@ -75,9 +76,15 @@ extern module "db_sqlite"
   ## Lets a short call run the cheap writes and the BEGIN of a transaction (a WAL database only), and with `commits`
   ## a write that commits too (only after `own_checkpoints`, and where a commit does not sync the WAL).
   export def inline_writes(conn: Conn, commits: Bool) -> Void
-  ## Turns SQLite's autocheckpoint off for the connection: its pool takes the checkpoints, and each commit gives the
-  ## frames in the WAL (`Done.frames`).
-  export compute def own_checkpoints(conn: Conn) -> Void
+  ## What the connections of a pool share about their WAL: whether a checkpoint runs, or the next write to the WAL
+  ## starts it again, which syncs it; no connection writes in a short call meanwhile.
+  export resource Wal
+  export def wal() -> Wal
+  ## Turns SQLite's autocheckpoint off for the connection: its pool takes the checkpoints of the WAL that it shares in
+  ## `wal`, and each commit gives the frames in the WAL that no checkpoint has copied (`Done.frames`).
+  export compute def own_checkpoints(conn: Conn, wal: Wal) -> Void
+  ## A PASSIVE checkpoint of the WAL shared in `wal`: it copies what no reader needs and waits for nobody.
+  export compute def checkpoint(conn: Conn, wal: Wal) -> Void
 end
 
 ## Whether the module opens: false where the built library does not load, and the FFI driver runs.

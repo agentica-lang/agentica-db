@@ -31,11 +31,14 @@
 ## A pool of a SQLite file in WAL mode on the native driver takes the checkpoints of the WAL off the writers. Its
 ## connections run with SQLite's autocheckpoint off, which would copy the WAL into the database inside a COMMIT, now
 ## and then for many milliseconds while the writer holds the turn. A checkpointer task with a connection of its own
-## runs a PASSIVE checkpoint on the compute pool when a commit leaves `checkpoint_frames` frames in the WAL, and every
-## `checkpoint_ms`. A commit that leaves `checkpoint_cap` frames checkpoints at once on its own connection, so the WAL
-## stays bounded when the checkpointer lags. A COMMIT then never checkpoints, and runs in a short call on the scheduler
-## after the cheap writes of its transaction (see `sqlite/sqlite.agc`). `close` stops the checkpointer. With the FFI
-## driver, or `checkpoint_frames` 0, each connection checkpoints as SQLite does by itself.
+## runs a PASSIVE checkpoint on the compute pool when a commit leaves `checkpoint_frames` frames in the WAL that no
+## checkpoint has copied, and every `checkpoint_ms`. A commit that leaves `checkpoint_cap` such frames checkpoints at
+## once on its own connection, so the WAL stays near the cap when the checkpointer lags, as long as no reader holds an
+## older snapshot (a PASSIVE checkpoint, like SQLite's own, cannot copy past it). A COMMIT then never checkpoints, and
+## runs in a short call on the scheduler after the cheap writes of its transaction (see `sqlite/sqlite.agc`), except
+## while a checkpoint runs and for the transaction after one that copied the whole WAL, whose commit starts the WAL
+## again and syncs it. `close` stops the checkpointer. With the FFI driver, or `checkpoint_frames` 0, each connection
+## checkpoints as SQLite does by itself.
 
 import Db from "db"
 import P from "pkg/pool/pool"
@@ -70,11 +73,11 @@ struct Checkpointer
   task: Task[Result[Void]]
 end
 
-# What the checkpointer task needs: the url of its own connection, the channel that wakes it (closed: stop), and the
-# time between two checkpoints when nothing wakes it.
+# What the checkpointer task needs: the url of its own connection, the checkpoints of the pool (`plan.nudge` wakes it,
+# and closed stops it), and the time between two checkpoints when nothing wakes it.
 struct Watch
   url: String
-  nudge: Channel[Int]
+  plan: Sqlite.Checkpoints
   every_ms: Int
 end
 
@@ -86,8 +89,9 @@ end
 ## and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0).
 ##
 ## The last three are the checkpoints of a SQLite file in WAL mode (see the top of this file): a commit that leaves
-## `checkpoint_frames` frames (pages) in the WAL wakes the checkpointer, which also runs every `checkpoint_ms`, and a
-## commit that leaves `checkpoint_cap` frames checkpoints itself (0: four times `checkpoint_frames`). A
+## `checkpoint_frames` frames (pages) in the WAL that no checkpoint has copied wakes the checkpointer, which also runs
+## every `checkpoint_ms`, and a commit that leaves `checkpoint_cap` such frames checkpoints itself (0: four times
+## `checkpoint_frames`). A
 ## `checkpoint_frames` of 0 leaves the checkpoints to SQLite (its autocheckpoint, at 1000 frames, inside a COMMIT).
 export struct Options
   url: String
@@ -245,9 +249,12 @@ def start_checkpointer(options: Options) -> Optional[Checkpointer]
   end
 
   nudge: Channel[Int] = Channel.new(1)
-  plan = Sqlite.Checkpoints(nudge: nudge, frames: options.checkpoint_frames, cap: cap)
-  task = Task.spawn(&checkpoints, Watch(url: options.url, nudge: nudge, every_ms: options.checkpoint_ms))
-  return some(Checkpointer(plan: plan, task: task))
+  case Sqlite.checkpoints(nudge, options.checkpoint_frames, cap)
+    none -> return none
+    some(plan) ->
+      task = Task.spawn(&checkpoints, Watch(url: options.url, plan: plan, every_ms: options.checkpoint_ms))
+      return some(Checkpointer(plan: plan, task: task))
+  end
 end
 
 # Closing the channel stops the task at its next wake-up, after the checkpoint that runs, if any; it closes its
@@ -276,12 +283,12 @@ end
 
 def checkpoint_loop(sqlite: Sqlite.Connection, watch: Watch) -> Void
   while true
-    _ = watch.nudge.recv(watch.every_ms)
-    if watch.nudge.closed?
+    _ = watch.plan.nudge.recv(watch.every_ms)
+    if watch.plan.nudge.closed?
       return
     end
 
-    _ = Sqlite.checkpoint(sqlite)
+    Sqlite.checkpoint(sqlite, watch.plan)
   end
 end
 

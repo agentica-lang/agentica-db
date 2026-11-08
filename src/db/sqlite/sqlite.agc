@@ -73,13 +73,16 @@ export struct Connection
 end
 
 ## How a pool takes the WAL checkpoints of its connections: a commit that leaves `frames` frames or more in the WAL
-## wakes the checkpointer of the pool through `nudge` (a channel of one value, which it never waits to send), and one
-## that leaves `cap` frames or more checkpoints at once on its own connection, so the WAL stays bounded when the
-## checkpointer lags.
+## that no checkpoint has copied wakes the checkpointer of the pool through `nudge` (a channel of one value, which it
+## never waits to send), and one that leaves `cap` frames or more checkpoints at once on its own connection, so the WAL
+## stays near `cap` when the checkpointer lags (while no reader holds an older snapshot, as with SQLite's own
+## checkpoints). `wal` is what the
+## connections and the checkpoints share in the native module (`checkpoints`).
 export struct Checkpoints
   nudge: Channel[Int]
   frames: Int
   cap: Int
+  wal: SqliteNative.Wal
 end
 
 # What `configure` set: the journal mode in force (empty when not known) and the `synchronous` level (empty: SQLite's).
@@ -129,6 +132,16 @@ export def open(path: String) -> Result[Connection]
   end
 end
 
+## The checkpoints of a pool, none where the native driver does not load (its connections run the FFI driver, whose
+## checkpoints stay SQLite's).
+export def checkpoints(nudge: Channel[Int], frames: Int, cap: Int) -> Optional[Checkpoints]
+  if not SqliteNative.available?()
+    return none
+  end
+
+  return some(Checkpoints(nudge: nudge, frames: frames, cap: cap, wal: SqliteNative.wal()))
+end
+
 ## The connection with its checkpoints taken by a pool (`plan`): SQLite's autocheckpoint is off, and each commit
 ## wakes the pool's checkpointer or checkpoints at the cap (see `Checkpoints`). Where the commits do not sync the WAL,
 ## a COMMIT, and a write that commits, can then run in a short call: no commit of the connection checkpoints. A
@@ -140,7 +153,7 @@ export def own_checkpoints(conn: Connection, plan: Checkpoints) -> Connection
 
   case conn.link
     Link.Native(native, _) ->
-      SqliteNative.own_checkpoints(native)
+      SqliteNative.own_checkpoints(native, plan.wal)
       SqliteNative.inline_writes(native, not conn.sync_commits)
       return conn.with(checkpoints: some(plan))
     Link.Ffi(_) -> return conn
@@ -152,11 +165,14 @@ export def checkpointable?(conn: Connection) -> Bool
   return conn.wal
 end
 
-## Runs a PASSIVE checkpoint, which copies to the database what the WAL holds and no reader needs, and never waits for
-## a lock. The checkpointer of a pool calls it on a connection of its own.
-export def checkpoint(conn: Connection) -> Result[Void]
-  try run_query(conn, "PRAGMA wal_checkpoint(PASSIVE)", [])
-  return ok()
+## Runs a PASSIVE checkpoint of the WAL of a pool (`plan`), which copies to the database what the WAL holds and no
+## reader needs, and never waits for a lock. The checkpointer of a pool calls it on a connection of its own, and a
+## commit at the cap on its own. A connection of the FFI driver does nothing.
+export def checkpoint(conn: Connection, plan: Checkpoints) -> Void
+  case conn.link
+    Link.Native(native, _) -> SqliteNative.checkpoint(native, plan.wal)
+    Link.Ffi(_) -> return
+  end
 end
 
 ## Closes the connection; closing it again does nothing. Closing the last connection of a WAL database checkpoints
@@ -347,16 +363,17 @@ def run_execute(conn: Connection, sql: String, params: List[Value]) -> Result[In
   end
 end
 
-# A commit that left `frames` frames in the WAL of a connection whose pool takes its checkpoints: at the cap it
-# checkpoints here, on the compute pool, and a writer of the pool still holds the turn of the writers meanwhile, so
-# the WAL cannot grow past the cap by more than one transaction; at the mark it wakes the checkpointer of the pool. The
-# commit is done either way: a checkpoint that fails (another one runs) changes nothing.
+# A commit that left `frames` frames that no checkpoint has copied in the WAL of a connection whose pool takes its
+# checkpoints: at the cap it checkpoints here, on the compute pool, and a writer of the pool still holds the turn of
+# the writers meanwhile, so the WAL cannot grow past the cap by more than one transaction (while no reader holds an
+# older snapshot); at the mark it wakes the checkpointer of the pool. The commit is done either way: a checkpoint that
+# fails (another one runs) changes nothing.
 def after_commit(conn: Connection, frames: Int) -> Void
   case conn.checkpoints
     none -> return
     some(plan) ->
       if frames >= plan.cap
-        _ = checkpoint(conn)
+        checkpoint(conn, plan)
       elsif frames >= plan.frames
         _ = plan.nudge.send(1, 0)
       end
