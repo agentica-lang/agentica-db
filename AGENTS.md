@@ -36,6 +36,11 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
   specs/ test/ the features and the unit tests of the package
 src/pool/      package "pool": a generic pool of resources (pool.agc, import Pool from "pkg/pool/pool"), no
                native library, no import of db, its own agentica.toml, specs/ and test/
+src/properties/ package "properties": the property-based tests (prop), not published. It depends on db and pool as
+               workspace members, so what users of `pkg/db/db` or `pkg/pool/pool` download does not include prop.
+               value_gens.agc (generators of the typed cells), store.agc (a row through SQLite, PostgreSQL or MySQL
+               against what the database holds), pool_model.agc (random sequences on a pool of fake resources),
+               sqlite_scanners.agc (the statement scanners of the native SQLite driver); test/ has the properties
 site/ tools/   the documentation site (Hugo) and the check of its samples
 ```
 
@@ -72,6 +77,16 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 - The pool package has the same three commands in `src/pool` (`agentica check *.agc specs test`,
   `agentica fmt --check *.agc specs test`, `agentica test`); `make check` runs the check. Its features use a fake
   resource (`src/pool/specs/driver.agc`), so they need no server.
+- The properties package has the same commands in `src/properties` (`agentica install` first, which fetches prop into
+  `deps/`; then `agentica check *.agc test`, `agentica fmt --check *.agc test` and `agentica test`). A property is a
+  `test_` function of `test/*_test.agc` that calls `Prop.check` or one of its laws (`Prop.oracle`, ...) with 100 runs
+  (the pool ones 40, since a case takes real time); a failure prints the seed and the shrunk case, and
+  `Prop.Config(seed: some(N))` or `agentica --seed N test` replays it. `test/values_test.agc` is the one that runs on
+  both drivers (CI runs it with each variable); the scanners read the statement cache of the native SQLite driver, so
+  they run on the native run only. Names of the SQLite properties have "on sqlite" like the scenarios. A test has a
+  budget of about 2.5 million VM steps and 30 seconds, and a generated value costs about 200 steps for each item, so
+  keep sizes small and split a property before raising its runs. A counterexample that a property finds becomes a
+  scenario of `src/db/specs` (the cells it prints are the cells of the tables) before the fix.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
   a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
   and in CI: there is no skipped scenario. Without a server run only the SQLite ones:

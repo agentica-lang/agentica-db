@@ -1,0 +1,17 @@
+name = "properties"
+
+# The property-based tests of the repository (AGENTS.md). Nothing here is published: a project that installs db or pool
+# from this repository never downloads this package or its dependencies, which is why prop lives here and not in
+# src/db or src/pool. db and pool are members of the workspace (the root agentica.toml), read from their folders.
+#
+# prop is a normal dependency for now: the manifest has no test-only dependency yet. Move it to one when Agentica
+# supports it (https://github.com/agentica-lang/agentica/issues/1196). The commit is the one of the merge of
+# agentica-lang/packages#14; move it to the tag prop-0.1.0 when that tag exists.
+[dependencies]
+prop = { git = "https://github.com/agentica-lang/packages", ref = "14c29d4ac7e399401efe849ae415f2da333d42f3", subdir = "prop" }
+db = { git = "https://github.com/agentica-lang/agentica-db", ref = "6ed767b557afe9d10bcbe020e58c5ed3f661d8ae", subdir = "src/db" }
+pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf", subdir = "src/pool" }
+
+# Every bare `end` is followed by an empty line (AGENTS.md of the repository).
+[style]
+blank_line_after_end = true

@@ -72,6 +72,7 @@ jobs:
           make check
           (cd src/db && agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test)
           (cd src/pool && agentica fmt --check *.agc specs test)
+          (cd src/properties && agentica fmt --check *.agc test)
           make site-samples
 
       # The sqlite job of macOS and Windows runs the scenarios named "on sqlite" (an outline has "on <adapter>"), so a
@@ -102,6 +103,11 @@ jobs:
             tags=()
             [ "$driver" = native ] || tags=(--tags "not @native")
             (cd src/db && agentica test --jobs 4 "${tags[@]}")
+            # The properties of src/properties: the round trip of a row on each driver, and, on the native run, the
+            # rest (the pool, and the scanners of the native SQLite driver, which read its statement cache).
+            paths=()
+            [ "$driver" = native ] || paths=(test/values_test.agc)
+            (cd src/properties && agentica test --jobs 4 "${paths[@]}")
             echo "::endgroup::"
           done
           (cd src/pool && agentica test --jobs 4)
@@ -143,6 +149,10 @@ jobs:
           cd ../pool
           agentica check *.agc specs test
           agentica fmt --check *.agc specs test
+          cd ../properties
+          agentica install
+          agentica check *.agc test
+          agentica fmt --check *.agc test
 
       # The SQLite scenarios and the users example (a scenario of examples.feature) on each driver, named outright as
       # in the job above (see there for what the variable and the tags do); then the unit tests of src/db/test/, which
@@ -163,3 +173,12 @@ jobs:
           agentica test --jobs 4 test
           cd ../pool
           agentica test --jobs 4
+          # The properties named "on sqlite" (the round trip of a row, and the scanners of the native driver), on each
+          # driver; the scanners read the statement cache, which only the native driver has.
+          cd ../properties
+          for driver in native ffi; do
+            export AGENTICA_DB_SQLITE_DRIVER=$driver
+            paths=()
+            [ "$driver" = native ] || paths=(test/values_test.agc)
+            agentica test --jobs 4 --only "on sqlite" "${paths[@]}"
+          done
