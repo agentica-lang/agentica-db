@@ -86,7 +86,9 @@ end
 ## the Connection pool guide): `checkout_ms` is how long a caller waits for a connection and `lease_ms` how long a
 ## block may run, both in milliseconds; `max_age_ms` closes a connection that old and `idle_ms` one unused that long
 ## (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check that pings the idle connections
-## and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0).
+## and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0); `max_waiting` is how
+## many callers may wait in line for a connection at once (0 or more; 0 lets nobody wait, so a caller that finds every
+## connection busy is refused at once).
 ##
 ## The last three are the checkpoints of a SQLite file in WAL mode (see the top of this file): a commit that leaves
 ## `checkpoint_frames` frames (pages) in the WAL that no checkpoint has copied wakes the checkpointer, which also runs
@@ -102,6 +104,7 @@ export struct Options
   lease_ms: Int = 30_000
   max_age_ms: Int = 0
   idle_ms: Int = 0
+  max_waiting: Int = 1_000
   lazy: Bool = false
   health_ms: Int = 5_000
   checkpoint_frames: Int = 1_000
@@ -141,6 +144,7 @@ export def start(options: Options) -> Result[Pool]
     lease_ms: options.lease_ms,
     max_age_ms: options.max_age_ms,
     idle_ms: options.idle_ms,
+    max_waiting: options.max_waiting,
     lazy: options.lazy,
     health_ms: options.health_ms,
   )
@@ -156,9 +160,9 @@ end
 ## Runs the block with a connection of the pool and gives its result. The block runs in a task of the pool: a crash in
 ## it is an `error` here. A caller that finds no free connection waits up to `checkout_ms`, then gets `pool error:
 ## checkout timed out after N ms`; a block that runs past `lease_ms` gets `pool error: lease timed out after N ms`;
-## more than 1000 callers in line get `pool error: queue full`; a closed pool gives `pool error: closed`. The
-## connection is checked in after the block (see the top of this file). Cancelling the caller does not cancel the
-## block; `lease_ms` bounds it.
+## more than `max_waiting` callers in line get `pool error: queue full (max_waiting N)`; a closed pool gives `pool
+## error: closed`. The connection is checked in after the block (see the top of this file). Cancelling the caller does
+## not cancel the block; `lease_ms` bounds it.
 export def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R]
   return P.with(pool, body)
 end

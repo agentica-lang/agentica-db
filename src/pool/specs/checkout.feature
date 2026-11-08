@@ -49,7 +49,7 @@ Feature: Checkout
     And job "B" holds a resource for 10 ms
     And job "C" holds a resource for 10 ms
     And I wait for the jobs
-    Then job "C" gets "error pool error: queue full"
+    Then job "C" gets "error pool error: queue full (max_waiting 1)"
     And job "B" succeeds
     And job "A" succeeds
 

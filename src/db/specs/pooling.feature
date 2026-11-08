@@ -129,6 +129,25 @@ Feature: Pooling
       | v     |
       | Int 1 |
 
+  Scenario Outline: A caller is refused when max_waiting callers wait already on <adapter>
+    Given a "<adapter>" database
+    When I start a pool on "[URL]" with:
+      | option      | value |
+      | size        | 1     |
+      | max_waiting | 0     |
+    And another task keeps a connection of the pool for 500 ms while I query "select 1 as v" in the pool
+    Then it fails with "pool error: queue full (max_waiting 0)"
+    When I query "select 1 as v" in the pool
+    Then the result is:
+      | v     |
+      | Int 1 |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
   Scenario Outline: A caller that waits too long for a connection gets a checkout timeout on <adapter>
     Given a "<adapter>" database
     When I start a pool on "[URL]" with:
