@@ -1,0 +1,23 @@
+version = 1
+
+[[package]]
+name = "db"
+git = "https://github.com/agentica-lang/agentica-db"
+subdir = "src/db"
+ref = "6ed767b557afe9d10bcbe020e58c5ed3f661d8ae"
+workspace = true
+
+[[package]]
+name = "pool"
+git = "https://github.com/agentica-lang/agentica-db"
+subdir = "src/pool"
+ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf"
+workspace = true
+
+[[package]]
+name = "prop"
+git = "https://github.com/agentica-lang/packages"
+subdir = "prop"
+tag = "prop-0.1.0"
+commit = "489aec5c1684e44303851cdfd2b72f98685f9cd5"
+hash = "sha256:b6f393cea32dc002988812949a082d79b664034ae750d564bf75593e3a0093ba"
