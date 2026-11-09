@@ -5,7 +5,7 @@ MariaDB, and a small typed ORM on top. Each database goes through its system cli
 PostgreSQL also have a native driver (a statement cache, many rows per call), the default. MySQL's is built but off
 until Agentica ships `an_blocking` (agentica-lang/agentica#1193).
 
-agentica-db 0.7.0 needs Agentica 0.26.1 or later, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`)
+agentica-db 0.8.0 needs Agentica 0.27.0 or later, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`)
 where a program that imports it first runs or is compiled: Agentica then builds the native SQLite, PostgreSQL and MySQL
 drivers into its package cache. Documentation: https://agentica-lang.github.io/agentica-db/
 
@@ -15,10 +15,10 @@ In your `agentica.toml`:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.7.0", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.8.0", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.7.0 --subdir src/db`. Both (and
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.8.0 --subdir src/db`. Both (and
 `agentica install` for a manifest you edited) write `agentica.lock` and `deps/db/`.
 
 The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release
@@ -71,7 +71,7 @@ make check
 cd src/db && agentica test --jobs 4
 ```
 
-Developing and using the package need Agentica 0.26.1 or later (native modules) and a C compiler.
+Developing and using the package need Agentica 0.27.0 or later (the OpenSSL builtins) and a C compiler.
 
 The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
 `AGENTS.md`. CI runs the SQLite suite on Linux, macOS and Windows, and the whole suite on Linux.

@@ -9,10 +9,12 @@ DB_PATHS = *.agc sqlite postgres mysql support orm examples specs test
 
 # Runs `agentica check` on every .agc file of the db package (src/db: its modules, the folders of the adapters, orm/,
 # support/, examples/, specs/ and test/) and of the pool package in src/pool (CI on macOS and Windows, which has no
-# make, runs the same commands). Needs agentica on PATH.
+# make, runs the same commands) and of the properties package in src/properties (`agentica install` fetches its prop
+# dependency into deps/). Needs agentica on PATH.
 check:
 	cd src/db && agentica check $(DB_PATHS)
 	cd src/pool && agentica check *.agc specs test
+	cd src/properties && agentica install && agentica check *.agc test
 
 site site-serve site-sass: export PATH := $(DART_SASS):$(PATH)
 

@@ -25,6 +25,9 @@ BACKSLASH = 92
 BACKTICK = 96
 LOWER_A = 97
 LOWER_Z = 122
+# The characters that start a literal, an identifier, a comment or a second statement. Sql with none of them is one
+# statement, and the scan below, which costs about 60 VM steps for each byte, is not needed.
+SCAN_MARKS = ["'", "\"", "`", "#", "-", "/", ";"]
 
 ## The first word of the statement in lower case (`begin`, `start`, `insert`, `select`; empty when the statement
 ## starts with something else), read after any whitespace and comments.
@@ -36,6 +39,10 @@ end
 export def inspect(sql: String) -> Result[Statement]
   if sql.include?(String.from_code(0))
     return error("mysql error: the sql contains a NUL character")
+  end
+
+  if not SCAN_MARKS.any? do |mark| sql.include?(mark) end
+    return plain_statement(sql)
   end
 
   bytes = sql.bytes
@@ -73,6 +80,21 @@ export def inspect(sql: String) -> Result[Statement]
   end
 
   return ok(Statement(verb: verb))
+end
+
+# The statement of sql that has none of SCAN_MARKS: its first word, after the white space.
+def plain_statement(sql: String) -> Result[Statement]
+  bytes = sql.bytes
+  at = 0
+  while at < bytes.size and space?(bytes[at])
+    at += 1
+  end
+
+  if at == bytes.size
+    return error("mysql error: the sql has no statement")
+  end
+
+  return ok(Statement(verb: word_at(bytes, at)))
 end
 
 def space?(byte: Int) -> Bool

@@ -3,7 +3,7 @@
 One database API for Agentica and one adapter per database, through the C FFI, and for SQLite, PostgreSQL and MySQL
 also a native module of ours (`src/db/native/`, the only C code of the repository, which Agentica builds at the first
 run; the FFI driver stays for a run without the built library). The repository
-is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
+is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with three packages in `src/`:
 
 ```text
 src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the dependency on pool; agentica.lock)
@@ -37,6 +37,11 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
   specs/ test/ the features and the unit tests of the package
 src/pool/      package "pool": a generic pool of resources (pool.agc, import Pool from "pkg/pool/pool"), no
                native library, no import of db, its own agentica.toml, specs/ and test/
+src/properties/ package "properties": the property-based tests (prop), not published. It depends on db and pool as
+               workspace members, so what users of `pkg/db/db` or `pkg/pool/pool` download does not include prop.
+               value_gens.agc (generators of the typed cells), store.agc (a row through SQLite, PostgreSQL or MySQL
+               against what the database holds), pool_model.agc (random sequences on a pool of fake resources),
+               sqlite_scanners.agc (the statement scanners of the native SQLite driver); test/ has the properties
 site/ tools/   the documentation site (Hugo) and the check of its samples
 ```
 
@@ -49,18 +54,20 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 
 ## Commands
 
-- Binary: developing and testing the package needs Agentica 0.26.1 or later (native modules) and a C compiler
+- Binary: developing and testing the package needs Agentica 0.27.0 or later (the OpenSSL builtins) and a C compiler
   (`cc`, or `CC`); the minimum for a project that uses the package is the one in the README. Download a release
   under `.tools/` (gitignored), never `/tmp`. CI builds Agentica at the commit `AGENTICA_COMMIT` of
-  `.github/workflows/ci.yml`, the one of the tag 0.26.1 (`.github/actions/agentica`); a version bump sets it to the
+  `.github/workflows/ci.yml`, the one of the tag 0.27.0 (`.github/actions/agentica`); a version bump sets it to the
   commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
-  sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver (CI does both). PostgreSQL the same, with
-  `AGENTICA_DB_POSTGRES_DRIVER=ffi agentica test --only "on postgres" --tags "not @native"` and `agentica test
-  specs/postgres.feature`, and MySQL with `AGENTICA_DB_MYSQL_DRIVER=ffi agentica test --only "on mysql" --tags "not
-  @native"` and `agentica test specs/mysql.feature`. A C change: C11, every return code of the library checked, every
-  statement, result and connection freed exactly once, also on the error paths; a free function never waits (no lock
-  that a call holds, no socket I/O that can block).
+  sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver. PostgreSQL the same, with
+  `AGENTICA_DB_POSTGRES_DRIVER=ffi`, and MySQL with `AGENTICA_DB_MYSQL_DRIVER=ffi` (the native MySQL driver is off until
+  agentica#1193, so MySQL and MariaDB run the FFI driver everywhere for now). CI runs every scenario of SQLite and
+  PostgreSQL on both drivers (`native`, then `ffi` with `--tags "not @native"`), naming the driver in the variable so
+  that a run cannot fall back to the other one; `specs/driver_choice.feature` fails when the connection runs another
+  driver than the variable names. A C change: C11, every return code of the library checked, every statement, result
+  and connection freed exactly once, also on the error paths; a free function never waits (no lock that a call holds, no
+  socket I/O that can block).
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
   itself). `make check` (from the root) runs `agentica check *.agc sqlite postgres mysql support orm examples specs
@@ -72,6 +79,16 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 - The pool package has the same three commands in `src/pool` (`agentica check *.agc specs test`,
   `agentica fmt --check *.agc specs test`, `agentica test`); `make check` runs the check. Its features use a fake
   resource (`src/pool/specs/driver.agc`), so they need no server.
+- The properties package has the same commands in `src/properties` (`agentica install` first, which fetches prop into
+  `deps/`; then `agentica check *.agc test`, `agentica fmt --check *.agc test` and `agentica test`). A property is a
+  `test_` function of `test/*_test.agc` that calls `Prop.check` or one of its laws (`Prop.oracle`, ...) with 100 runs
+  (the pool ones 40, since a case takes real time); a failure prints the seed and the shrunk case, and
+  `Prop.Config(seed: some(N))` or `agentica --seed N test` replays it. `test/values_test.agc` is the one that runs on
+  both drivers (CI runs it with each variable); the scanners read the statement cache of the native SQLite driver, so
+  they run on the native run only. Names of the SQLite properties have "on sqlite" like the scenarios. A test has a
+  budget of about 2.5 million VM steps and 30 seconds, and a generated value costs about 200 steps for each item, so
+  keep sizes small and split a property before raising its runs. A counterexample that a property finds becomes a
+  scenario of `src/db/specs` (the cells it prints are the cells of the tables) before the fix.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
   a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
   and in CI: there is no skipped scenario. Without a server run only the SQLite ones:

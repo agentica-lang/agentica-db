@@ -121,7 +121,7 @@ def main() -> Void
     text_step("I make the file {string} read-only", "read_only"),
     text_step("I make the file {string} writable", "writable"),
     BDD.step("a program whose native libraries are missing") do |ctx, _args|
-      BDD.given_program(ctx, "fixtures/nolib/open.agc")
+      BDD.given_program(without_driver_choice(ctx), "fixtures/nolib/open.agc")
     end,
     BDD.step("the program opens {string}") do |ctx, args| BDD.when_line(ctx, args[0]) end,
     BDD.step("the program answers a line starting with {string}", &answers_with),
@@ -163,6 +163,7 @@ def main() -> Void
     plain_step("I read the statement cache", "statement_cache"),
     BDD.step("the native MySQL driver runs here", &native_mysql_only),
     BDD.step("the server is MariaDB", &mariadb_only),
+    text_step("I check that the connection runs the driver that {string} names", "driver_named"),
     BDD.step("a task that runs {string} is cancelled after {int} ms") do |ctx, args|
       send(ctx, Request(op: "cancel_task", text: args[0], number: args[1].to_i!))
     end,
@@ -256,6 +257,13 @@ def text_step(pattern: String, op: String) -> BDD.Step
   return BDD.step(pattern) do |ctx, args| send(ctx, Request(op: op, text: args[0])) end
 end
 
+# The program of the missing libraries takes the driver by itself: a run that names `native` would get "the native
+# driver is not built" in place of the error of the FFI library, which this scenario is about.
+def without_driver_choice(ctx: BDD.Context) -> BDD.Context
+  sqlite = BDD.given_env(ctx, "AGENTICA_DB_SQLITE_DRIVER", "")
+  return BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
+end
+
 # A step that captures nothing.
 def plain_step(pattern: String, op: String) -> BDD.Step
   return BDD.step(pattern) do |ctx, _args| send(ctx, Request(op: op)) end
@@ -317,7 +325,7 @@ def start(ctx: BDD.Context) -> BDD.Context
   # `[SCRATCH]` is a folder of this scenario under tmp/, so that test files that run at once never share, or empty,
   # one folder. The driver makes it when a scenario needs it; the hook removes it, and the scenario is not failed
   # when it cannot (Windows keeps an open database file).
-  scratch = "#{Path.cwd().unwrap!}/tmp/scratch-#{SecureRandom.hex(8)}"
+  scratch = "#{Path.cwd().unwrap!}/tmp/scratch-#{OpenSSL.Random.hex(8)}"
   named = BDD.after(BDD.given_env(ctx, SCRATCH_VARIABLE, scratch)) do |_|
     make_writable("#{scratch}/readonly.db")
     _ = Path.remove(scratch, IO_TIMEOUT_MS)
