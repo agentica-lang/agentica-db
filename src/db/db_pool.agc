@@ -154,7 +154,7 @@ export def start(options: Options) -> Result[Pool]
     stop_checkpointer(checkpointer)
   end
 
-  return started
+  started
 end
 
 ## Runs the block with a connection of the pool and gives its result. The block runs in a task of the pool: a crash in
@@ -163,9 +163,7 @@ end
 ## more than `max_waiting` callers in line get `pool error: queue full (max_waiting N)`; a closed pool gives `pool
 ## error: closed`. The connection is checked in after the block (see the top of this file). Cancelling the caller does
 ## not cancel the block; `lease_ms` bounds it.
-export def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R]
-  return P.with(pool, body)
-end
+export def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R] = P.with(pool, body)
 
 ## Refuses new callers, lets the blocks that run and the callers in line finish for up to `drain_ms`, fails the rest
 ## with `pool error: closed`, closes every connection and stops the pool, then its checkpointer, which ends its
@@ -177,50 +175,40 @@ end
 
 ## True for a failure that ran out of time: a caller that waited too long for a connection or a block that ran too
 ## long (`pool error: ... timed out`), and a statement that ran over its `timeout_ms` (`Db.timeout?`).
-export def timeout?(message: String) -> Bool
-  return P.timeout?(message) or Db.timeout?(message)
-end
+export def timeout?(message: String) -> Bool = P.timeout?(message) or Db.timeout?(message)
 
 ## The size of a pool for a url when `Options.size` is 0.
 export def default_size(url: String) -> Int
-  if private_memory?(url)
-    return MEMORY_SIZE
-  end
+  return MEMORY_SIZE if private_memory?(url)
 
-  if url.start_with?(SQLITE_PREFIX)
-    return SQLITE_SIZE
-  end
+  return SQLITE_SIZE if url.start_with?(SQLITE_PREFIX)
 
-  return SERVER_SIZE
+  SERVER_SIZE
 end
 
 # A SQLite url whose database lives in the connection: `sqlite::memory:`, or a `file:` name that is `:memory:` or has
 # `mode=memory`, unless `cache=shared` makes it one database for every connection of the process.
 def private_memory?(url: String) -> Bool
-  if url.start_with?(SQLITE_MEMORY)
-    return true
-  end
+  return true if url.start_with?(SQLITE_MEMORY)
 
-  if not url.start_with?(SQLITE_URI_PREFIX) or url.include?("cache=shared")
-    return false
-  end
+  return false if not url.start_with?(SQLITE_URI_PREFIX) or url.include?("cache=shared")
 
-  return url.include?(":memory:") or url.include?("mode=memory")
+  url.include?(":memory:") or url.include?("mode=memory")
 end
 
 def connect(config: Config) -> Result[Db.Connection]
   conn = try Db.open(config.url)
   case conn
     Db.Connection.Sqlite(sqlite) ->
-      return ok(Db.Connection.Sqlite(own_checkpoints(Sqlite.with_gate(sqlite, config.gate, config.lease_ms), config)))
-    _ -> return ok(conn)
+      ok(Db.Connection.Sqlite(own_checkpoints(Sqlite.with_gate(sqlite, config.gate, config.lease_ms), config)))
+    _ -> ok(conn)
   end
 end
 
 def own_checkpoints(sqlite: Sqlite.Connection, config: Config) -> Sqlite.Connection
   case config.checkpointer
-    some(checkpointer) -> return Sqlite.own_checkpoints(sqlite, checkpointer.plan)
-    none -> return sqlite
+    some(checkpointer) -> Sqlite.own_checkpoints(sqlite, checkpointer.plan)
+    none -> sqlite
   end
 end
 
@@ -233,19 +221,15 @@ def check_checkpoints(options: Options) -> Result[Void]
     return error("db error: checkpoint_cap must be 0 or more, got #{options.checkpoint_cap}")
   end
 
-  if options.checkpoint_ms < 1
-    return error("db error: checkpoint_ms must be 1 or more, got #{options.checkpoint_ms}")
-  end
+  return error("db error: checkpoint_ms must be 1 or more, got #{options.checkpoint_ms}") if options.checkpoint_ms < 1
 
-  return ok()
+  ok()
 end
 
 # The checkpointer of a pool of a SQLite file, none for any other url or with `checkpoint_frames` 0. It starts before
 # the connections, so that none of them runs without it.
 def start_checkpointer(options: Options) -> Optional[Checkpointer]
-  if options.checkpoint_frames == 0 or not sqlite_file?(options.url)
-    return none
-  end
+  return none if options.checkpoint_frames == 0 or not sqlite_file?(options.url)
 
   cap = options.checkpoint_cap
   if cap == 0
@@ -254,10 +238,10 @@ def start_checkpointer(options: Options) -> Optional[Checkpointer]
 
   nudge: Channel[Int] = Channel.new(1)
   case Sqlite.checkpoints(nudge, options.checkpoint_frames, cap)
-    none -> return none
+    none -> none
     some(plan) ->
       task = Task.spawn(&checkpoints, Watch(url: options.url, plan: plan, every_ms: options.checkpoint_ms))
-      return some(Checkpointer(plan: plan, task: task))
+      some(Checkpointer(plan: plan, task: task))
   end
 end
 
@@ -282,15 +266,13 @@ def checkpoints(watch: Watch) -> Result[Void]
     _ -> return close_with(conn)
   end
 
-  return close_with(conn)
+  close_with(conn)
 end
 
 def checkpoint_loop(sqlite: Sqlite.Connection, watch: Watch) -> Void
   while true
     _ = watch.plan.nudge.recv(watch.every_ms)
-    if watch.plan.nudge.closed?
-      return
-    end
+    return if watch.plan.nudge.closed?
 
     Sqlite.checkpoint(sqlite, watch.plan)
   end
@@ -298,16 +280,14 @@ end
 
 def close_with(conn: Db.Connection) -> Result[Void]
   Db.close(conn)
-  return ok()
+  ok()
 end
 
 # A SQLite url of a file: not a private in-memory database, nor a shared one (`mode=memory`, `:memory:`).
 def sqlite_file?(url: String) -> Bool
-  if not url.start_with?(SQLITE_PREFIX) or private_memory?(url)
-    return false
-  end
+  return false if not url.start_with?(SQLITE_PREFIX) or private_memory?(url)
 
-  return not url.include?(":memory:") and not url.include?("mode=memory")
+  not url.include?(":memory:") and not url.include?("mode=memory")
 end
 
 # Gets a connection back after a block. A connection the block closed or lost is not reused (`Db.connected?`, no round
@@ -322,35 +302,29 @@ def check_in(conn: Db.Connection, outcome: P.Outcome) -> Result[Void]
     P.Outcome.TimedOut ->
       interrupt(conn)
       reopen_gate(conn)
-      return error("db pool: the block ran past lease_ms")
+      error("db pool: the block ran past lease_ms")
     P.Outcome.Crashed ->
       _ = roll_back(conn)
       reopen_gate(conn)
-      return error("db pool: the block crashed")
-    P.Outcome.Done -> return reset(conn)
+      error("db pool: the block crashed")
+    P.Outcome.Done -> reset(conn)
   end
 end
 
 def reset(conn: Db.Connection) -> Result[Void]
-  if not Db.connected?(conn)
-    return error("db pool: the block closed or lost the connection")
-  end
+  return error("db pool: the block closed or lost the connection") if not Db.connected?(conn)
 
   try roll_back(conn)
-  if Db.in_transaction?(conn)
-    return error("db pool: the connection is still in a transaction after a rollback")
-  end
+  return error("db pool: the connection is still in a transaction after a rollback") if Db.in_transaction?(conn)
 
-  return ok()
+  ok()
 end
 
 def roll_back(conn: Db.Connection) -> Result[Void]
-  if not Db.connected?(conn) or not Db.in_transaction?(conn)
-    return ok()
-  end
+  return ok() if not Db.connected?(conn) or not Db.in_transaction?(conn)
 
   try Db.execute(conn, "ROLLBACK", [])
-  return ok()
+  ok()
 end
 
 def interrupt(conn: Db.Connection) -> Void
@@ -371,9 +345,7 @@ def reopen_gate(conn: Db.Connection) -> Void
 end
 
 def ping(conn: Db.Connection) -> Result[Void]
-  if Db.healthy?(conn)
-    return ok()
-  end
+  return ok() if Db.healthy?(conn)
 
-  return error("db pool: the connection is not healthy")
+  error("db pool: the connection is not healthy")
 end

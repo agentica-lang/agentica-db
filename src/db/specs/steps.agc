@@ -251,29 +251,29 @@ end
 
 # A step that sends its one captured text.
 def text_step(pattern: String, op: String) -> BDD.Step
-  return BDD.step(pattern) do |ctx, args| send(ctx, Request(op: op, text: args[0])) end
+  BDD.step(pattern) do |ctx, args| send(ctx, Request(op: op, text: args[0])) end
 end
 
 # The program of the missing libraries takes the driver by itself: a run that names `native` would get "the native
 # driver is not built" in place of the error of the FFI library, which this scenario is about.
 def without_driver_choice(ctx: BDD.Context) -> BDD.Context
   sqlite = BDD.given_env(ctx, "AGENTICA_DB_SQLITE_DRIVER", "")
-  return BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
+  BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
 end
 
 # A step that captures nothing.
 def plain_step(pattern: String, op: String) -> BDD.Step
-  return BDD.step(pattern) do |ctx, _args| send(ctx, Request(op: op)) end
+  BDD.step(pattern) do |ctx, _args| send(ctx, Request(op: op)) end
 end
 
 # The program of `fixtures/nolib` answers each url with one line.
 def answers_with(ctx: BDD.Context, args: List[String]) -> BDD.Context
   answer = BDD.read_line(ctx, REPLY_MS).unwrap_or("no answer")
-  return BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
+  BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
 end
 
 def left_open(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return send(ctx, Request(op: "leave_open", number: args[0].to_i!))
+  send(ctx, Request(op: "leave_open", number: args[0].to_i!))
 end
 
 def open_database(ctx: BDD.Context, args: List[String]) -> BDD.Context
@@ -282,7 +282,7 @@ def open_database(ctx: BDD.Context, args: List[String]) -> BDD.Context
   missing = not variable.empty? and not System.env(variable).ok?
   message = "#{variable} is not set: set it, or run only the SQLite scenarios with --only \"on sqlite\""
   checked = BDD.assert(ctx, not missing, message)
-  return send(checked, Request(op: "open", text: adapter))
+  send(checked, Request(op: "open", text: adapter))
 end
 
 # Sends the request to the driver, started on the first one, and checks that it answers ok. The driver puts what went
@@ -290,13 +290,11 @@ end
 def send(ctx: BDD.Context, req: Request) -> BDD.Context
   running = start(ctx)
   asked = BDD.when_line(running, JSON.encode(req))
-  return BDD.then_line(asked, Protocol.OK, REPLY_MS)
+  BDD.then_line(asked, Protocol.OK, REPLY_MS)
 end
 
 def start(ctx: BDD.Context) -> BDD.Context
-  if BDD.get(ctx, "driver").ok?
-    return ctx
-  end
+  return ctx if BDD.get(ctx, "driver").ok?
 
   # `[SCRATCH]` is a folder of this scenario under tmp/, so that test files that run at once never share, or empty,
   # one folder. The driver makes it when a scenario needs it; the hook removes it, and the scenario is not failed
@@ -308,15 +306,13 @@ def start(ctx: BDD.Context) -> BDD.Context
     ok()
   end
 
-  return BDD.set(BDD.given_program(named, "driver.agc"), "driver", JSON.from(true))
+  BDD.set(BDD.given_program(named, "driver.agc"), "driver", JSON.from(true))
 end
 
 # A scenario that failed between `read_only` and `writable` leaves a read-only file, which Windows refuses to remove
 # (the driver has the same two commands in `set_access`). Only when the file exists: a process costs time.
 def make_writable(path: String) -> Void
-  if not File.stat(path, IO_TIMEOUT_MS).ok?
-    return
-  end
+  return if not File.stat(path, IO_TIMEOUT_MS).ok?
 
   command = "chmod"
   args = ["644", path]
@@ -325,21 +321,17 @@ def make_writable(path: String) -> Void
     args = ["-R", path.replace("/", "\\")]
   end
 
-  started = Process.spawn(command, args, IO_TIMEOUT_MS)
+  started = Process.spawn(command, args, Process.Options(timeout_ms: IO_TIMEOUT_MS))
   if started.ok?
     _ = Process.wait(started.unwrap!, IO_TIMEOUT_MS)
   end
 end
 
 # The Data Table of a step is a header row and one row per item.
-def body(ctx: BDD.Context) -> List[List[String]]
-  return BDD.table(ctx).drop(1)
-end
+def body(ctx: BDD.Context) -> List[List[String]] = BDD.table(ctx).drop(1)
 
 def with_params(op: String, sql: String, ctx: BDD.Context) -> Request
-  return Request(op: op, text: sql, cells: body(ctx).map do |row| row[0] end)
+  Request(op: op, text: sql, cells: body(ctx).map do |row| row[0] end)
 end
 
-def rows_request(ctx: BDD.Context) -> Request
-  return Request(op: "expect_rows", table: BDD.table(ctx))
-end
+def rows_request(ctx: BDD.Context) -> Request = Request(op: "expect_rows", table: BDD.table(ctx))

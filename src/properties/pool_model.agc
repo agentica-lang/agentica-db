@@ -97,15 +97,13 @@ end
 ## generator's, the case that is printed is the folded one).
 export def sequence_gen() -> Prop.Gen[Prop.Pair[Setup, List[Job]]]
   raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.list(Prop.of(Job.codec, JSON.schema(Job)), MAX_JOBS))
-  return Prop.map(raw) do |pair|
-    Prop.Pair(first: setup_of(pair.first), second: pair.second.map do |job| job_of(job) end)
-  end
+  Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second.map do |job| job_of(job) end) end
 end
 
 ## The generator of a burst: a setup and how many callers arrive at once.
 export def burst_gen() -> Prop.Gen[Prop.Pair[Setup, Int]]
   raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.int(1, MAX_BURST))
-  return Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second) end
+  Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second) end
 end
 
 ## Runs the jobs on a pool of the setup, a task each, with the cancels and the close of the sequence. It checks that no
@@ -120,7 +118,7 @@ export def keeps_invariants(setup: Setup, jobs: List[Job]) -> Result[Void]
   Pool.close(pool, CLOSE_DRAIN_MS)
   try wait_closer(closer)
   try answered
-  return audit(setup, pool, stats)
+  audit(setup, pool, stats)
 end
 
 ## A burst of `count` callers that hold a resource at once, until the last of them is refused, holding a resource or
@@ -148,7 +146,7 @@ export def keeps_line(setup: Setup, count: Int) -> Result[Void]
     return error("#{count_of(stats, "failed")} of #{count} callers failed without being refused (#{describe(setup)})")
   end
 
-  return ok()
+  ok()
 end
 
 # The least and the most callers that are refused.
@@ -159,7 +157,7 @@ def refusals(setup: Setup, count: Int) -> Bounds
     most = count
   end
 
-  return Bounds(least: least, most: most)
+  Bounds(least: least, most: most)
 end
 
 # The least and the most resources in use at once.
@@ -169,7 +167,7 @@ def peaks(setup: Setup, count: Int) -> Bounds
     least = 0
   end
 
-  return Bounds(least: least, most: [count, setup.size + setup.max_overflow].min.unwrap!)
+  Bounds(least: least, most: [count, setup.size + setup.max_overflow].min.unwrap!)
 end
 
 def within(what: String, found: Int, bounds: Bounds, setup: Setup) -> Result[Void]
@@ -177,11 +175,11 @@ def within(what: String, found: Int, bounds: Bounds, setup: Setup) -> Result[Voi
     return error("#{found} #{what}, from #{bounds.least} to #{bounds.most} expected (#{describe(setup)})")
   end
 
-  return ok()
+  ok()
 end
 
 def setup_of(raw: Setup) -> Setup
-  return Setup(
+  Setup(
     size: 1 + raw.size.abs % 3,
     max_overflow: raw.max_overflow.abs % 3,
     max_waiting: raw.max_waiting.abs % 4,
@@ -192,7 +190,7 @@ def setup_of(raw: Setup) -> Setup
 end
 
 def job_of(raw: Job) -> Job
-  return Job(
+  Job(
     kind: raw.kind,
     start_ms: raw.start_ms.abs % 20,
     hold_ms: raw.hold_ms.abs % 16,
@@ -201,13 +199,13 @@ def job_of(raw: Job) -> Job
 end
 
 def describe(setup: Setup) -> String
-  return "size #{setup.size}, max_overflow #{setup.max_overflow}, max_waiting #{setup.max_waiting}, lazy #{setup.lazy}"
+  "size #{setup.size}, max_overflow #{setup.max_overflow}, max_waiting #{setup.max_waiting}, lazy #{setup.lazy}"
 end
 
 def spec_of(setup: Setup, stats: ATS[String, Int], checkout_ms: Int, lease_ms: Int) -> Pool.Spec[Fake, Cell]
   fake = Fake(stats: stats, reuse_crashed: setup.reuse_crashed)
   base = Pool.Spec(config: fake, init: &make, checkin: &check_in, terminate: &end_it, ping: &ping)
-  return base.with(
+  base.with(
     size: setup.size,
     max_overflow: setup.max_overflow,
     overflow_idle_ms: 0,
@@ -221,10 +219,10 @@ end
 
 def start_closer(pool: Pool.Pool[Fake, Cell], setup: Setup) -> Optional[Task[Void]]
   case setup.close_ms
-    none -> return none
+    none -> none
     some(ms) ->
       close_fn: Fn[CloseArgs, Void] = &close_after
-      return some(Task.spawn(close_fn, CloseArgs(pool: pool, ms: ms)))
+      some(Task.spawn(close_fn, CloseArgs(pool: pool, ms: ms)))
   end
 end
 
@@ -235,11 +233,11 @@ end
 
 def wait_closer(closer: Optional[Task[Void]]) -> Result[Void]
   case closer
-    none -> return ok()
+    none -> ok()
     some(task) ->
       case Task.await(task, ANSWER_MS)
-        Await.Done(_) -> return ok()
-        Await.TimedOut -> return error("the close did not end within #{ANSWER_MS} ms")
+        Await.Done(_) -> ok()
+        Await.TimedOut -> error("the close did not end within #{ANSWER_MS} ms")
       end
   end
 end
@@ -258,7 +256,7 @@ def start_jobs(pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int], jobs: List[
     end
   end
 
-  return Started(waited: waited, cancellers: cancellers)
+  Started(waited: waited, cancellers: cancellers)
 end
 
 # Waits for the answer of every caller that is not cancelled. A cancelled caller has no answer, which `audit` finds out
@@ -278,7 +276,7 @@ def finish_jobs(started: Started) -> Result[Void]
     end
   end
 
-  return ok()
+  ok()
 end
 
 # Waits until each of the `count` callers is refused, holds a resource or stands in line, which no time decides.
@@ -294,7 +292,7 @@ def wait_placed(pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int], count: Int
     return error("only #{placed} of #{count} callers were refused, holding a resource or in line after #{PLACE_MS} ms")
   end
 
-  return ok()
+  ok()
 end
 
 def cancel_after(args: CancelArgs) -> Void
@@ -331,11 +329,11 @@ def use(cell: Cell, args: JobArgs) -> Result[Int]
 
   case job.kind
     # A runtime error in the body, which is how a body crashes (a Result error is a failure).
-    Body.Crashes -> return ok("not a number".to_i!)
-    Body.Fails -> return error("the body failed")
+    Body.Crashes -> ok("not a number".to_i!)
+    Body.Fails -> error("the body failed")
     Body.Hangs ->
       Task.sleep(HANG_MS)
-      return ok(cell.id)
+      ok(cell.id)
     Body.Holds ->
       if args.gated
         hold_until_released(stats)
@@ -343,7 +341,7 @@ def use(cell: Cell, args: JobArgs) -> Result[Int]
         Task.sleep(job.hold_ms)
       end
 
-      return ok(cell.id)
+      ok(cell.id)
   end
 end
 
@@ -354,9 +352,7 @@ def hold_until_released(stats: ATS[String, Int]) -> Void
   end
 end
 
-def make(fake: Fake) -> Result[Cell]
-  return ok(Cell(id: fake.stats.add("made", 1), fake: fake))
-end
+def make(fake: Fake) -> Result[Cell] = ok(Cell(id: fake.stats.add("made", 1), fake: fake))
 
 # A resource goes back to the line after a clean body, and after a crash when the setup says so. After a timeout it is
 # ended whatever this says (the body may still run), so a timed out one is marked as ended here, before the pool may
@@ -366,17 +362,15 @@ def check_in(cell: Cell, outcome: Pool.Outcome) -> Result[Void]
   stats.add("holders", -1)
   stats.add("lent_#{cell.id}", -1)
   case outcome
-    Pool.Outcome.Done -> return ok()
+    Pool.Outcome.Done -> ok()
     Pool.Outcome.Crashed ->
-      if cell.fake.reuse_crashed
-        return ok()
-      end
+      return ok() if cell.fake.reuse_crashed
 
       stats.put("ended_#{cell.id}", 1)
-      return error("cell #{cell.id} is dirty")
+      error("cell #{cell.id} is dirty")
     Pool.Outcome.TimedOut ->
       stats.put("ended_#{cell.id}", 1)
-      return error("cell #{cell.id} timed out")
+      error("cell #{cell.id} timed out")
   end
 end
 
@@ -385,13 +379,9 @@ def end_it(cell: Cell) -> Void
   cell.fake.stats.add("terminated", 1)
 end
 
-def ping(_cell: Cell) -> Result[Void]
-  return ok()
-end
+def ping(_cell: Cell) -> Result[Void] = ok()
 
-def count_of(stats: ATS[String, Int], name: String) -> Int
-  return stats.get(name).unwrap_or(0)
-end
+def count_of(stats: ATS[String, Int], name: String) -> Int = stats.get(name).unwrap_or(0)
 
 def peak_of(stats: ATS[String, Int]) -> Int
   peak = 0
@@ -399,15 +389,13 @@ def peak_of(stats: ATS[String, Int]) -> Int
     peak += 1
   end
 
-  return peak
+  peak
 end
 
 # What must hold once the pool is closed. The ending of the resources and the return of the last bodies are
 # asynchronous, so a count that is not yet right is polled for a while.
 def audit(setup: Setup, pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int]) -> Result[Void]
-  if count_of(stats, "violations") > 0
-    return error("a resource was lent twice or after it ended (#{describe(setup)})")
-  end
+  return error("a resource was lent twice or after it ended (#{describe(setup)})") if count_of(stats, "violations") > 0
 
   if peak_of(stats) > setup.size + setup.max_overflow
     return error("#{peak_of(stats)} resources in use at once (#{describe(setup)})")
@@ -426,7 +414,7 @@ def audit(setup: Setup, pool: Pool.Pool[Fake, Cell], stats: ATS[String, Int]) ->
     )
   end
 
-  return ok()
+  ok()
 end
 
 def settle(what: String, counts: ATS[String, Int], name: String) -> Result[Void]
@@ -435,9 +423,7 @@ def settle(what: String, counts: ATS[String, Int], name: String) -> Result[Void]
     Task.sleep(POLL_MS)
   end
 
-  if count_of(counts, name) != 0
-    return error("#{count_of(counts, name)} #{what} after the close, not 0")
-  end
+  return error("#{count_of(counts, name)} #{what} after the close, not 0") if count_of(counts, name) != 0
 
-  return ok()
+  ok()
 end

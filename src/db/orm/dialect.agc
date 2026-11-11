@@ -9,11 +9,9 @@ export NO_KEY = "the database gave no generated key"
 ## puts only such names in the sql it writes, so a name from a request cannot inject sql.
 export def valid_name?(name: String) -> Bool
   bytes = name.bytes.to_a
-  if bytes.empty? or digit?(bytes[0])
-    return false
-  end
+  return false if bytes.empty? or digit?(bytes[0])
 
-  return bytes.all? do |byte| word_byte?(byte) end
+  bytes.all? do |byte| word_byte?(byte) end
 end
 
 ## The name in the quotes of the database: double quotes for PostgreSQL, backticks for MySQL and SQLite (SQLite reads a
@@ -23,13 +21,11 @@ end
 ## only. SQLite and MySQL find a column in any case but give its name in the case of the table, and the Orm matches
 ## the fields with the names of the result exactly.
 export def quote(conn: Db.Connection, name: String) -> Result[String]
-  if not valid_name?(name)
-    return error("the name #{name.inspect} is not a plain identifier")
-  end
+  return error("the name #{name.inspect} is not a plain identifier") if not valid_name?(name)
 
   case conn
-    Db.Connection.Postgres(_) -> return ok("\"#{name}\"")
-    _ -> return ok("`#{name}`")
+    Db.Connection.Postgres(_) -> ok("\"#{name}\"")
+    _ -> ok("`#{name}`")
   end
 end
 
@@ -38,32 +34,28 @@ end
 ## name of the key column. The errors are the ones of `Db`.
 export def insert_generated(conn: Db.Connection, sql: String, params: List[Db.Value], key: String) -> Result[Int]
   case conn
-    Db.Connection.Postgres(_) -> return generated(try Db.query(conn, "#{sql} returning #{key}", params))
+    Db.Connection.Postgres(_) -> generated(try Db.query(conn, "#{sql} returning #{key}", params))
     Db.Connection.Sqlite(_) ->
       try Db.execute(conn, sql, params)
-      return generated(try Db.query(conn, "select last_insert_rowid() as id", []))
+      generated(try Db.query(conn, "select last_insert_rowid() as id", []))
     Db.Connection.Mysql(_) ->
       try Db.execute(conn, sql, params)
-      return generated(try Db.query(conn, "select last_insert_id() as id", []))
+      generated(try Db.query(conn, "select last_insert_id() as id", []))
   end
 end
 
 def generated(rows: List[Db.Row]) -> Result[Int]
-  if rows.empty? or rows[0].empty?
-    return error(NO_KEY)
-  end
+  return error(NO_KEY) if rows.empty? or rows[0].empty?
 
   case rows[0].values[0]
-    Db.Value.Int(id) -> return ok(id)
-    _ -> return error(NO_KEY)
+    Db.Value.Int(id) -> ok(id)
+    _ -> error(NO_KEY)
   end
 end
 
-def digit?(byte: Int) -> Bool
-  return byte >= 48 and byte <= 57
-end
+def digit?(byte: Int) -> Bool = byte >= 48 and byte <= 57
 
 def word_byte?(byte: Int) -> Bool
   letter = (byte >= 97 and byte <= 122) or (byte >= 65 and byte <= 90)
-  return letter or digit?(byte) or byte == 95
+  letter or digit?(byte) or byte == 95
 end

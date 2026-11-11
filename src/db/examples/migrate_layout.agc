@@ -21,5 +21,5 @@ def run() -> Result[Void]
   rows = try Db.query(conn, "select name from users", [])
   puts(rows.length)
   Db.close(conn)
-  return ok()
+  ok()
 end

@@ -86,17 +86,17 @@ export def open(path: String, flags: Int) -> Result[Handle]
     return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
 
-  return ok(opened.db)
+  ok(opened.db)
 end
 
 ## Runs one statement and gives its rows.
 export def query(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[List[Row]]
-  return run_query(Conn(handle: handle, wait: wait), sql, params)
+  run_query(Conn(handle: handle, wait: wait), sql, params)
 end
 
 ## Runs one statement for its effect and gives the number of rows it inserted, updated or deleted.
 export def execute(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[Int]
-  return run_execute(Conn(handle: handle, wait: wait), sql, params)
+  run_execute(Conn(handle: handle, wait: wait), sql, params)
 end
 
 def run_query(conn: Conn, sql: String, params: List[Value]) -> Result[List[Row]]
@@ -109,7 +109,7 @@ def run_query(conn: Conn, sql: String, params: List[Value]) -> Result[List[Row]]
 
   rows = collect(conn, stmt, names, true)
   Native.close(stmt)
-  return rows
+  rows
 end
 
 def run_execute(conn: Conn, sql: String, params: List[Value]) -> Result[Int]
@@ -119,30 +119,28 @@ def run_execute(conn: Conn, sql: String, params: List[Value]) -> Result[Int]
   ran = collect(conn, stmt, [], false)
   Native.close(stmt)
   try ran
-  return ok(changes_since(conn, before))
+  ok(changes_since(conn, before))
 end
 
 # A library that is missing is an error here, not a stop of the program at the first call.
 def load_library() -> Result[Void]
   case Native.load("sqlite3")
-    error(message) -> return error("sqlite error: cannot load the SQLite library: #{message}")
-    ok(_) -> return ok()
+    error(message) -> error("sqlite error: cannot load the SQLite library: #{message}")
+    ok(_) -> ok()
   end
 end
 
 def repeated_name(names: List[String]) -> String
   counts = names.tally
-  return names.find do |name| counts[name] > 1 end.unwrap_or("")
+  names.find do |name| counts[name] > 1 end.unwrap_or("")
 end
 
 def changes_since(conn: Conn, before: Int) -> Int
   # sqlite3_changes keeps the count of the last row-changing statement, so a statement that changed nothing
   # (a CREATE TABLE after an INSERT) must not report it.
-  if sqlite3_total_changes(conn.handle) == before
-    return 0
-  end
+  return 0 if sqlite3_total_changes(conn.handle) == before
 
-  return sqlite3_changes(conn.handle)
+  sqlite3_changes(conn.handle)
 end
 
 # The sql holds no NUL: the adapter refuses one before it gets here.
@@ -153,10 +151,10 @@ def prepare(conn: Conn, sql: String, params: List[Value]) -> Result[Stmt]
   stmt = try made
   bound = bind_all(conn, stmt, params)
   case bound
-    ok(_) -> return ok(stmt)
+    ok(_) -> ok(stmt)
     error(message) ->
       Native.close(stmt)
-      return error(message)
+      error(message)
   end
 end
 
@@ -172,21 +170,17 @@ def prepare_buffer(conn: Conn, buf: C.Pointer) -> Result[Stmt]
     end
   end
 
-  if prepared.result != SQLITE_OK
-    return error(failure(conn, prepared.result))
-  end
+  return error(failure(conn, prepared.result)) if prepared.result != SQLITE_OK
 
-  if Native.closed?(prepared.stmt)
-    return error("sqlite error: the sql has no statement")
-  end
+  return error("sqlite error: the sql has no statement") if Native.closed?(prepared.stmt)
 
   stmt = prepared.stmt
   more = no_more_statements(conn, prepared.tail)
   case more
-    ok(_) -> return ok(stmt)
+    ok(_) -> ok(stmt)
     error(message) ->
       Native.close(stmt)
-      return error(message)
+      error(message)
   end
 end
 
@@ -195,9 +189,7 @@ end
 # parse, the C call still finishes but its result is dropped, so that one probe statement is never finalized (an out
 # C.Pointer is not freed on cancel, unlike an out resource). It is freed when the connection closes.
 def no_more_statements(conn: Conn, tail: C.Pointer) -> Result[Void]
-  if Native.get_string(tail, 0) == ""
-    return ok()
-  end
+  return ok() if Native.get_string(tail, 0) == ""
 
   more = sqlite3_probe(conn.handle, tail, NUL_TERMINATED)
   if SqliteWait.lock_code?(more.result)
@@ -209,52 +201,44 @@ def no_more_statements(conn: Conn, tail: C.Pointer) -> Result[Void]
   end
 
   # Text after the first statement that is only comments gives a NULL statement: still one statement.
-  if more.result == SQLITE_OK and Native.null?(more.stmt)
-    return ok()
-  end
+  return ok() if more.result == SQLITE_OK and Native.null?(more.stmt)
 
   if more.result == SQLITE_OK
     sqlite3_finalize_pointer(more.stmt)
   end
 
-  return error("sqlite error: the sql has more than one statement")
+  error("sqlite error: the sql has more than one statement")
 end
 
 def bind_all(conn: Conn, stmt: Stmt, params: List[Value]) -> Result[Void]
   wanted = sqlite3_bind_parameter_count(stmt)
-  if wanted != params.size
-    return error("sqlite error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}")
-  end
+  return error("sqlite error: the sql has #{wanted} #{noun(wanted)}, got #{params.size}") if wanted != params.size
 
   index = 1
   for param in params
     code = bind_value(stmt, index, param)
-    if code != SQLITE_OK
-      return error(failure(conn, code))
-    end
+    return error(failure(conn, code)) if code != SQLITE_OK
 
     index += 1
   end
 
-  return ok()
+  ok()
 end
 
 def noun(count: Int) -> String
-  if count == 1
-    return "parameter"
-  end
+  return "parameter" if count == 1
 
-  return "parameters"
+  "parameters"
 end
 
 def bind_value(stmt: Stmt, index: Int, value: Value) -> Int
   case value
-    Value.Null -> return sqlite3_bind_null(stmt, index)
-    Value.Int(n) -> return sqlite3_bind_int64(stmt, index, n)
-    Value.Float(x) -> return sqlite3_bind_double(stmt, index, x)
-    Value.Text(text) -> return bind_text(stmt, index, text)
-    Value.Blob(bytes) -> return bind_blob(stmt, index, bytes)
-    Value.Bool(flag) -> return sqlite3_bind_int64(stmt, index, bool_int(flag))
+    Value.Null -> sqlite3_bind_null(stmt, index)
+    Value.Int(n) -> sqlite3_bind_int64(stmt, index, n)
+    Value.Float(x) -> sqlite3_bind_double(stmt, index, x)
+    Value.Text(text) -> bind_text(stmt, index, text)
+    Value.Blob(bytes) -> bind_blob(stmt, index, bytes)
+    Value.Bool(flag) -> sqlite3_bind_int64(stmt, index, bool_int(flag))
   end
 end
 
@@ -262,28 +246,22 @@ end
 def bind_text(stmt: Stmt, index: Int, text: String) -> Int
   code: Int = Native.from_string(text) do |buf| sqlite3_bind_text(stmt, index, buf, text.bytesize, transient()) end
 
-  return code
+  code
 end
 
 def bind_blob(stmt: Stmt, index: Int, bytes: Bytes) -> Int
   # Binding a NULL pointer would store NULL, so an empty blob has its own call.
-  if bytes.empty?
-    return sqlite3_bind_zeroblob(stmt, index, 0)
-  end
+  return sqlite3_bind_zeroblob(stmt, index, 0) if bytes.empty?
 
-  return sqlite3_bind_blob(stmt, index, bytes, bytes.size, transient())
+  sqlite3_bind_blob(stmt, index, bytes, bytes.size, transient())
 end
 
-def transient() -> C.Pointer
-  return Native.pointer(TRANSIENT_DESTRUCTOR)
-end
+def transient() -> C.Pointer = Native.pointer(TRANSIENT_DESTRUCTOR)
 
 def bool_int(flag: Bool) -> Int
-  if flag
-    return 1
-  end
+  return 1 if flag
 
-  return 0
+  0
 end
 
 # The shared step loop: every row read with the given column names, or none when `keep` is false. A step that gives a
@@ -293,9 +271,7 @@ def collect(conn: Conn, stmt: Stmt, names: List[String], keep: Bool) -> Result[L
   # runs), so the deadline is read here. Later steps are left to the interrupt: a statement that SQLite stopped is
   # rolled back by SQLite, which a return from here would skip (a write with RETURNING does its work in the
   # first step).
-  if SqliteWait.expired?(conn.wait)
-    return error(SqliteWait.INTERRUPTED)
-  end
+  return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(conn.wait)
 
   rows: List[Row] = []
   while true
@@ -323,7 +299,7 @@ def collect(conn: Conn, stmt: Stmt, names: List[String], keep: Bool) -> Result[L
     end
   end
 
-  return ok(rows)
+  ok(rows)
 end
 
 # What is left of a step that found a lock (`code`), tried again while the database stays locked. SQLite documents a
@@ -340,7 +316,7 @@ def step_after_lock(conn: Conn, stmt: Stmt, code: Int) -> Stepped
     current = sqlite3_step(stmt)
   end
 
-  return Stepped(code: current, waited: waited)
+  Stepped(code: current, waited: waited)
 end
 
 # A statement that writes, in a connection that holds a read lock: SQLite does not wait for the lock of the writer
@@ -348,26 +324,20 @@ end
 # until the write is done), so waiting here would stall the other connection's COMMIT until `busy_timeout` is over,
 # and then fail with the same error. `Db.transaction` begins with BEGIN IMMEDIATE, so its statements never get here.
 def upgrade?(conn: Conn, stmt: Stmt) -> Bool
-  if sqlite3_stmt_readonly(stmt) != 0 or sqlite3_libversion_number() < TXN_STATE_VERSION
-    return false
-  end
+  return false if sqlite3_stmt_readonly(stmt) != 0 or sqlite3_libversion_number() < TXN_STATE_VERSION
 
   # Only SQLITE_BUSY itself is that refusal: a table lock of a shared cache (262) or a WAL being recovered (261) goes
   # away without this connection letting go of anything.
-  if not SqliteLock.plain_busy?(sqlite3_extended_errcode(conn.handle))
-    return false
-  end
+  return false if not SqliteLock.plain_busy?(sqlite3_extended_errcode(conn.handle))
 
-  return sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_READ
+  sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_READ
 end
 
 # Whether the wait for the lock that `code` reports goes on, asking SQLite for the extended code only for a lock.
 def lock_wait?(conn: Conn, code: Int, started: Int) -> Bool
-  if not SqliteWait.lock_code?(code)
-    return false
-  end
+  return false if not SqliteWait.lock_code?(code)
 
-  return SqliteWait.lock_wait?(conn.wait, code, sqlite3_extended_errcode(conn.handle), started)
+  SqliteWait.lock_wait?(conn.wait, code, sqlite3_extended_errcode(conn.handle), started)
 end
 
 def column_names(stmt: Stmt) -> List[String]
@@ -377,7 +347,7 @@ def column_names(stmt: Stmt) -> List[String]
     names = names.push(sqlite3_column_name(stmt, col))
   end
 
-  return names
+  names
 end
 
 # The type of each value is asked of SQLite every time, since a column of one statement can hold a different type in
@@ -405,16 +375,14 @@ def read_row(stmt: Stmt, names: List[String]) -> Row
     col += 1
   end
 
-  return row
+  row
 end
 
 # The code is the one the failed call returned; the text is SQLite's own message.
 def failure(conn: Conn, code: Int) -> String
-  if code == SqliteWait.SQLITE_INTERRUPT
-    return SqliteWait.INTERRUPTED
-  end
+  return SqliteWait.INTERRUPTED if code == SqliteWait.SQLITE_INTERRUPT
 
-  return "sqlite error #{code}: #{sqlite3_errmsg(conn.handle)}"
+  "sqlite error #{code}: #{sqlite3_errmsg(conn.handle)}"
 end
 
 # A second block, because a probe statement is finalized through its pointer and the free function of the first

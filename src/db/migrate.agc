@@ -47,13 +47,13 @@ end
 
 ## A migration that runs sql statements, one `Db.execute` each.
 export def sql(version: Int, name: String, statements: List[String]) -> Migration
-  return Migration(version: version, name: name, action: Action.Statements(statements))
+  Migration(version: version, name: name, action: Action.Statements(statements))
 end
 
 ## A migration that calls `body` with the connection of its transaction. A function has no text to check, so a change
 ## to it is not noticed.
 export def code(version: Int, name: String, body: Fn[Db.Connection, Result[Void]]) -> Migration
-  return Migration(version: version, name: name, action: Action.Code(body))
+  Migration(version: version, name: name, action: Action.Code(body))
 end
 
 ## Applies the migrations that are not recorded yet, in order, and gives their versions (empty when there was nothing
@@ -85,19 +85,15 @@ export def up(
     done = done.push(migration.version)
   end
 
-  return ok(done)
+  ok(done)
 end
 
-def label(migration: Migration) -> String
-  return "#{migration.version} (#{migration.name})"
-end
+def label(migration: Migration) -> String = "#{migration.version} (#{migration.name})"
 
 def max(a: Int, b: Int) -> Int
-  if a > b
-    return a
-  end
+  return a if a > b
 
-  return b
+  b
 end
 
 # Letters, digits and `_`, so the name is safe to write into sql.
@@ -108,12 +104,12 @@ def check_table(table: String) -> Result[Void]
     return error("migrate error: the table name must be letters, digits and _, and not start with a digit")
   end
 
-  return ok()
+  ok()
 end
 
 def identifier_byte?(byte: Int) -> Bool
   letter = (byte >= 97 and byte <= 122) or (byte >= 65 and byte <= 90)
-  return letter or (byte >= 48 and byte <= 57) or byte == 95
+  letter or (byte >= 48 and byte <= 57) or byte == 95
 end
 
 # Versions are positive and ascend in the list, so the list reads as the history.
@@ -134,7 +130,7 @@ def check_list(migrations: List[Migration]) -> Result[Void]
     previous = migration.version
   end
 
-  return ok()
+  ok()
 end
 
 # The engine errors of the two steps before the first migration carry the prefix too.
@@ -147,8 +143,8 @@ def prepare_history(conn: Db.Connection, table: String) -> Result[Void]
   )
 
   case created
-    error(message) -> return error("migrate error: #{message}")
-    ok(_) -> return ok()
+    error(message) -> error("migrate error: #{message}")
+    ok(_) -> ok()
   end
 end
 
@@ -160,13 +156,13 @@ def recorded(conn: Db.Connection, table: String) -> Result[List[Row]]
     found = found.push(try read_row(row))
   end
 
-  return ok(found)
+  ok(found)
 end
 
 def prefixed[T](done: Result[T]) -> Result[T]
   case done
-    error(message) -> return error("migrate error: #{message}")
-    ok(value) -> return ok(value)
+    error(message) -> error("migrate error: #{message}")
+    ok(value) -> ok(value)
   end
 end
 
@@ -174,20 +170,20 @@ def read_row(row: Db.Row) -> Result[Row]
   version = try int_column(row, "version")
   name = try text_column(row, "name")
   checksum = try text_column(row, "checksum")
-  return ok(Row(version: version, name: name, checksum: checksum))
+  ok(Row(version: version, name: name, checksum: checksum))
 end
 
 def int_column(row: Db.Row, key: String) -> Result[Int]
   case row.get(key, Db.Value.Null)
-    Db.Value.Int(n) -> return ok(n)
-    _ -> return error("migrate error: the history table has a #{key} that is not an integer")
+    Db.Value.Int(n) -> ok(n)
+    _ -> error("migrate error: the history table has a #{key} that is not an integer")
   end
 end
 
 def text_column(row: Db.Row, key: String) -> Result[String]
   case row.get(key, Db.Value.Null)
-    Db.Value.Text(text) -> return ok(text)
-    _ -> return error("migrate error: the history table has a #{key} that is not text")
+    Db.Value.Text(text) -> ok(text)
+    _ -> error("migrate error: the history table has a #{key} that is not text")
   end
 end
 
@@ -211,13 +207,13 @@ def check_history(migrations: List[Migration], applied: List[Row]) -> Result[Voi
     end
   end
 
-  return ok()
+  ok()
 end
 
 def checksum(migration: Migration) -> String
   case migration.action
-    Action.Statements(statements) -> return OpenSSL.Digest.sha256_hexdigest(statements.join(";\n").bytes)
-    Action.Code(_) -> return OpenSSL.Digest.sha256_hexdigest("code #{migration.name}".bytes)
+    Action.Statements(statements) -> OpenSSL.Digest.sha256_hexdigest(statements.join(";\n").bytes)
+    Action.Code(_) -> OpenSSL.Digest.sha256_hexdigest("code #{migration.name}".bytes)
   end
 end
 
@@ -235,8 +231,8 @@ def apply(conn: Db.Connection, migration: Migration, table: String) -> Result[Vo
   end
 
   case done
-    ok(_) -> return ok()
-    error(message) -> return error("migrate error: migration #{label(migration)} failed: #{message}")
+    ok(_) -> ok()
+    error(message) -> error("migrate error: migration #{label(migration)} failed: #{message}")
   end
 end
 
@@ -247,7 +243,7 @@ def run(tx: Db.Connection, migration: Migration) -> Result[Void]
         try Db.execute(tx, statement, [])
       end
 
-      return ok()
-    Action.Code(body) -> return body.call(tx)
+      ok()
+    Action.Code(body) -> body.call(tx)
   end
 end

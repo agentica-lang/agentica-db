@@ -14,7 +14,7 @@ def test_the_text_cells_hold_the_pieces_that_break_a_driver() -> Result[Void]
     try Test.assert(seen, "no text cell of #{SAMPLE_SIZE} holds #{piece.inspect}")
   end
 
-  return Test.assert(cells.any? do |cell| cell == "Text " end, "no text cell is empty")
+  Test.assert(cells.any? do |cell| cell == "Text " end, "no text cell is empty")
 end
 
 def test_the_other_cells_hold_their_edges() -> Result[Void]
@@ -31,5 +31,5 @@ def test_the_other_cells_hold_their_edges() -> Result[Void]
     "no blob holds a zero byte",
   )
 
-  return Test.assert(blobs.include?("Blob "), "no blob is empty")
+  Test.assert(blobs.include?("Blob "), "no blob is empty")
 end

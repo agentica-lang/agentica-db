@@ -1,11 +1,9 @@
 import SqliteUrl from "../sqlite/url"
 
-def target_of(text: String) -> SqliteUrl.Target
-  return SqliteUrl.parse(text).unwrap!
-end
+def target_of(text: String) -> SqliteUrl.Target = SqliteUrl.parse(text).unwrap!
 
 def refused(text: String, message: String) -> Result[Void]
-  return Test.eq(SqliteUrl.parse(text).message, "sqlite error: #{message}")
+  Test.eq(SqliteUrl.parse(text).message, "sqlite error: #{message}")
 end
 
 def main() -> Void

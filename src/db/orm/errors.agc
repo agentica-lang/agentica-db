@@ -31,61 +31,49 @@ export enum Error
 end
 
 ## The text of a failure of the Orm: `orm error <code>: <table>: <message>`.
-export def text(code: String, table: String, message: String) -> String
-  return "orm error #{code}: #{table}: #{message}"
-end
+export def text(code: String, table: String, message: String) -> String = "orm error #{code}: #{table}: #{message}"
 
 ## The kind of the failure a text describes. A text that is no failure of the Orm and no conflict is `Database`: a
 ## failure of the database (a lost connection, a missing table, a not null) or of the Orm's own bookkeeping.
 export def classify(message: String) -> Error
-  if CONFLICTS.any? do |prefix| message.start_with?(prefix) end
-    return Error.Conflict(message)
-  end
+  return Error.Conflict(message) if CONFLICTS.any? do |prefix| message.start_with?(prefix) end
 
-  if message.start_with?("orm error #{BAD_REQUEST}: ")
-    return Error.BadRequest(payload(message, BAD_REQUEST))
-  end
+  return Error.BadRequest(payload(message, BAD_REQUEST)) if message.start_with?("orm error #{BAD_REQUEST}: ")
 
-  if message.start_with?("orm error #{SCHEMA}: ")
-    return Error.Schema(payload(message, SCHEMA))
-  end
+  return Error.Schema(payload(message, SCHEMA)) if message.start_with?("orm error #{SCHEMA}: ")
 
-  if message.start_with?("orm error #{DECODE}: ")
-    return Error.NotDecodable(payload(message, DECODE))
-  end
+  return Error.NotDecodable(payload(message, DECODE)) if message.start_with?("orm error #{DECODE}: ")
 
-  if message.start_with?("orm error #{DATABASE}: ")
-    return Error.Database(payload(message, DATABASE))
-  end
+  return Error.Database(payload(message, DATABASE)) if message.start_with?("orm error #{DATABASE}: ")
 
-  return Error.Database(message)
+  Error.Database(message)
 end
 
 ## The name of the kind: `BadRequest`, `Conflict`, `NotDecodable`, `Schema` or `Database`. It is for logs and tests;
 ## code should `case` on the `Error`.
 export def kind(failure: Error) -> String
   case failure
-    Error.BadRequest(_) -> return "BadRequest"
-    Error.Conflict(_) -> return "Conflict"
-    Error.NotDecodable(_) -> return "NotDecodable"
-    Error.Schema(_) -> return "Schema"
-    Error.Database(_) -> return "Database"
+    Error.BadRequest(_) -> "BadRequest"
+    Error.Conflict(_) -> "Conflict"
+    Error.NotDecodable(_) -> "NotDecodable"
+    Error.Schema(_) -> "Schema"
+    Error.Database(_) -> "Database"
   end
 end
 
 ## The message of the failure, for a log.
 export def message(failure: Error) -> String
   case failure
-    Error.BadRequest(text) -> return text
-    Error.Conflict(text) -> return text
-    Error.NotDecodable(text) -> return text
-    Error.Schema(text) -> return text
-    Error.Database(text) -> return text
+    Error.BadRequest(text) -> text
+    Error.Conflict(text) -> text
+    Error.NotDecodable(text) -> text
+    Error.Schema(text) -> text
+    Error.Database(text) -> text
   end
 end
 
 # What follows `orm error <code>: `.
 def payload(message: String, code: String) -> String
   start = "orm error #{code}: ".length
-  return message.slice(start, message.length - start)
+  message.slice(start, message.length - start)
 end

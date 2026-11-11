@@ -72,15 +72,13 @@ end
 ## and the other parameters of the url work as in libpq), or with a conninfo string. `timeout_ms`, `statement_cache`,
 ## `batch_rows` and `batch_bytes` are read here, not by libpq. The client encoding is set to UTF8.
 export def open(url: String) -> Result[Connection]
-  if has_nul?(url)
-    return error("postgres error: the url contains a NUL character")
-  end
+  return error("postgres error: the url contains a NUL character") if has_nul?(url)
 
   target = try PostgresUrl.parse(url)
   link = try connect(target)
   conn = Connection(link: link, timeout_ms: target.timeout_ms)
   try limit_session(conn)
-  return ok(conn)
+  ok(conn)
 end
 
 ## Closes the connection; closing it again does nothing.
@@ -95,62 +93,52 @@ end
 ## Two columns with one name are an error: alias them. `timeout_ms` is the limit of this call: -1 takes the one of
 ## the connection, 0 is none.
 export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
-  return limited(conn, timeout_ms, sql) do run_query(conn.link, sql, params) end
+  limited(conn, timeout_ms, sql) do run_query(conn.link, sql, params) end
 end
 
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
 ## `timeout_ms` is as in `query`.
 export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
-  return limited(conn, timeout_ms, sql) do run_execute(conn.link, sql, params) end
+  limited(conn, timeout_ms, sql) do run_execute(conn.link, sql, params) end
 end
 
 ## Whether a transaction is open or failed and waits for its ROLLBACK, as libpq knows it: no round trip. A closed
 ## connection is not in one.
 export def in_transaction?(conn: Connection) -> Bool
-  if closed?(conn.link)
-    return false
-  end
+  return false if closed?(conn.link)
 
   status = status_of(conn.link).transaction
-  return status == PQTRANS_INTRANS or status == PQTRANS_INERROR
+  status == PQTRANS_INTRANS or status == PQTRANS_INERROR
 end
 
 ## Whether libpq still has the connection up, from its own state and with no round trip: it is open, its status is OK
 ## and the transaction status is known. A connection the server ended shows here after the first call that fails on it.
 export def connected?(conn: Connection) -> Bool
-  if closed?(conn.link)
-    return false
-  end
+  return false if closed?(conn.link)
 
   status = status_of(conn.link)
-  return status.connection == CONNECTION_OK and status.transaction != PQTRANS_UNKNOWN
+  status.connection == CONNECTION_OK and status.transaction != PQTRANS_UNKNOWN
 end
 
 ## Whether the connection works: libpq says it is up and the server answers `SELECT 1`. A failed transaction is
 ## healthy, since the connection is.
 export def healthy?(conn: Connection) -> Bool
-  if closed?(conn.link)
-    return false
-  end
+  return false if closed?(conn.link)
 
   status = status_of(conn.link)
-  if status.connection != CONNECTION_OK or status.transaction == PQTRANS_UNKNOWN
-    return false
-  end
+  return false if status.connection != CONNECTION_OK or status.transaction == PQTRANS_UNKNOWN
 
-  if status.transaction == PQTRANS_INERROR
-    return true
-  end
+  return true if status.transaction == PQTRANS_INERROR
 
-  return run_query(conn.link, "SELECT 1", []).ok?
+  run_query(conn.link, "SELECT 1", []).ok?
 end
 
 ## The statement cache of a connection of the native driver; none for the FFI driver, which has none, and for a closed
 ## connection.
 export def statement_cache(conn: Connection) -> Optional[PostgresNative.CacheStats]
   case conn.link
-    Link.Native(session) -> return PostgresNative.stats(session)
-    Link.Ffi(_) -> return none
+    Link.Native(session) -> PostgresNative.stats(session)
+    Link.Ffi(_) -> none
   end
 end
 
@@ -172,13 +160,13 @@ def connect(target: PostgresUrl.Target) -> Result[Link]
 
   options = PostgresNative.Options(rows: target.batch_rows, bytes: target.batch_bytes)
   session = try PostgresNative.open(target.conninfo, target.statement_cache, options)
-  return ok(Link.Native(session))
+  ok(Link.Native(session))
 end
 
 def closed?(link: Link) -> Bool
   case link
-    Link.Native(session) -> return PostgresNative.closed?(session)
-    Link.Ffi(handle) -> return Native.closed?(handle)
+    Link.Native(session) -> PostgresNative.closed?(session)
+    Link.Ffi(handle) -> Native.closed?(handle)
   end
 end
 
@@ -189,32 +177,30 @@ def status_of(link: Link) -> Status
     Link.Ffi(handle) -> both = PostgresFfi.status(handle)
   end
 
-  return Status(connection: both / 16, transaction: both % 16)
+  Status(connection: both / 16, transaction: both % 16)
 end
 
 def run_query(link: Link, sql: String, params: List[Value]) -> Result[List[Row]]
   try check_open(link)
   case link
-    Link.Native(session) -> return PostgresNative.query(session, sql, params)
-    Link.Ffi(handle) -> return PostgresFfi.query(handle, sql, params)
+    Link.Native(session) -> PostgresNative.query(session, sql, params)
+    Link.Ffi(handle) -> PostgresFfi.query(handle, sql, params)
   end
 end
 
 def run_execute(link: Link, sql: String, params: List[Value]) -> Result[Int]
   try check_open(link)
   case link
-    Link.Native(session) -> return PostgresNative.execute(session, sql, params)
-    Link.Ffi(handle) -> return PostgresFfi.execute(handle, sql, params)
+    Link.Native(session) -> PostgresNative.execute(session, sql, params)
+    Link.Ffi(handle) -> PostgresFfi.execute(handle, sql, params)
   end
 end
 
 # A call with a closed resource stops the program, so a closed handle is turned into an error first.
 def check_open(link: Link) -> Result[Void]
-  if closed?(link)
-    return error("postgres error: the connection is closed")
-  end
+  return error("postgres error: the connection is closed") if closed?(link)
 
-  return ok()
+  ok()
 end
 
 # Runs `body` under the limit of the call. A limit other than the session's is set before and put back after, also
@@ -225,41 +211,37 @@ end
 # body's failure aborted (the rollback undoes the SET too), or on a timeout of its own; the connection then keeps the
 # limit of the call until the next put-back.
 def limited[R](conn: Connection, timeout_ms: Int, sql: String, body: Fn[Result[R]]) -> Result[R]
-  if timeout_ms < 0 or timeout_ms == conn.timeout_ms or controls_transaction?(sql)
-    return body.call()
-  end
+  return body.call() if timeout_ms < 0 or timeout_ms == conn.timeout_ms or controls_transaction?(sql)
 
   try set_statement_timeout(conn.link, timeout_ms)
   done = body.call()
   put_back_statement_timeout(conn)
-  return done
+  done
 end
 
 def controls_transaction?(sql: String) -> Bool
   case PostgresSql.translate(sql)
-    error(_) -> return false
-    ok(translated) -> return TRANSACTION_VERBS.include?(translated.verb)
+    error(_) -> false
+    ok(translated) -> TRANSACTION_VERBS.include?(translated.verb)
   end
 end
 
 def limit_session(conn: Connection) -> Result[Void]
-  if conn.timeout_ms == 0
-    return ok()
-  end
+  return ok() if conn.timeout_ms == 0
 
   set = set_statement_timeout(conn.link, conn.timeout_ms)
   case set
-    ok(_) -> return ok()
+    ok(_) -> ok()
     error(message) ->
       close(conn)
-      return error(message)
+      error(message)
   end
 end
 
 # `set_config` takes the value as a parameter, which `SET` does not.
 def set_statement_timeout(link: Link, ms: Int) -> Result[Void]
   try run_query(link, SET_TIMEOUT_SQL, [Value.Text(ms.to_s)])
-  return ok()
+  ok()
 end
 
 # The limit of the url, or, when the url sets none, whatever the server gives the session (a role or database setting,
@@ -273,6 +255,4 @@ def put_back_statement_timeout(conn: Connection) -> Void
 end
 
 # A NUL ends a C.String early, and the VM stops the program at the call (RUNTIME-INVALID-CHARACTER).
-def has_nul?(text: String) -> Bool
-  return text.include?(String.from_code(0))
-end
+def has_nul?(text: String) -> Bool = text.include?(String.from_code(0))

@@ -9,26 +9,20 @@ def becomes(sql: String, expected: String, count: Int) -> Result[Void]
   done = PostgresSql.translate(sql)
   try Test.ok?(done)
   try Test.eq(done.unwrap!.sql, expected)
-  return Test.eq(done.unwrap!.count, count)
+  Test.eq(done.unwrap!.count, count)
 end
 
-def same(sql: String, count: Int) -> Result[Void]
-  return becomes(sql, sql, count)
-end
+def same(sql: String, count: Int) -> Result[Void] = becomes(sql, sql, count)
 
 def verb_of(sql: String, verb: String) -> Result[Void]
   done = PostgresSql.translate(sql)
   try Test.ok?(done)
-  return Test.eq(done.unwrap!.verb, verb)
+  Test.eq(done.unwrap!.verb, verb)
 end
 
-def words_of(sql: String, words: List[String]) -> Result[Void]
-  return Test.eq(PostgresSql.first_words(sql, 3), words)
-end
+def words_of(sql: String, words: List[String]) -> Result[Void] = Test.eq(PostgresSql.first_words(sql, 3), words)
 
-def refused(sql: String, message: String) -> Result[Void]
-  return Test.eq(PostgresSql.translate(sql), error(message))
-end
+def refused(sql: String, message: String) -> Result[Void] = Test.eq(PostgresSql.translate(sql), error(message))
 
 def main() -> Void
   Test.run([
