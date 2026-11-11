@@ -91,22 +91,16 @@ extern module "db_sqlite"
 end
 
 ## Whether the module opens: false where the built library does not load, and the FFI driver runs.
-export def available?() -> Bool
-  return Native.load("db_sqlite").ok?
-end
+export def available?() -> Bool = Native.load("db_sqlite").ok?
 
 ## Opens a database with `flags` (of `sqlite3_open_v2`) and a cache of `cache` statements (0: none).
-export def open(path: String, flags: Int, cache: Int) -> Result[Conn]
-  return connect(path, flags, cache)
-end
+export def open(path: String, flags: Int, cache: Int) -> Result[Conn] = connect(path, flags, cache)
 
 ## Runs one statement and gives its rows.
 export def query(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
-  if SqliteWait.expired?(wait)
-    return error(SqliteWait.INTERRUPTED)
-  end
+  return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(wait)
 
-  return run_short(conn, wait, sql, params, options)
+  run_short(conn, wait, sql, params, options)
 end
 
 ## Ends what a cancelled query left on the connection: a statement that a lock stopped holds a write that SQLite never
@@ -121,11 +115,9 @@ end
 ## Runs one statement for its effect: its rows are stepped over, and `Done.changes` is the number of rows it inserted,
 ## updated or deleted.
 export def execute(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
-  if SqliteWait.expired?(wait)
-    return error(SqliteWait.INTERRUPTED)
-  end
+  return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(wait)
 
-  return run_short(conn, wait, sql, params, options.with(keep: false))
+  run_short(conn, wait, sql, params, options.with(keep: false))
 end
 
 # The calls that only this file makes. A Cursor holds the statement of one query between its fetch calls; the last
@@ -151,15 +143,13 @@ def run_short(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value
     end
   end
 
-  return run(conn, wait, sql, params, options)
+  run(conn, wait, sql, params, options)
 end
 
 def done_of(batch: Batch) -> Result[Done]
-  if batch.code == SQLITE_DONE
-    return ok(Done(rows: batch.rows, changes: batch.changes, frames: batch.frames))
-  end
+  return ok(Done(rows: batch.rows, changes: batch.changes, frames: batch.frames)) if batch.code == SQLITE_DONE
 
-  return error(batch.failure)
+  error(batch.failure)
 end
 
 # The batches of the statement until its end. A lock is waited for here and the statement fetched again, which steps
@@ -210,5 +200,5 @@ def run(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], opt
   end
 
   Native.close(cur)
-  return ok(Done(rows: rows, changes: 0, frames: frames))
+  ok(Done(rows: rows, changes: 0, frames: frames))
 end

@@ -66,46 +66,34 @@ end
 
 ## Reads the text after `sqlite:`.
 export def parse(text: String) -> Result[Target]
-  if text.start_with?(URI_PREFIX)
-    return ok(Target(path: text, settings: Settings(uri: true)))
-  end
+  return ok(Target(path: text, settings: Settings(uri: true))) if text.start_with?(URI_PREFIX)
 
-  if not text.include?("?")
-    return ok(Target(path: text, settings: Settings()))
-  end
+  return ok(Target(path: text, settings: Settings())) if not text.include?("?")
 
   halves = split_once(text, "?")
   settings = try read_settings(halves[1])
-  return ok(Target(path: halves[0], settings: settings))
+  ok(Target(path: halves[0], settings: settings))
 end
 
 # The text before the first `separator` and the text after it (empty when there is none).
 def split_once(text: String, separator: String) -> List[String]
   found = text.index_of(separator)
   case found
-    some(at) -> return [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
-    none -> return [text, ""]
+    some(at) -> [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
+    none -> [text, ""]
   end
 end
 
-def one_of?(choices: List[String], value: String) -> Bool
-  return choices.any? do |choice| choice == value end
-end
+def one_of?(choices: List[String], value: String) -> Bool = choices.any? do |choice| choice == value end
 
 def read_settings(query: String) -> Result[Settings]
   settings = Settings()
-  if query.empty?
-    return ok(settings)
-  end
+  return ok(settings) if query.empty?
 
   for pair in query.split("&")
-    if pair.empty?
-      return error("sqlite error: the url has an empty parameter")
-    end
+    return error("sqlite error: the url has an empty parameter") if pair.empty?
 
-    if not pair.include?("=")
-      return error("sqlite error: the url parameter #{pair} has no value, write name=value")
-    end
+    return error("sqlite error: the url parameter #{pair} has no value, write name=value") if not pair.include?("=")
 
     halves = split_once(pair, "=")
     name = halves[0]
@@ -141,28 +129,24 @@ def read_settings(query: String) -> Result[Settings]
     end
   end
 
-  return ok(settings)
+  ok(settings)
 end
 
 def read_milliseconds(text: String, name: String) -> Result[Int]
   case Milliseconds.parse(text)
-    some(n) -> return ok(n)
-    none -> return error("sqlite error: the url #{name} is not a number of milliseconds")
+    some(n) -> ok(n)
+    none -> error("sqlite error: the url #{name} is not a number of milliseconds")
   end
 end
 
 # A whole number from `low` to `high` (no bound when `high` is 0).
 def read_bounded(text: String, name: String, low: Int, high: Int) -> Result[Int]
   n = try read_number(text, name, false)
-  if n < low
-    return error("sqlite error: the url #{name} is below #{low}: #{n}")
-  end
+  return error("sqlite error: the url #{name} is below #{low}: #{n}") if n < low
 
-  if high > 0 and n > high
-    return error("sqlite error: the url #{name} is over #{high}: #{n}")
-  end
+  return error("sqlite error: the url #{name} is over #{high}: #{n}") if high > 0 and n > high
 
-  return ok(n)
+  ok(n)
 end
 
 # A whole number of up to MAX_DIGITS digits, with a leading `-` when `signed`. SQLite reads a negative `cache_size` as
@@ -180,5 +164,5 @@ def read_number(text: String, name: String, signed: Bool) -> Result[Int]
     return error("sqlite error: the url #{name} is not a whole number")
   end
 
-  return ok(text.to_i.unwrap_or(0))
+  ok(text.to_i.unwrap_or(0))
 end

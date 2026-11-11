@@ -20,30 +20,22 @@ export struct Wait
 end
 
 ## Whether a result code is SQLITE_BUSY or SQLITE_LOCKED, the two that can be a lock of another connection.
-export def lock_code?(code: Int) -> Bool
-  return code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED
-end
+export def lock_code?(code: Int) -> Bool = code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED
 
 ## True when `code` (with its `extended` code) says that another connection holds a lock and the wait that began at
 ## `started` is not over, so the caller pauses and tries again.
 export def lock_wait?(wait: Wait, code: Int, extended: Int, started: Int) -> Bool
-  if not lock_code?(code) or not SqliteLock.waitable?(extended)
-    return false
-  end
+  return false if not lock_code?(code) or not SqliteLock.waitable?(extended)
 
   now = Time.monotonic_ms()
-  if wait.deadline > 0 and now >= wait.deadline
-    return false
-  end
+  return false if wait.deadline > 0 and now >= wait.deadline
 
-  return now - started < wait.busy_timeout
+  now - started < wait.busy_timeout
 end
 
 ## Whether the deadline of the call has passed. An interrupt that came before the first step is lost (SQLite ignores
 ## one while no statement runs), so the drivers ask this before it.
-export def expired?(wait: Wait) -> Bool
-  return wait.deadline > 0 and Time.monotonic_ms() >= wait.deadline
-end
+export def expired?(wait: Wait) -> Bool = wait.deadline > 0 and Time.monotonic_ms() >= wait.deadline
 
 ## Sleeps a little: the task parks, so its thread of the compute pool is free for the connection that holds the lock.
 ## The sleep never goes past the end of the wait, nor the deadline of the call.

@@ -6,12 +6,10 @@ NO_STATEMENT = "mysql error: the sql has no statement"
 def verb_of(sql: String, verb: String) -> Result[Void]
   done = MysqlSql.inspect(sql)
   try Test.ok?(done)
-  return Test.eq(done.unwrap!.verb, verb)
+  Test.eq(done.unwrap!.verb, verb)
 end
 
-def refused(sql: String, message: String) -> Result[Void]
-  return Test.eq(MysqlSql.inspect(sql).message, message)
-end
+def refused(sql: String, message: String) -> Result[Void] = Test.eq(MysqlSql.inspect(sql).message, message)
 
 def main() -> Void
   Test.run([

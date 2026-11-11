@@ -73,10 +73,10 @@ export def open(url: String) -> Result[Connection]
   conn = Connection(link: link, flavor: flavor_of(server_version(link)), timeout_ms: target.timeout_ms)
   limited = limit_session(conn)
   case limited
-    ok(_) -> return ok(conn)
+    ok(_) -> ok(conn)
     error(message) ->
       close(conn)
-      return error(message)
+      error(message)
   end
 end
 
@@ -93,20 +93,20 @@ end
 ## `BEGIN`, `SAVEPOINT`, `USE` and `LOCK TABLES` on MySQL) goes through the text protocol, which is safe because there
 ## is nothing to bind.
 export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
-  return limited(conn, timeout_ms) do run_query(conn.link, sql, params) end
+  limited(conn, timeout_ms) do run_query(conn.link, sql, params) end
 end
 
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
 ## replaced. The text protocol is used as for `query`, and `timeout_ms` is as there.
 export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
-  return limited(conn, timeout_ms) do run_execute(conn.link, sql, params) end
+  limited(conn, timeout_ms) do run_execute(conn.link, sql, params) end
 end
 
 ## Whether the server says a transaction is open on the connection, from the status of its last reply: no round trip.
 ## A closed connection is not in one.
 export def in_transaction?(conn: Connection) -> Bool
   case conn.link
-    Link.Ffi(handle) -> return not Native.closed?(handle) and MysqlFfi.in_transaction?(handle)
+    Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.in_transaction?(handle)
   end
 end
 
@@ -115,71 +115,63 @@ end
 ## shows here after the first call that fails on it; `healthy?` asks the server.
 export def connected?(conn: Connection) -> Bool
   case conn.link
-    Link.Ffi(handle) -> return not Native.closed?(handle) and MysqlFfi.connected?(handle)
+    Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.connected?(handle)
   end
 end
 
 ## Whether the connection works: it is open and the server answers a ping.
 export def healthy?(conn: Connection) -> Bool
   case conn.link
-    Link.Ffi(handle) -> return not Native.closed?(handle) and MysqlFfi.healthy?(handle)
+    Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.healthy?(handle)
   end
 end
 
 # The driver that the variable names; unset is the FFI one, the only one for now.
 def connect(target: MysqlUrl.Target) -> Result[Link]
   choice = System.env(DRIVER_VARIABLE).unwrap_or("")
-  if choice == "native"
-    return error(NATIVE_OFF)
-  end
+  return error(NATIVE_OFF) if choice == "native"
 
   if choice != "" and choice != "ffi"
     return error("mysql error: #{DRIVER_VARIABLE} is #{choice}, expected native or ffi")
   end
 
   handle = try MysqlFfi.open(target)
-  return ok(Link.Ffi(handle))
+  ok(Link.Ffi(handle))
 end
 
 def server_version(link: Link) -> String
   case link
-    Link.Ffi(handle) -> return MysqlFfi.server_info(handle)
+    Link.Ffi(handle) -> MysqlFfi.server_info(handle)
   end
 end
 
 # MariaDB says so in its version, `11.4.2-MariaDB` (and `5.5.5-11.4.2-MariaDB` for an old client protocol).
 def flavor_of(version: String) -> Flavor
-  if version.include?("MariaDB")
-    return Flavor.MariaDb
-  end
+  return Flavor.MariaDb if version.include?("MariaDB")
 
-  return Flavor.MySql
+  Flavor.MySql
 end
 
 def closed?(link: Link) -> Bool
   case link
-    Link.Ffi(handle) -> return Native.closed?(handle)
+    Link.Ffi(handle) -> Native.closed?(handle)
   end
 end
 
 # A call with a closed resource stops the program, so a closed connection is turned into an error first.
 def run_query(link: Link, sql: String, params: List[Value]) -> Result[List[Row]]
-  if closed?(link)
-    return error(CLOSED)
-  end
+  return error(CLOSED) if closed?(link)
 
   case link
-    Link.Ffi(handle) -> return MysqlFfi.query(handle, sql, params)
+    Link.Ffi(handle) -> MysqlFfi.query(handle, sql, params)
   end
 end
 
 def run_execute(link: Link, sql: String, params: List[Value]) -> Result[Int]
-  if closed?(link)
-    return error(CLOSED)
-  end
+  return error(CLOSED) if closed?(link)
 
   case link
-    Link.Ffi(handle) -> return MysqlFfi.execute(handle, sql, params)
+    Link.Ffi(handle) -> MysqlFfi.execute(handle, sql, params)
   end
 end
 
@@ -188,27 +180,23 @@ end
 # the put-back runs under the short limit of the call, so it can fail like any statement (a lost connection, which the
 # next call reports, or a timeout of its own), and the connection then keeps the limit of the call until the next one.
 def limited[R](conn: Connection, timeout_ms: Int, body: Fn[Result[R]]) -> Result[R]
-  if timeout_ms < 0 or timeout_ms == conn.timeout_ms
-    return body.call()
-  end
+  return body.call() if timeout_ms < 0 or timeout_ms == conn.timeout_ms
 
   try set_limit(conn, limit_sql(conn.flavor, timeout_ms))
   done = body.call()
   put_back_limit(conn)
-  return done
+  done
 end
 
 def limit_session(conn: Connection) -> Result[Void]
-  if conn.timeout_ms == 0
-    return ok()
-  end
+  return ok() if conn.timeout_ms == 0
 
-  return set_limit(conn, limit_sql(conn.flavor, conn.timeout_ms))
+  set_limit(conn, limit_sql(conn.flavor, conn.timeout_ms))
 end
 
 def set_limit(conn: Connection, sql: String) -> Result[Void]
   try run_execute(conn.link, sql, [])
-  return ok()
+  ok()
 end
 
 # The limit of the url, or, when the url sets none, the default of the server (its global value).
@@ -223,17 +211,17 @@ end
 # MySQL counts the limit in milliseconds and MariaDB in seconds, which may have a fraction: 2500 ms is 2.500.
 def limit_sql(flavor: Flavor, ms: Int) -> String
   case flavor
-    Flavor.MySql -> return "SET SESSION max_execution_time = #{ms}"
+    Flavor.MySql -> "SET SESSION max_execution_time = #{ms}"
     Flavor.MariaDb ->
       millis = (ms % MS_PER_SECOND).to_s
       padded = List.repeat("0", 3 - millis.length).join("") + millis
-      return "SET SESSION max_statement_time = #{ms / MS_PER_SECOND}.#{padded}"
+      "SET SESSION max_statement_time = #{ms / MS_PER_SECOND}.#{padded}"
   end
 end
 
 def default_limit_sql(flavor: Flavor) -> String
   case flavor
-    Flavor.MySql -> return "SET SESSION max_execution_time = DEFAULT"
-    Flavor.MariaDb -> return "SET SESSION max_statement_time = DEFAULT"
+    Flavor.MySql -> "SET SESSION max_execution_time = DEFAULT"
+    Flavor.MariaDb -> "SET SESSION max_statement_time = DEFAULT"
   end
 end

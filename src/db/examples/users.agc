@@ -44,9 +44,7 @@ end
 
 # The body of a request is `Bytes`; the handlers read it as UTF-8 text, and an invalid one is an empty text, which
 # the JSON decoding then refuses as a bad body.
-def text_of(request: HttpRequest) -> String
-  return String.from_bytes(request.body).unwrap_or("")
-end
+def text_of(request: HttpRequest) -> String = String.from_bytes(request.body).unwrap_or("")
 
 # The routes: the method and the parts of the path (`/users/7` is ["", "users", "7"]).
 def handle(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest) -> HttpResponse
@@ -70,26 +68,26 @@ def handle(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest) 
     end
   end
 
-  return failure(404, "no such route")
+  failure(404, "no such route")
 end
 
 def user_route(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest, id: Int) -> HttpResponse
   case request.method
-    "GET" -> return show(conn, schema, id)
-    "PATCH" -> return change(conn, schema, id, text_of(request))
-    "DELETE" -> return remove(conn, schema, id)
-    _ -> return failure(405, "method not allowed")
+    "GET" -> show(conn, schema, id)
+    "PATCH" -> change(conn, schema, id, text_of(request))
+    "DELETE" -> remove(conn, schema, id)
+    _ -> failure(405, "method not allowed")
   end
 end
 
 # POST /users: the body is decoded into a plain struct, and the Orm gives back the row with its new key.
 def create(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HttpResponse
   case JSON.decode(body, NewUser)
-    error(_) -> return failure(400, "the body is not a user")
+    error(_) -> failure(400, "the body is not a user")
     ok(input) ->
       case Orm.insert(conn, schema, User(name: input.name, age: input.age))
-        error(message) -> return refused(message)
-        ok(user) -> return json(201, JSON.encode(user))
+        error(message) -> refused(message)
+        ok(user) -> json(201, JSON.encode(user))
       end
   end
 end
@@ -98,12 +96,12 @@ end
 # against the schema, so a request cannot put sql there; the sql of `where` is a constant of the program.
 def list(conn: Db.Connection, schema: Orm.Schema[User], target: String) -> HttpResponse
   case filtered(Orm.from(schema), target)
-    error(message) -> return failure(400, message)
+    error(message) -> failure(400, message)
     ok(query) ->
       column = param(target, "sort").unwrap_or("id")
       case Orm.all(Orm.order_by(query, column) |> Orm.limit(LIST_LIMIT), conn)
-        error(message) -> return refused(message)
-        ok(found) -> return json(200, JSON.encode(found))
+        error(message) -> refused(message)
+        ok(found) -> json(200, JSON.encode(found))
       end
   end
 end
@@ -111,11 +109,11 @@ end
 # The query with the filters of the request: only ?min_age so far.
 def filtered(query: Orm.Query[User], target: String) -> Result[Orm.Query[User]]
   case param(target, "min_age")
-    none -> return ok(query)
+    none -> ok(query)
     some(text) ->
       case text.to_i
-        error(_) -> return error("min_age is not a number")
-        ok(years) -> return ok(Orm.where(query, "age >= ?", [Db.Value.Int(years)]))
+        error(_) -> error("min_age is not a number")
+        ok(years) -> ok(Orm.where(query, "age >= ?", [Db.Value.Int(years)]))
       end
   end
 end
@@ -123,11 +121,11 @@ end
 # GET /users/7: `find` gives `some` or `none`, so a missing row is a 404 and a broken database is a 500.
 def show(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpResponse
   case Orm.find(conn, schema, Db.Value.Int(id))
-    error(message) -> return refused(message)
+    error(message) -> refused(message)
     ok(found) ->
       case found
-        none -> return failure(404, "no such user")
-        some(user) -> return json(200, JSON.encode(user))
+        none -> failure(404, "no such user")
+        some(user) -> json(200, JSON.encode(user))
       end
   end
 end
@@ -136,21 +134,21 @@ end
 # column is an error of the Orm, and `patch` gives the number of rows it changed.
 def change(conn: Db.Connection, schema: Orm.Schema[User], id: Int, body: String) -> HttpResponse
   case JSON.parse(body)
-    error(_) -> return failure(400, "the body is not JSON")
+    error(_) -> failure(400, "the body is not JSON")
     ok(changes) ->
       case Orm.patch(conn, schema, Db.Value.Int(id), changes)
-        error(message) -> return refused(message)
-        ok(0) -> return failure(404, "no such user")
-        ok(_) -> return show(conn, schema, id)
+        error(message) -> refused(message)
+        ok(0) -> failure(404, "no such user")
+        ok(_) -> show(conn, schema, id)
       end
   end
 end
 
 def remove(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpResponse
   case Orm.delete(conn, schema, Db.Value.Int(id))
-    error(message) -> return refused(message)
-    ok(0) -> return failure(404, "no such user")
-    ok(_) -> return HttpResponse(status: 204, headers: [], body: "".bytes)
+    error(message) -> refused(message)
+    ok(0) -> failure(404, "no such user")
+    ok(_) -> HttpResponse(status: 204, headers: [], body: "".bytes)
   end
 end
 
@@ -158,7 +156,7 @@ end
 # that is already taken: a conflict) and gives back the users it created when it commits.
 def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HttpResponse
   case JSON.decode(body, Batch)
-    error(_) -> return failure(400, "the body is not a batch of users")
+    error(_) -> failure(400, "the body is not a batch of users")
     ok(batch) ->
       done = Db.transaction(conn) do |tx|
         created: List[User] = []
@@ -170,24 +168,20 @@ def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) ->
       end
 
       case done
-        error(message) -> return refused_import(message)
-        ok(created) -> return json(201, JSON.encode(created))
+        error(message) -> refused_import(message)
+        ok(created) -> json(201, JSON.encode(created))
       end
   end
 end
 
-def users() -> Orm.Schema[User]
-  return Orm.schema("users", User.codec)
-end
+def users() -> Orm.Schema[User] = Orm.schema("users", User.codec)
 
 def json(status: Int, body: String) -> HttpResponse
   headers = [Header(name: "Content-Type", value: "application/json")]
-  return HttpResponse(status: status, headers: headers, body: body.bytes)
+  HttpResponse(status: status, headers: headers, body: body.bytes)
 end
 
-def failure(status: Int, message: String) -> HttpResponse
-  return json(status, JSON.encode({"error": message}))
-end
+def failure(status: Int, message: String) -> HttpResponse = json(status, JSON.encode({"error": message}))
 
 # The status of a failure comes from its kind (`Orm.classify`), not from its text: a bad request is the client's
 # fault and its message says what to fix, a conflict (a name that is already taken) is a 409, and anything else is a
@@ -195,40 +189,36 @@ end
 # may drop the table name before it sends the message to a client.
 def refused(message: String) -> HttpResponse
   case Orm.classify(message)
-    Orm.Error.BadRequest(text) -> return failure(400, text)
-    Orm.Error.Conflict(_) -> return failure(409, "conflict")
-    _ -> return failure(500, "internal error")
+    Orm.Error.BadRequest(text) -> failure(400, text)
+    Orm.Error.Conflict(_) -> failure(409, "conflict")
+    _ -> failure(500, "internal error")
   end
 end
 
 # The same for an import: nothing was saved, whatever the reason.
 def refused_import(message: String) -> HttpResponse
   case Orm.classify(message)
-    Orm.Error.Conflict(_) -> return failure(409, "nothing was imported")
-    _ -> return failure(500, "nothing was imported")
+    Orm.Error.Conflict(_) -> failure(409, "nothing was imported")
+    _ -> failure(500, "nothing was imported")
   end
 end
 
 # The value of ?key=value in a request target, or none.
 def param(target: String, key: String) -> Optional[String]
   parts = target.split("?")
-  if parts.size < 2
-    return none
-  end
+  return none if parts.size < 2
 
   for pair in parts[1].split("&")
     found = pair.split("=")
-    if found.size == 2 and found[0] == key
-      return some(found[1])
-    end
+    return some(found[1]) if found.size == 2 and found[0] == key
   end
 
-  return none
+  none
 end
 
 # The requests of the example, in order.
 def script() -> List[HttpRequest]
-  return [
+  [
     build_request("POST", "/users", "{\"name\": \"Ana\", \"age\": 31}"),
     build_request("POST", "/users", "{\"name\": \"Bob\"}"),
     build_request("POST", "/users", "{\"age\": 5}"),
@@ -249,7 +239,7 @@ def script() -> List[HttpRequest]
 end
 
 def build_request(method: String, target: String, body: String) -> HttpRequest
-  return HttpRequest(method: method, target: target, path: target.split("?")[0], headers: [], body: body.bytes)
+  HttpRequest(method: method, target: target, path: target.split("?")[0], headers: [], body: body.bytes)
 end
 
 def run() -> Result[Void]
@@ -264,5 +254,5 @@ def run() -> Result[Void]
   end
 
   Db.close(conn)
-  return ok()
+  ok()
 end

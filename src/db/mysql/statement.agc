@@ -8,14 +8,10 @@ COUNTING_VERBS = Set.new(["insert", "update", "delete", "replace"])
 ## nest here, as in the other adapters, so a BEGIN or START TRANSACTION is refused while the server says that one is
 ## open (the `open` argument).
 export def check_begin(open: Bool, verb: String) -> Result[Void]
-  if (verb == "begin" or verb == "start") and open
-    return error("mysql error: a transaction is already in progress")
-  end
+  return error("mysql error: a transaction is already in progress") if (verb == "begin" or verb == "start") and open
 
-  return ok()
+  ok()
 end
 
 ## Whether `execute` gives the affected rows of a statement with this verb.
-export def counts?(verb: String) -> Bool
-  return COUNTING_VERBS.include?(verb)
-end
+export def counts?(verb: String) -> Bool = COUNTING_VERBS.include?(verb)

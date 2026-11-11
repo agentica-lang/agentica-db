@@ -56,22 +56,16 @@ export def open(url: String) -> Result[Connection]
 
   if url.start_with?(SQLITE_PREFIX)
     path = url.slice(SQLITE_PREFIX.length, url.length - SQLITE_PREFIX.length)
-    if path.empty?
-      return error("db error: unsupported database url with scheme sqlite: the path is empty")
-    end
+    return error("db error: unsupported database url with scheme sqlite: the path is empty") if path.empty?
 
     return open_sqlite(path)
   end
 
-  if POSTGRES_PREFIXES.any? do |prefix| url.start_with?(prefix) end
-    return open_postgres(url)
-  end
+  return open_postgres(url) if POSTGRES_PREFIXES.any? do |prefix| url.start_with?(prefix) end
 
-  if MYSQL_PREFIXES.any? do |prefix| url.start_with?(prefix) end
-    return open_mysql(url)
-  end
+  return open_mysql(url) if MYSQL_PREFIXES.any? do |prefix| url.start_with?(prefix) end
 
-  return error(
+  error(
     "db error: unsupported database url scheme #{scheme(url)}: expected sqlite:PATH, sqlite::memory:, " +
     "postgres:// or mysql://",
   )
@@ -82,7 +76,7 @@ end
 ## `synchronous`, `mmap_size`, `cache_size`, `journal_size_limit` and `fts5=required` (see `sqlite/sqlite.agc`).
 export def open_sqlite(path: String) -> Result[Connection]
   handle = try Sqlite.open(path)
-  return ok(Connection.Sqlite(handle))
+  ok(Connection.Sqlite(handle))
 end
 
 ## Opens a PostgreSQL database from a libpq url, or from a conninfo string (`host=localhost dbname=app`), which libpq
@@ -90,14 +84,14 @@ end
 ## never sees: it sets the `statement_timeout` of the session.
 export def open_postgres(url: String) -> Result[Connection]
   handle = try Postgres.open(url)
-  return ok(Connection.Postgres(handle))
+  ok(Connection.Postgres(handle))
 end
 
 ## Opens a MySQL or MariaDB database from a `mysql://user:password@host:3306/database` url (also `mariadb://`).
 ## `timeout_ms` is a parameter of the url (see `mysql/mysql.agc`).
 export def open_mysql(url: String) -> Result[Connection]
   handle = try Mysql.open(url)
-  return ok(Connection.Mysql(handle))
+  ok(Connection.Mysql(handle))
 end
 
 ## Closes the connection; closing it again does nothing.
@@ -120,9 +114,9 @@ export def query(
   timeout_ms: Int = CONNECTION_DEFAULT,
 ) -> Result[List[V.Row]]
   case conn
-    Connection.Sqlite(handle) -> return Sqlite.query(handle, sql, params, timeout_ms)
-    Connection.Postgres(handle) -> return Postgres.query(handle, sql, params, timeout_ms)
-    Connection.Mysql(handle) -> return Mysql.query(handle, sql, params, timeout_ms)
+    Connection.Sqlite(handle) -> Sqlite.query(handle, sql, params, timeout_ms)
+    Connection.Postgres(handle) -> Postgres.query(handle, sql, params, timeout_ms)
+    Connection.Mysql(handle) -> Mysql.query(handle, sql, params, timeout_ms)
   end
 end
 
@@ -134,9 +128,9 @@ export def execute(
   timeout_ms: Int = CONNECTION_DEFAULT,
 ) -> Result[Int]
   case conn
-    Connection.Sqlite(handle) -> return Sqlite.execute(handle, sql, params, timeout_ms)
-    Connection.Postgres(handle) -> return Postgres.execute(handle, sql, params, timeout_ms)
-    Connection.Mysql(handle) -> return Mysql.execute(handle, sql, params, timeout_ms)
+    Connection.Sqlite(handle) -> Sqlite.execute(handle, sql, params, timeout_ms)
+    Connection.Postgres(handle) -> Postgres.execute(handle, sql, params, timeout_ms)
+    Connection.Mysql(handle) -> Mysql.execute(handle, sql, params, timeout_ms)
   end
 end
 
@@ -144,9 +138,9 @@ end
 ## reads it from the state of the connection, without a round trip. A closed connection is not in one.
 export def in_transaction?(conn: Connection) -> Bool
   case conn
-    Connection.Sqlite(handle) -> return Sqlite.in_transaction?(handle)
-    Connection.Postgres(handle) -> return Postgres.in_transaction?(handle)
-    Connection.Mysql(handle) -> return Mysql.in_transaction?(handle)
+    Connection.Sqlite(handle) -> Sqlite.in_transaction?(handle)
+    Connection.Postgres(handle) -> Postgres.in_transaction?(handle)
+    Connection.Mysql(handle) -> Mysql.in_transaction?(handle)
   end
 end
 
@@ -155,9 +149,9 @@ end
 ## (`healthy?` asks the server). A pool checks it after a block, since a block can close or lose its connection.
 export def connected?(conn: Connection) -> Bool
   case conn
-    Connection.Sqlite(handle) -> return Sqlite.connected?(handle)
-    Connection.Postgres(handle) -> return Postgres.connected?(handle)
-    Connection.Mysql(handle) -> return Mysql.connected?(handle)
+    Connection.Sqlite(handle) -> Sqlite.connected?(handle)
+    Connection.Postgres(handle) -> Postgres.connected?(handle)
+    Connection.Mysql(handle) -> Mysql.connected?(handle)
   end
 end
 
@@ -167,16 +161,14 @@ end
 ## `in_transaction?`) before it reuses a connection. A closed or lost connection is not healthy.
 export def healthy?(conn: Connection) -> Bool
   case conn
-    Connection.Sqlite(handle) -> return Sqlite.healthy?(handle)
-    Connection.Postgres(handle) -> return Postgres.healthy?(handle)
-    Connection.Mysql(handle) -> return Mysql.healthy?(handle)
+    Connection.Sqlite(handle) -> Sqlite.healthy?(handle)
+    Connection.Postgres(handle) -> Postgres.healthy?(handle)
+    Connection.Mysql(handle) -> Mysql.healthy?(handle)
   end
 end
 
 ## Whether the failure message is the one of a statement that ran over its `timeout_ms`.
-export def timeout?(message: String) -> Bool
-  return TIMEOUT_PREFIXES.any? do |prefix| message.start_with?(prefix) end
-end
+export def timeout?(message: String) -> Bool = TIMEOUT_PREFIXES.any? do |prefix| message.start_with?(prefix) end
 
 ## Runs the block between the adapter's BEGIN and COMMIT and gives the value of the block's `ok`. An `error` from the
 ## block, or a failed COMMIT, rolls back and gives that error (with the ROLLBACK failure appended, if it failed too).
@@ -184,22 +176,20 @@ end
 ## connection rolls it back (for MySQL only `close` or the end of the process does).
 export def transaction[R](conn: Connection, body: Fn[Connection, Result[R]]) -> Result[R]
   # A nested call is refused by the BEGIN; it must not wait in line behind its own transaction.
-  if in_transaction?(conn)
-    return run_transaction(conn, conn, body)
-  end
+  return run_transaction(conn, conn, body) if in_transaction?(conn)
 
   opener = enter_gate(conn)
   done = run_transaction(opener, conn, body)
   leave_gate(conn)
-  return done
+  done
 end
 
 # A SQLite connection of a pool waits for its turn among the writers of the pool (see db_pool.agc); the connection for
 # its BEGIN.
 def enter_gate(conn: Connection) -> Connection
   case conn
-    Connection.Sqlite(handle) -> return Connection.Sqlite(Sqlite.enter_gate(handle))
-    _ -> return conn
+    Connection.Sqlite(handle) -> Connection.Sqlite(Sqlite.enter_gate(handle))
+    _ -> conn
   end
 end
 
@@ -215,24 +205,24 @@ def run_transaction[R](opener: Connection, conn: Connection, body: Fn[Connection
   try execute(opener, begin_sql(conn), [])
   done = body.call(conn)
   case done
-    ok(value) -> return commit(conn, value)
-    error(message) -> return abandon(conn, message)
+    ok(value) -> commit(conn, value)
+    error(message) -> abandon(conn, message)
   end
 end
 
 def commit[R](conn: Connection, value: R) -> Result[R]
   committed = execute(conn, "COMMIT", [])
   case committed
-    ok(_) -> return ok(value)
-    error(message) -> return abandon(conn, message)
+    ok(_) -> ok(value)
+    error(message) -> abandon(conn, message)
   end
 end
 
 def begin_sql(conn: Connection) -> String
   case conn
-    Connection.Sqlite(_) -> return Sqlite.BEGIN_SQL
-    Connection.Postgres(_) -> return Postgres.BEGIN_SQL
-    Connection.Mysql(_) -> return Mysql.BEGIN_SQL
+    Connection.Sqlite(_) -> Sqlite.BEGIN_SQL
+    Connection.Postgres(_) -> Postgres.BEGIN_SQL
+    Connection.Mysql(_) -> Mysql.BEGIN_SQL
   end
 end
 
@@ -240,14 +230,12 @@ end
 # no longer in a transaction is left alone: the engine ended it already (SQLite rolls back a write it interrupted), and
 # a ROLLBACK would fail with a message that hides the real error.
 def abandon[R](conn: Connection, message: String) -> Result[R]
-  if not in_transaction?(conn)
-    return error(message)
-  end
+  return error(message) if not in_transaction?(conn)
 
   rolled = execute(conn, "ROLLBACK", [])
   case rolled
-    ok(_) -> return error(message)
-    error(rollback_message) -> return error("#{message}; rollback failed: #{rollback_message}")
+    ok(_) -> error(message)
+    error(rollback_message) -> error("#{message}; rollback failed: #{rollback_message}")
   end
 end
 
@@ -258,17 +246,15 @@ def scheme(url: String) -> String
   case found
     some(at) ->
       name = url.slice(0, at)
-      if at > 0 and at <= MAX_SCHEME and name.bytes.to_a.all? do |byte| scheme_byte?(byte) end
-        return name
-      end
+      return name if at > 0 and at <= MAX_SCHEME and name.bytes.to_a.all? do |byte| scheme_byte?(byte) end
 
-      return "(none)"
-    none -> return "(none)"
+      "(none)"
+    none -> "(none)"
   end
 end
 
 # A letter, a digit, `+`, `-` or `.`.
 def scheme_byte?(byte: Int) -> Bool
   letter = (byte >= 97 and byte <= 122) or (byte >= 65 and byte <= 90)
-  return letter or (byte >= 48 and byte <= 57) or byte == 43 or byte == 45 or byte == 46
+  letter or (byte >= 48 and byte <= 57) or byte == 43 or byte == 45 or byte == 46
 end

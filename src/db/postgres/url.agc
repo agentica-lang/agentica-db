@@ -36,17 +36,15 @@ end
 
 ## Reads a url or a conninfo string.
 export def parse(text: String) -> Result[Target]
-  if URL_PREFIXES.any? do |prefix| text.start_with?(prefix) end
-    return strip_url(text)
-  end
+  return strip_url(text) if URL_PREFIXES.any? do |prefix| text.start_with?(prefix) end
 
-  return strip_conninfo(text)
+  strip_conninfo(text)
 end
 
 def strip_url(url: String) -> Result[Target]
   found = url.index_of("?")
   case found
-    none -> return ok(Target(conninfo: url))
+    none -> ok(Target(conninfo: url))
     some(at) ->
       base = url.slice(0, at)
       pairs = url.slice(at + 1, url.length - at - 1).split("&")
@@ -61,11 +59,9 @@ def strip_url(url: String) -> Result[Target]
         end
       end
 
-      if kept.empty?
-        return ok(target)
-      end
+      return ok(target) if kept.empty?
 
-      return ok(target.with(conninfo: "#{base}?#{kept.join("&")}"))
+      ok(target.with(conninfo: "#{base}?#{kept.join("&")}"))
   end
 end
 
@@ -79,9 +75,7 @@ def strip_conninfo(text: String) -> Result[Target]
   while at < chars.size
     key_to = key_end(chars, at)
     equals = skip_blanks(chars, key_to)
-    if equals >= chars.size or chars[equals] != "="
-      return ok(Target(conninfo: text))
-    end
+    return ok(Target(conninfo: text)) if equals >= chars.size or chars[equals] != "="
 
     value_from = skip_blanks(chars, equals + 1)
     value_to = value_end(chars, value_from)
@@ -95,7 +89,7 @@ def strip_conninfo(text: String) -> Result[Target]
     at = skip_blanks(chars, value_to)
   end
 
-  return ok(target.with(conninfo: kept.join(" ")))
+  ok(target.with(conninfo: kept.join(" ")))
 end
 
 def apply(target: Target, key: String, value: String) -> Result[Target]
@@ -107,7 +101,7 @@ def apply(target: Target, key: String, value: String) -> Result[Target]
     return ok(target.with(batch_rows: try read_bounded(value, key, 1, MAX_BATCH_ROWS)))
   end
 
-  return ok(target.with(batch_bytes: try read_bounded(value, key, 1, MAX_BATCH_BYTES)))
+  ok(target.with(batch_bytes: try read_bounded(value, key, 1, MAX_BATCH_BYTES)))
 end
 
 # A whole number of up to MAX_DIGITS digits from `low` to `high`.
@@ -119,20 +113,14 @@ def read_bounded(text: String, name: String, low: Int, high: Int) -> Result[Int]
   end
 
   n = text.to_i.unwrap_or(0)
-  if n < low
-    return error("postgres error: the url #{name} is below #{low}: #{n}")
-  end
+  return error("postgres error: the url #{name} is below #{low}: #{n}") if n < low
 
-  if n > high
-    return error("postgres error: the url #{name} is over #{high}: #{n}")
-  end
+  return error("postgres error: the url #{name} is over #{high}: #{n}") if n > high
 
-  return ok(n)
+  ok(n)
 end
 
-def join(chars: List[String], from: Int, to: Int) -> String
-  return chars.drop(from).take(to - from).join("")
-end
+def join(chars: List[String], from: Int, to: Int) -> String = chars.drop(from).take(to - from).join("")
 
 def skip_blanks(chars: List[String], from: Int) -> Int
   at = from
@@ -140,7 +128,7 @@ def skip_blanks(chars: List[String], from: Int) -> Int
     at += 1
   end
 
-  return at
+  at
 end
 
 def key_end(chars: List[String], from: Int) -> Int
@@ -149,7 +137,7 @@ def key_end(chars: List[String], from: Int) -> Int
     at += 1
   end
 
-  return at
+  at
 end
 
 # The index after the value that starts at `from`.
@@ -172,21 +160,19 @@ def value_end(chars: List[String], from: Int) -> Int
     end
   end
 
-  return chars.size
+  chars.size
 end
 
 def unquote(value: String) -> String
-  if value.length >= 2 and value.start_with?("'") and value.end_with?("'")
-    return value.slice(1, value.length - 2)
-  end
+  return value.slice(1, value.length - 2) if value.length >= 2 and value.start_with?("'") and value.end_with?("'")
 
-  return value
+  value
 end
 
 # An `@` or a `/` in the value means that the `?` was meant as a character of the user or the password.
 def read_milliseconds(text: String) -> Result[Int]
   case Milliseconds.parse(text)
-    some(n) -> return ok(n)
+    some(n) -> ok(n)
     none ->
       if text.include?("@") or text.include?("/")
         return error(
@@ -194,6 +180,6 @@ def read_milliseconds(text: String) -> Result[Int]
         )
       end
 
-      return error("postgres error: the url #{PARAMETER} is not a number of milliseconds")
+      error("postgres error: the url #{PARAMETER} is not a number of milliseconds")
   end
 end

@@ -46,11 +46,9 @@ export def where_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
     params = params.concat(piece.params)
   end
 
-  if texts.empty?
-    return ok(Piece(sql: "", params: []))
-  end
+  return ok(Piece(sql: "", params: [])) if texts.empty?
 
-  return ok(Piece(sql: " where #{texts.join(" and ")}", params: params))
+  ok(Piece(sql: " where #{texts.join(" and ")}", params: params))
 end
 
 ## ` order by a, b desc limit ? offset ?`, with only the parts the plan has.
@@ -81,30 +79,26 @@ export def tail_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
     params = params.push(Db.Value.Int(plan.offset))
   end
 
-  return ok(Piece(sql: sql, params: params))
+  ok(Piece(sql: sql, params: params))
 end
 
 ## Whether the plan has an order, a limit or an offset.
-export def paged?(plan: Plan) -> Bool
-  return not plan.orders.empty? or plan.limit >= 0 or plan.offset > 0
-end
+export def paged?(plan: Plan) -> Bool = not plan.orders.empty? or plan.limit >= 0 or plan.offset > 0
 
 def max_rows(plan: Plan) -> Int
-  if plan.limit >= 0
-    return plan.limit
-  end
+  return plan.limit if plan.limit >= 0
 
-  return NO_LIMIT
+  NO_LIMIT
 end
 
 def cond_piece(conn: Db.Connection, cond: Cond) -> Result[Piece]
   case cond
-    Cond.Eq(column, Db.Value.Null) -> return ok(Piece(sql: "#{try Dialect.quote(conn, column)} is null", params: []))
-    Cond.Eq(column, value) -> return ok(Piece(sql: "#{try Dialect.quote(conn, column)} = ?", params: [value]))
-    Cond.In(_, values) if values.empty? -> return ok(Piece(sql: "1 = 0", params: []))
+    Cond.Eq(column, Db.Value.Null) -> ok(Piece(sql: "#{try Dialect.quote(conn, column)} is null", params: []))
+    Cond.Eq(column, value) -> ok(Piece(sql: "#{try Dialect.quote(conn, column)} = ?", params: [value]))
+    Cond.In(_, values) if values.empty? -> ok(Piece(sql: "1 = 0", params: []))
     Cond.In(column, values) ->
       marks = values.map do |_value| "?" end.join(", ")
-      return ok(Piece(sql: "#{try Dialect.quote(conn, column)} in (#{marks})", params: values))
-    Cond.Raw(sql, params) -> return ok(Piece(sql: "(#{sql})", params: params))
+      ok(Piece(sql: "#{try Dialect.quote(conn, column)} in (#{marks})", params: values))
+    Cond.Raw(sql, params) -> ok(Piece(sql: "(#{sql})", params: params))
   end
 end

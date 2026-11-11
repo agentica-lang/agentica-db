@@ -52,7 +52,7 @@ end
 ## The schema of `table` for the struct whose `codec` is given: `Orm.schema("users", User.codec)`. The members come
 ## from the codec (`codec.members`). Nothing is checked here; `check` does.
 export def schema[T](table: String, codec: Codec[T]) -> Schema[T]
-  return Schema(table: table, members: codec.members, codec: codec)
+  Schema(table: table, members: codec.members, codec: codec)
 end
 
 ## The kind of the failure a text describes, so that a handler can `case` on it: `Error.BadRequest` (a column, a value
@@ -60,20 +60,14 @@ end
 ## `Error.NotDecodable` (a row that does not fit its struct), `Error.Schema` (a schema that is not sound) and
 ## `Error.Database` (any other error of the database, or of the Orm's own bookkeeping). The text is what an Orm
 ## function gave in its `error`, or what `Db` gave.
-export def classify(message: String) -> Errors.Error
-  return Errors.classify(message)
-end
+export def classify(message: String) -> Errors.Error = Errors.classify(message)
 
 ## The name of the kind: `BadRequest`, `Conflict`, `NotDecodable`, `Schema` or `Database`. It is for logs and tests;
 ## code should `case` on the `Error`.
-export def kind(failure: Errors.Error) -> String
-  return Errors.kind(failure)
-end
+export def kind(failure: Errors.Error) -> String = Errors.kind(failure)
 
 ## The message of the failure, for a log.
-export def message(failure: Errors.Error) -> String
-  return Errors.message(failure)
-end
+export def message(failure: Errors.Error) -> String = Errors.message(failure)
 
 ## Checks the schema and then the table: the names are plain identifiers, every field is a type a column can hold,
 ## the key is a field that cannot be NULL, and the table has every column. Run it once at start up. It reads no row.
@@ -84,7 +78,7 @@ export def check[T](conn: Db.Connection, schema: Schema[T]) -> Result[Void]
   columns = try columns_sql(conn, schema)
   table = try quoted(conn, schema, schema.table)
   try Db.query(conn, "select #{columns} from #{table} where 1 = 0", [])
-  return ok()
+  ok()
 end
 
 ## Runs the sql and reads each row into a `T`. The sql is yours, with `?` for the parameters; the columns it names
@@ -96,7 +90,7 @@ export def query[T](conn: Db.Connection, schema: Schema[T], sql: String, params:
     found = found.push(try read(schema, row))
   end
 
-  return ok(found)
+  ok(found)
 end
 
 ## Runs the sql and reads each row with `decode`, for a result that is not one struct (a join, a count). The error
@@ -113,7 +107,7 @@ export def query_as[R](
     found = found.push(try decode.call(row))
   end
 
-  return ok(found)
+  ok(found)
 end
 
 ## The row whose key is `id`: `some(row)`, or `none` when there is no such row (a 404, not a 500). The `id` must be
@@ -121,19 +115,17 @@ end
 export def find[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Result[Optional[T]]
   try valid(schema)
   try key_kind(schema, id)
-  return one(where_eq(from(schema), schema.primary_key, id), conn)
+  one(where_eq(from(schema), schema.primary_key, id), conn)
 end
 
 ## An empty query over the schema: every row, in the order of the database.
-export def from[T](schema: Schema[T]) -> Query[T]
-  return Query(schema: schema, plan: Build.Plan())
-end
+export def from[T](schema: Schema[T]) -> Query[T] = Query(schema: schema, plan: Build.Plan())
 
 ## Keeps the rows for which `sql` holds, with `?` for the `params`. The sql is yours (a constant of your program, as
 ## for `query`): a column of a request must go through `where_eq` or `where_in`, which check it. All the conditions
 ## must hold.
 export def where[T](q: Query[T], sql: String, params: List[Db.Value]) -> Query[T]
-  return with_cond(q, Build.Cond.Raw(sql, params))
+  with_cond(q, Build.Cond.Raw(sql, params))
 end
 
 ## Keeps the rows whose `column` equals `value`; `Db.Value.Null` keeps the rows where it is NULL (only for an
@@ -141,14 +133,12 @@ end
 ## finite Float.
 export def where_eq[T](q: Query[T], column: String, value: Db.Value) -> Query[T]
   case member_of(q.schema, column)
-    error(message) -> return failed(q, message)
+    error(message) -> failed(q, message)
     ok(member) ->
       problem = value_problem(member, value)
-      if not problem.empty?
-        return failed(q, problem)
-      end
+      return failed(q, problem) if not problem.empty?
 
-      return with_cond(q, Build.Cond.Eq(column, value))
+      with_cond(q, Build.Cond.Eq(column, value))
   end
 end
 
@@ -157,7 +147,7 @@ end
 ## limit of placeholders of the database, which is an error of the database.
 export def where_in[T](q: Query[T], column: String, values: List[Db.Value]) -> Query[T]
   case member_of(q.schema, column)
-    error(message) -> return failed(q, message)
+    error(message) -> failed(q, message)
     ok(member) ->
       for value in values
         problem = value_problem(member, value)
@@ -168,36 +158,28 @@ export def where_in[T](q: Query[T], column: String, values: List[Db.Value]) -> Q
         end
       end
 
-      return with_cond(q, Build.Cond.In(column, values))
+      with_cond(q, Build.Cond.In(column, values))
   end
 end
 
 ## Orders by `column`, after the columns already given. The column must be in the schema.
-export def order_by[T](q: Query[T], column: String) -> Query[T]
-  return ordered(q, column, false)
-end
+export def order_by[T](q: Query[T], column: String) -> Query[T] = ordered(q, column, false)
 
 ## Orders by `column`, largest first.
-export def order_by_desc[T](q: Query[T], column: String) -> Query[T]
-  return ordered(q, column, true)
-end
+export def order_by_desc[T](q: Query[T], column: String) -> Query[T] = ordered(q, column, true)
 
 ## Keeps the first `count` rows of the order. A negative count is an error.
 export def limit[T](q: Query[T], count: Int) -> Query[T]
-  if count < 0
-    return failed(q, "limit must not be negative")
-  end
+  return failed(q, "limit must not be negative") if count < 0
 
-  return q.with(plan: q.plan.with(limit: count))
+  q.with(plan: q.plan.with(limit: count))
 end
 
 ## Skips the first `count` rows of the order. A negative count is an error.
 export def offset[T](q: Query[T], count: Int) -> Query[T]
-  if count < 0
-    return failed(q, "offset must not be negative")
-  end
+  return failed(q, "offset must not be negative") if count < 0
 
-  return q.with(plan: q.plan.with(offset: count))
+  q.with(plan: q.plan.with(offset: count))
 end
 
 ## The rows of the query, each read into a `T`. Without `order_by` the order is the one of the database.
@@ -208,17 +190,15 @@ export def all[T](q: Query[T], conn: Db.Connection) -> Result[List[T]]
   where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
   tail = try builder(Build.tail_piece(conn, q.plan), q.schema)
   sql = "select #{columns} from #{table}#{where_part.sql}#{tail.sql}"
-  return query(conn, q.schema, sql, where_part.params.concat(tail.params))
+  query(conn, q.schema, sql, where_part.params.concat(tail.params))
 end
 
 ## The first row of the query: `some(row)`, or `none` when no row is kept.
 export def one[T](q: Query[T], conn: Db.Connection) -> Result[Optional[T]]
   rows = try all(q.with(plan: q.plan.with(limit: smaller(q.plan.limit, 1))), conn)
-  if rows.empty?
-    return ok(none)
-  end
+  return ok(none) if rows.empty?
 
-  return ok(some(rows[0]))
+  ok(some(rows[0]))
 end
 
 ## The number of rows the conditions keep; the order, the limit and the offset do not count.
@@ -228,8 +208,8 @@ export def count[T](q: Query[T], conn: Db.Connection) -> Result[Int]
   where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
   rows = try Db.query(conn, "select count(*) as n from #{table}#{where_part.sql}", where_part.params)
   case rows[0]["n"]
-    Db.Value.Int(n) -> return ok(n)
-    _ -> return broken(q.schema, "the database gave no count")
+    Db.Value.Int(n) -> ok(n)
+    _ -> broken(q.schema, "the database gave no count")
   end
 end
 
@@ -243,7 +223,7 @@ export def update_all[T](q: Query[T], conn: Db.Connection, changes: Json) -> Res
   table = try quoted(conn, q.schema, q.schema.table)
   where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
   sql = "update #{table} set #{sets.sql.join(", ")}#{where_part.sql}"
-  return Db.execute(conn, sql, sets.params.concat(where_part.params))
+  Db.execute(conn, sql, sets.params.concat(where_part.params))
 end
 
 ## Deletes every row the conditions keep and gives the rows removed. A query with no condition is an error (see
@@ -253,7 +233,7 @@ export def delete_all[T](q: Query[T], conn: Db.Connection) -> Result[Int]
   try guarded(q, "delete_all")
   table = try quoted(conn, q.schema, q.schema.table)
   where_part = try builder(Build.where_piece(conn, q.plan), q.schema)
-  return Db.execute(conn, "delete from #{table}#{where_part.sql}", where_part.params)
+  Db.execute(conn, "delete from #{table}#{where_part.sql}", where_part.params)
 end
 
 ## Inserts the row of `value` and gives it back as the database stored it. A generated key is left out of the insert
@@ -278,9 +258,7 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
     end
   end
 
-  if names.empty?
-    return refuse(schema, "no column to insert")
-  end
+  return refuse(schema, "no column to insert") if names.empty?
 
   table = try quoted(conn, schema, schema.table)
   marks = params.map do |_param| "?" end.join(", ")
@@ -291,7 +269,7 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
   end
 
   try Db.execute(conn, sql, params)
-  return reload(conn, schema, key)
+  reload(conn, schema, key)
 end
 
 ## Sets every column of the row whose key is the key of `value` and gives the rows changed, 0 when there is no such
@@ -313,11 +291,9 @@ export def update[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
     end
   end
 
-  if sets.empty?
-    return refuse(schema, "no column to update")
-  end
+  return refuse(schema, "no column to update") if sets.empty?
 
-  return update_by_key(conn, schema, sets, params.push(key))
+  update_by_key(conn, schema, sets, params.push(key))
 end
 
 ## Deletes the row whose key is `id` and gives the rows removed, 0 when there is no such row. The `id` must be the
@@ -327,7 +303,7 @@ export def delete[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Re
   try key_kind(schema, id)
   table = try quoted(conn, schema, schema.table)
   key = try quoted(conn, schema, schema.primary_key)
-  return Db.execute(conn, "delete from #{table} where #{key} = ?", [id])
+  Db.execute(conn, "delete from #{table} where #{key} = ?", [id])
 end
 
 ## Changes the columns for the keys that `changes` has, in the row whose key is `id`, and gives the rows changed (0
@@ -339,14 +315,14 @@ export def patch[T](conn: Db.Connection, schema: Schema[T], id: Db.Value, change
   try valid(schema)
   try key_kind(schema, id)
   sets = try change_sets(conn, schema, changes)
-  return update_by_key(conn, schema, sets.sql, sets.params.push(id))
+  update_by_key(conn, schema, sets.sql, sets.params.push(id))
 end
 
 # The name in quotes; a name that is not a plain identifier is an error of the Orm.
 def quoted[T](conn: Db.Connection, schema: Schema[T], name: String) -> Result[String]
   case Dialect.quote(conn, name)
-    ok(text) -> return ok(text)
-    error(message) -> return unsound(schema, message)
+    ok(text) -> ok(text)
+    error(message) -> unsound(schema, message)
   end
 end
 
@@ -354,9 +330,9 @@ end
 def generated_key[T](conn: Db.Connection, schema: Schema[T], sql: String, params: List[Db.Value]) -> Result[Int]
   column = try quoted(conn, schema, schema.primary_key)
   case Dialect.insert_generated(conn, sql, params, column)
-    ok(id) -> return ok(id)
-    error(message) if message == Dialect.NO_KEY -> return broken(schema, message)
-    error(message) -> return error(message)
+    ok(id) -> ok(id)
+    error(message) if message == Dialect.NO_KEY -> broken(schema, message)
+    error(message) -> error(message)
   end
 end
 
@@ -368,42 +344,40 @@ def key_kind[T](schema: Schema[T], id: Db.Value) -> Result[Void]
     return refuse(schema, "the key #{schema.primary_key} has type #{keys[0].type}, not #{RowCodec.value_kind(id)}")
   end
 
-  return ok()
+  ok()
 end
 
 def bound[T](schema: Schema[T], member: StructMember, json: Json) -> Result[Db.Value]
   case RowCodec.to_value(member, json)
-    ok(value) -> return ok(value)
-    error(message) -> return refuse(schema, message)
+    ok(value) -> ok(value)
+    error(message) -> refuse(schema, message)
   end
 end
 
 def or_fail[T](schema: Schema[T], found: Result[Json], message: String) -> Result[Json]
   case found
-    ok(json) -> return ok(json)
-    error(_) -> return refuse(schema, message)
+    ok(json) -> ok(json)
+    error(_) -> refuse(schema, message)
   end
 end
 
 # The text of a Json value. It relies on `JSON.encode` writing the keys of a parsed object in sorted order (and the
 # parse of the encode gives a parsed object), so two objects with the same entries have the same text, whatever order
 # their keys came in.
-def canonical(json: Json) -> Result[String]
-  return ok(JSON.encode(try JSON.parse(JSON.encode(json))))
-end
+def canonical(json: Json) -> Result[String] = ok(JSON.encode(try JSON.parse(JSON.encode(json))))
 
 # Runs `update` with the `sets` (`"name = ?"`) over the row whose key is the last of the params.
 def update_by_key[T](conn: Db.Connection, schema: Schema[T], sets: List[String], params: List[Db.Value]) -> Result[Int]
   table = try quoted(conn, schema, schema.table)
   column = try quoted(conn, schema, schema.primary_key)
-  return Db.execute(conn, "update #{table} set #{sets.join(", ")} where #{column} = ?", params)
+  Db.execute(conn, "update #{table} set #{sets.join(", ")} where #{column} = ?", params)
 end
 
 # The row of the key, read again with all the columns of the schema.
 def reload[T](conn: Db.Connection, schema: Schema[T], key: Db.Value) -> Result[T]
   case try find(conn, schema, key)
-    some(row) -> return ok(row)
-    none -> return broken(schema, "the inserted row was not found by its key #{schema.primary_key}")
+    some(row) -> ok(row)
+    none -> broken(schema, "the inserted row was not found by its key #{schema.primary_key}")
   end
 end
 
@@ -414,101 +388,85 @@ def columns_sql[T](conn: Db.Connection, schema: Schema[T]) -> Result[String]
     names = names.push(try quoted(conn, schema, member.name))
   end
 
-  return ok(names.join(", "))
+  ok(names.join(", "))
 end
 
 # The smaller of a limit (-1 for none) and `most`, so `one` keeps a limit of 0.
 def smaller(limit: Int, most: Int) -> Int
-  if limit >= 0 and limit < most
-    return limit
-  end
+  return limit if limit >= 0 and limit < most
 
-  return most
+  most
 end
 
-def with_cond[T](q: Query[T], cond: Build.Cond) -> Query[T]
-  return q.with(plan: q.plan.with(conds: q.plan.conds.push(cond)))
-end
+def with_cond[T](q: Query[T], cond: Build.Cond) -> Query[T] = q.with(plan: q.plan.with(conds: q.plan.conds.push(cond)))
 
 def ordered[T](q: Query[T], column: String, desc: Bool) -> Query[T]
   case member_of(q.schema, column)
-    error(message) -> return failed(q, message)
-    ok(_) -> return q.with(plan: q.plan.with(orders: q.plan.orders.push(Build.Order(column: column, desc: desc))))
+    error(message) -> failed(q, message)
+    ok(_) -> q.with(plan: q.plan.with(orders: q.plan.orders.push(Build.Order(column: column, desc: desc))))
   end
 end
 
 # The query with the first problem it met: later ones do not replace it.
 def failed[T](q: Query[T], message: String) -> Query[T]
-  if q.failure.empty?
-    return q.with(failure: message)
-  end
+  return q.with(failure: message) if q.failure.empty?
 
-  return q
+  q
 end
 
 def member_of[T](schema: Schema[T], column: String) -> Result[StructMember]
   found = schema.members.select do |member| member.name == column end
-  if found.empty?
-    return error("#{column} is not a column of the table")
-  end
+  return error("#{column} is not a column of the table") if found.empty?
 
-  return ok(found[0])
+  ok(found[0])
 end
 
 # What is wrong with a value for a column, or an empty text when nothing: its kind, or a Float that is not finite.
 def value_problem(member: StructMember, value: Db.Value) -> String
-  if not RowCodec.accepts?(member.type, value)
-    return wrong_kind("column", member, value)
-  end
+  return wrong_kind("column", member, value) if not RowCodec.accepts?(member.type, value)
 
   case value
-    Db.Value.Float(x) if x - x != 0.0 -> return "#{member.name}: not a finite Float"
-    _ -> return ""
+    Db.Value.Float(x) if x - x != 0.0 -> "#{member.name}: not a finite Float"
+    _ -> ""
   end
 end
 
 def wrong_kind(what: String, member: StructMember, value: Db.Value) -> String
-  return "the #{what} #{member.name} has type #{member.type}, not #{RowCodec.value_kind(value)}"
+  "the #{what} #{member.name} has type #{member.type}, not #{RowCodec.value_kind(value)}"
 end
 
 # What every end of a query checks first: the problem met while it was built, and the schema.
 def ready[T](q: Query[T]) -> Result[Void]
-  if not q.failure.empty?
-    return refuse(q.schema, q.failure)
-  end
+  return refuse(q.schema, q.failure) if not q.failure.empty?
 
-  return valid(q.schema)
+  valid(q.schema)
 end
 
 # A write over a set of rows is one statement with no order or page (a delete with a limit is not portable), and it
 # has a condition: a query whose filters were all skipped must not change the whole table. `Orm.where(q, "1 = 1", [])`
 # says that every row is meant.
 def guarded[T](q: Query[T], what: String) -> Result[Void]
-  if Build.paged?(q.plan)
-    return refuse(q.schema, "#{what} cannot use order_by, limit or offset")
-  end
+  return refuse(q.schema, "#{what} cannot use order_by, limit or offset") if Build.paged?(q.plan)
 
   if q.plan.conds.empty?
     return refuse(q.schema, "#{what} needs a condition; to touch every row on purpose add Orm.where(q, \"1 = 1\", [])")
   end
 
-  return ok()
+  ok()
 end
 
 # The sql of the builder is made of names the schema vouched for, but `Dialect.quote` still refuses a bad one.
 def builder[T](found: Result[Build.Piece], schema: Schema[T]) -> Result[Build.Piece]
   case found
-    ok(piece) -> return ok(piece)
-    error(message) -> return unsound(schema, message)
+    ok(piece) -> ok(piece)
+    error(message) -> unsound(schema, message)
   end
 end
 
 # The `name = ?` pieces for the keys of `changes` (a Json object): the columns of the schema, not the key, with values
 # of the kind of the field.
 def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Result[Sets]
-  if JSON.kind(changes) != "object"
-    return refuse(schema, "the changes are not a JSON object")
-  end
+  return refuse(schema, "the changes are not a JSON object") if JSON.kind(changes) != "object"
 
   sets: List[String] = []
   params: List[Db.Value] = []
@@ -529,29 +487,25 @@ def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: Json) -> Res
     return refuse(schema, "the changes have a key that is not a column")
   end
 
-  if sets.empty?
-    return refuse(schema, "no column to change")
-  end
+  return refuse(schema, "no column to change") if sets.empty?
 
-  return ok(Sets(sql: sets, params: params))
+  ok(Sets(sql: sets, params: params))
 end
 
 def read[T](schema: Schema[T], row: Db.Row) -> Result[T]
   json = RowCodec.to_json(schema.members, row)
   case json
-    error(message) -> return undecodable(schema, message)
+    error(message) -> undecodable(schema, message)
     ok(object) ->
       case schema.codec.decode(object)
-        ok(value) -> return ok(value)
-        error(message) -> return undecodable(schema, message)
+        ok(value) -> ok(value)
+        error(message) -> undecodable(schema, message)
       end
   end
 end
 
 def valid[T](schema: Schema[T]) -> Result[Void]
-  if not Dialect.valid_name?(schema.table)
-    return unsound(schema, "the table name is not a plain identifier")
-  end
+  return unsound(schema, "the table name is not a plain identifier") if not Dialect.valid_name?(schema.table)
 
   for member in schema.members
     if not Dialect.valid_name?(member.name)
@@ -564,9 +518,7 @@ def valid[T](schema: Schema[T]) -> Result[Void]
   end
 
   keys = schema.members.select do |member| member.name == schema.primary_key end
-  if keys.empty?
-    return unsound(schema, "the primary key #{schema.primary_key} is not a column")
-  end
+  return unsound(schema, "the primary key #{schema.primary_key} is not a column") if keys.empty?
 
   # A NULL key would bind as NULL in `update`, `delete` and `find` and match no row, with no error.
   if RowCodec.nullable?(keys[0].type)
@@ -577,23 +529,23 @@ def valid[T](schema: Schema[T]) -> Result[Void]
     return unsound(schema, "the generated key #{schema.primary_key} must be an Int")
   end
 
-  return ok()
+  ok()
 end
 
 # The failures of the Orm, by kind (`classify` reads the kind back): the caller got something wrong, the schema is
 # not sound, a row does not fit its struct, or the database did not do what the Orm needs.
 def refuse[T, R](schema: Schema[T], message: String) -> Result[R]
-  return error(Errors.text(Errors.BAD_REQUEST, schema.table, message))
+  error(Errors.text(Errors.BAD_REQUEST, schema.table, message))
 end
 
 def unsound[T, R](schema: Schema[T], message: String) -> Result[R]
-  return error(Errors.text(Errors.SCHEMA, schema.table, message))
+  error(Errors.text(Errors.SCHEMA, schema.table, message))
 end
 
 def undecodable[T, R](schema: Schema[T], message: String) -> Result[R]
-  return error(Errors.text(Errors.DECODE, schema.table, message))
+  error(Errors.text(Errors.DECODE, schema.table, message))
 end
 
 def broken[T, R](schema: Schema[T], message: String) -> Result[R]
-  return error(Errors.text(Errors.DATABASE, schema.table, message))
+  error(Errors.text(Errors.DATABASE, schema.table, message))
 end

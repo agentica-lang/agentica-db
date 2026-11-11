@@ -10,9 +10,7 @@ DIGIT_NINE = 57
 export def parse(text: String) -> Optional[Int]
   bytes = text.bytes.to_a
   not_digits = bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end
-  if bytes.empty? or bytes.size > MAX_DIGITS or not_digits
-    return none
-  end
+  return none if bytes.empty? or bytes.size > MAX_DIGITS or not_digits
 
-  return some(text.to_i.unwrap_or(0))
+  some(text.to_i.unwrap_or(0))
 end

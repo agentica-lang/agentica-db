@@ -72,17 +72,15 @@ end
 export def open(conninfo: String) -> Result[Handle]
   try load_library()
   case pq_connectdb(conninfo)
-    error(_) -> return error("postgres error: out of memory")
+    error(_) -> error("postgres error: out of memory")
     ok(handle) ->
       try check_connection(handle)
-      return ok(handle)
+      ok(handle)
   end
 end
 
 ## PQstatus and PQtransactionStatus of the connection, as `status * 16 + transaction status`.
-export def status(handle: Handle) -> Int
-  return pq_status(handle) * 16 + pq_transaction_status(handle)
-end
+export def status(handle: Handle) -> Int = pq_status(handle) * 16 + pq_transaction_status(handle)
 
 ## Runs one statement with bound parameters and gives its rows. Two columns with one name are an error.
 export def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
@@ -95,7 +93,7 @@ export def query(handle: Handle, sql: String, params: List[Value]) -> Result[Lis
 
   rows = read_rows(res, names)
   pq_clear(res)
-  return rows
+  rows
 end
 
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
@@ -103,51 +101,45 @@ export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[I
   res = try run(handle, sql, params)
   changed = changed_rows(res)
   pq_clear(res)
-  return changed
+  changed
 end
 
 # A library that is missing is an error here, not a stop of the program at the first call.
 def load_library() -> Result[Void]
   case Native.load("pq")
-    error(message) -> return error("postgres error: cannot load the libpq library: #{message}")
-    ok(_) -> return ok()
+    error(message) -> error("postgres error: cannot load the libpq library: #{message}")
+    ok(_) -> ok()
   end
 end
 
 # Frees the connection when it does not work: a failed connect still gives a PGconn that holds the error.
 def check_connection(conn: Handle) -> Result[Void]
-  if pq_status(conn) != CONNECTION_OK
-    return abandon(conn)
-  end
+  return abandon(conn) if pq_status(conn) != CONNECTION_OK
 
   # Text results are read as UTF-8 whatever the server or the environment default to.
-  if pq_set_client_encoding(conn, "UTF8") != CLIENT_ENCODING_SET
-    return abandon(conn)
-  end
+  return abandon(conn) if pq_set_client_encoding(conn, "UTF8") != CLIENT_ENCODING_SET
 
-  return ok()
+  ok()
 end
 
 def abandon(conn: Handle) -> Result[Void]
   message = pq_error_message(conn).strip
   Native.close(conn)
-  return error("postgres error: #{message}")
+  error("postgres error: #{message}")
 end
 
 def repeated_name(names: List[String]) -> String
   counts = names.tally
-  return names.find do |name| counts[name] > 1 end.unwrap_or("")
+  names.find do |name| counts[name] > 1 end.unwrap_or("")
 end
 
 # The result of a statement that succeeded. The caller clears it. The adapter has checked that the handle is open.
 def run(handle: Handle, sql: String, params: List[Value]) -> Result[C.Pointer]
   translated = try PostgresStatement.check(sql, params, pq_transaction_status(handle))
   res = exec_params(handle, translated.sql, params)
-  if Native.null?(res)
-    return error("postgres error: #{pq_error_message(handle).strip}")
-  end
+  return error("postgres error: #{pq_error_message(handle).strip}") if Native.null?(res)
 
-  return accept(handle, res, translated.verb)
+  accept(handle, res, translated.verb)
 end
 
 # Parameters travel as text and the server infers their types from the sql. A NULL entry of the value array is
@@ -165,15 +157,13 @@ def exec_params(conn: Handle, sql: String, params: List[Value]) -> C.Pointer
     sent
   end
 
-  return res
+  res
 end
 
 def max_one(count: Int) -> Int
-  if count < 1
-    return 1
-  end
+  return 1 if count < 1
 
-  return count
+  count
 end
 
 def fill_values(values: C.Pointer, params: List[Value]) -> List[C.Pointer]
@@ -192,22 +182,20 @@ def fill_values(values: C.Pointer, params: List[Value]) -> List[C.Pointer]
     index += 1
   end
 
-  return owned
+  owned
 end
 
 def put_text(values: C.Pointer, index: Int, text: String) -> C.Pointer
   buffer = Native.memory_pointer(text.bytesize + 1)
   Native.put_string(buffer, 0, text)
   Native.put_pointer(values, index * POINTER_SIZE, buffer)
-  return buffer
+  buffer
 end
 
 def bool_text(flag: Bool) -> String
-  if flag
-    return "t"
-  end
+  return "t" if flag
 
-  return "f"
+  "f"
 end
 
 # The spellings of the server for the values that Float#to_s writes as +inf.0, -inf.0 and +nan.0.
@@ -221,22 +209,20 @@ def float_text(x: Float) -> String
     return "NaN"
   end
 
-  return text
+  text
 end
 
 # The hex input form of bytea: a backslash, an x and two digits per byte.
 def bytea_text(bytes: Bytes) -> String
   digits = HEX_DIGITS.split("")
   pairs = bytes.to_a.map do |byte| digits[byte / HEX_BASE] + digits[byte % HEX_BASE] end
-  return "\\x" + pairs.join("")
+  "\\x" + pairs.join("")
 end
 
 # Gives the result of a statement that succeeded; any other result is cleared and becomes the error.
 def accept(conn: Handle, res: C.Pointer, verb: String) -> Result[C.Pointer]
   status = pq_result_status(res)
-  if status == PGRES_COMMAND_OK or status == PGRES_TUPLES_OK
-    return check_commit(res, verb)
-  end
+  return check_commit(res, verb) if status == PGRES_COMMAND_OK or status == PGRES_TUPLES_OK
 
   if status == PGRES_EMPTY_QUERY
     pq_clear(res)
@@ -251,15 +237,15 @@ def accept(conn: Handle, res: C.Pointer, verb: String) -> Result[C.Pointer]
 
   message = failure(conn, res)
   pq_clear(res)
-  return error(message)
+  error(message)
 end
 
 def check_commit(res: C.Pointer, verb: String) -> Result[C.Pointer]
   case PostgresStatement.check_commit(pq_cmd_status(res), verb)
-    ok(_) -> return ok(res)
+    ok(_) -> ok(res)
     error(message) ->
       pq_clear(res)
-      return error(message)
+      error(message)
   end
 end
 
@@ -267,11 +253,9 @@ end
 def failure(conn: Handle, res: C.Pointer) -> String
   code = pq_result_error_field(res, PG_DIAG_SQLSTATE)
   message = pq_result_error_field(res, PG_DIAG_MESSAGE_PRIMARY)
-  if code == ""
-    return "postgres error: #{pq_error_message(conn).strip}"
-  end
+  return "postgres error: #{pq_error_message(conn).strip}" if code == ""
 
-  return "postgres error #{code}: #{message}"
+  "postgres error #{code}: #{message}"
 end
 
 # A statement that starts a COPY leaves the connection in copy mode: end it, then read the results that follow.
@@ -292,9 +276,7 @@ end
 def skip_copy_data(conn: Handle) -> Void
   while true
     read = pq_get_copy_data(conn, COPY_BLOCKING)
-    if read.result <= NO_MORE_COPY_DATA
-      return
-    end
+    return if read.result <= NO_MORE_COPY_DATA
 
     pq_freemem(read.data)
   end
@@ -303,16 +285,12 @@ end
 # The rows an INSERT, UPDATE, DELETE or MERGE changed; anything else changed none.
 def changed_rows(res: C.Pointer) -> Result[Int]
   verb = pq_cmd_status(res).split(" ")[0]
-  if not COUNTING_TAGS.include?(verb)
-    return ok(0)
-  end
+  return ok(0) if not COUNTING_TAGS.include?(verb)
 
   counted = pq_cmd_tuples(res)
-  if counted == ""
-    return ok(0)
-  end
+  return ok(0) if counted == ""
 
-  return counted.to_i
+  counted.to_i
 end
 
 def column_names(res: C.Pointer) -> List[String]
@@ -321,7 +299,7 @@ def column_names(res: C.Pointer) -> List[String]
     names = names.push(pq_fname(res, col))
   end
 
-  return names
+  names
 end
 
 def column_types(res: C.Pointer) -> List[Int]
@@ -330,7 +308,7 @@ def column_types(res: C.Pointer) -> List[Int]
     types = types.push(pq_ftype(res, col))
   end
 
-  return types
+  types
 end
 
 def read_rows(res: C.Pointer, names: List[String]) -> Result[List[Row]]
@@ -346,13 +324,11 @@ def read_rows(res: C.Pointer, names: List[String]) -> Result[List[Row]]
     rows = rows.push(row)
   end
 
-  return ok(rows)
+  ok(rows)
 end
 
 def read_value(res: C.Pointer, line: Int, col: Int, oid: Int) -> Result[Value]
-  if pq_getisnull(res, line, col) == IS_NULL
-    return ok(Value.Null)
-  end
+  return ok(Value.Null) if pq_getisnull(res, line, col) == IS_NULL
 
   cell = pq_getvalue(res, line, col)
   if oid == BYTEA_OID
@@ -371,19 +347,17 @@ def read_value(res: C.Pointer, line: Int, col: Int, oid: Int) -> Result[Value]
     return ok(Value.Bool(text == "t"))
   end
 
-  return ok(Value.Text(text))
+  ok(Value.Text(text))
 end
 
 # pq_unescape_bytea reads the hex form and the older escape form.
 def read_bytea(cell: C.Pointer) -> Result[Bytes]
   unescaped = pq_unescape_bytea(cell)
-  if Native.null?(unescaped.result)
-    return error("postgres error: out of memory")
-  end
+  return error("postgres error: out of memory") if Native.null?(unescaped.result)
 
   bytes = Native.get_bytes(unescaped.result, 0, unescaped.length)
   pq_freemem(unescaped.result)
-  return ok(bytes)
+  ok(bytes)
 end
 
 # The server writes a float as shortest digits that read back exactly, with an exponent for large and small
@@ -399,26 +373,20 @@ def parse_float(text: String) -> Result[Float]
   end
 
   parts = text.downcase.split("e")
-  if parts.size == 1
-    return read_decimal(text)
-  end
+  return read_decimal(text) if parts.size == 1
 
   exponent = try parts[1].to_i
-  return read_decimal(shift_point(parts[0], exponent))
+  read_decimal(shift_point(parts[0], exponent))
 end
 
 # String#to_f reads integer text such as `-0` as 0.0; with a fraction it keeps the sign of zero.
 def read_decimal(text: String) -> Result[Float]
-  if text.include?(".")
-    return text.to_f
-  end
+  return text.to_f if text.include?(".")
 
-  return "#{text}.0".to_f
+  "#{text}.0".to_f
 end
 
-def infinity() -> Float
-  return ("1" + List.repeat("0", EXPONENT_LIMIT).join("")).to_f!
-end
+def infinity() -> Float = ("1" + List.repeat("0", EXPONENT_LIMIT).join("")).to_f!
 
 def shift_point(mantissa: String, exponent: Int) -> String
   negative = mantissa.start_with?("-")
@@ -433,11 +401,9 @@ def shift_point(mantissa: String, exponent: Int) -> String
   digits = whole + fraction
   point = clamp(whole.length + exponent, 0 - EXPONENT_LIMIT, EXPONENT_LIMIT)
   shifted = place_point(digits, point)
-  if negative
-    return "-" + shifted
-  end
+  return "-" + shifted if negative
 
-  return shifted
+  shifted
 end
 
 def clamp(n: Int, low: Int, high: Int) -> Int
@@ -447,7 +413,7 @@ def clamp(n: Int, low: Int, high: Int) -> Int
     return high
   end
 
-  return n
+  n
 end
 
 # The digits with the decimal point `point` places from their start; a point outside them pads with zeros.
@@ -458,5 +424,5 @@ def place_point(digits: String, point: Int) -> String
     return digits + List.repeat("0", point - digits.length).join("") + ".0"
   end
 
-  return digits.slice(0, point) + "." + digits.slice(point, digits.length - point)
+  digits.slice(0, point) + "." + digits.slice(point, digits.length - point)
 end

@@ -7,13 +7,13 @@ RUNS = 40
 SHRINKS = 40
 
 def test_random_sequences_keep_the_pool_invariants() -> Result[Void]
-  return Prop.check(PoolModel.sequence_gen(), Prop.Config(runs: RUNS, shrinks: SHRINKS)) do |pair|
+  Prop.check(PoolModel.sequence_gen(), Prop.Config(runs: RUNS, shrinks: SHRINKS)) do |pair|
     PoolModel.keeps_invariants(pair.first, pair.second)
   end
 end
 
 def test_a_burst_leaves_no_more_than_max_waiting_in_line() -> Result[Void]
-  return Prop.check(PoolModel.burst_gen(), Prop.Config(runs: RUNS, shrinks: SHRINKS)) do |pair|
+  Prop.check(PoolModel.burst_gen(), Prop.Config(runs: RUNS, shrinks: SHRINKS)) do |pair|
     PoolModel.keeps_line(pair.first, pair.second)
   end
 end

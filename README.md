@@ -70,7 +70,7 @@ make check
 cd src/db && agentica test --jobs 4
 ```
 
-Developing and using the package need Agentica 0.27.0 or later (the OpenSSL builtins) and a C compiler.
+Developing and using the package need Agentica 0.30.0 or later and a C compiler.
 
 The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
 `AGENTS.md`. CI runs the SQLite suite on Linux, macOS and Windows, and the whole suite on Linux.

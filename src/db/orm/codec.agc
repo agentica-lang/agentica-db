@@ -26,7 +26,7 @@ export def to_json(members: List[StructMember], row: Db.Row) -> Result[Json]
     end
   end
 
-  return ok(JSON.object(fields))
+  ok(JSON.object(fields))
 end
 
 ## The value to bind for a field, from the Json of the field (a struct made Json by its codec, or the changes of a
@@ -34,30 +34,28 @@ end
 ## (`age: expected Int`), and an Int goes into a Float field only when the Float holds it exactly, as on the way in.
 export def to_value(member: StructMember, json: Json) -> Result[Db.Value]
   if JSON.kind(json) == "null"
-    if nullable?(member.type)
-      return ok(Db.Value.Null)
-    end
+    return ok(Db.Value.Null) if nullable?(member.type)
 
     return error("#{member.name}: #{NOT_NULLABLE}")
   end
 
   case inner_type(member.type)
-    "Int" -> return int_value(member, json)
-    "Bool" -> return bool_value(member, json)
-    "String" -> return text_value(member, json)
-    _ -> return float_value(member, json)
+    "Int" -> int_value(member, json)
+    "Bool" -> bool_value(member, json)
+    "String" -> text_value(member, json)
+    _ -> float_value(member, json)
   end
 end
 
 ## The name of the variant of a value: `Null`, `Int`, `Float`, `Text`, `Blob` or `Bool`.
 export def value_kind(value: Db.Value) -> String
   case value
-    Db.Value.Null -> return "Null"
-    Db.Value.Int(_) -> return "Int"
-    Db.Value.Float(_) -> return "Float"
-    Db.Value.Text(_) -> return "Text"
-    Db.Value.Blob(_) -> return "Blob"
-    Db.Value.Bool(_) -> return "Bool"
+    Db.Value.Null -> "Null"
+    Db.Value.Int(_) -> "Int"
+    Db.Value.Float(_) -> "Float"
+    Db.Value.Text(_) -> "Text"
+    Db.Value.Blob(_) -> "Blob"
+    Db.Value.Bool(_) -> "Bool"
   end
 end
 
@@ -65,124 +63,104 @@ end
 ## it is `Null` and the field is an `Optional` or a `JsonField`.
 export def accepts?(type: String, value: Db.Value) -> Bool
   case value
-    Db.Value.Null -> return nullable?(type)
-    _ -> return field_kind(type) == value_kind(value)
+    Db.Value.Null -> nullable?(type)
+    _ -> field_kind(type) == value_kind(value)
   end
 end
 
 ## The variant of the value that a field of this type is bound with: a String field is a `Text`.
 export def field_kind(type: String) -> String
-  if inner_type(type) == "String"
-    return "Text"
-  end
+  return "Text" if inner_type(type) == "String"
 
-  return inner_type(type)
+  inner_type(type)
 end
 
 ## Whether a field of this type can come from one column: Int, Float, Bool or String, alone or in an `Optional` or a
 ## `JsonField`.
 export def column_type?(type: String) -> Bool
-  return ["Int", "Float", "Bool", "String"].any? do |name| name == inner_type(type) end
+  ["Int", "Float", "Bool", "String"].any? do |name| name == inner_type(type) end
 end
 
 ## Whether a field of this type takes a NULL: an `Optional` or a `JsonField`.
-export def nullable?(type: String) -> Bool
-  return wrapped?(type, OPTIONAL) or json_field?(type)
-end
+export def nullable?(type: String) -> Bool = wrapped?(type, OPTIONAL) or json_field?(type)
 
-def json_field?(type: String) -> Bool
-  return wrapped?(type, JSON_FIELD)
-end
+def json_field?(type: String) -> Bool = wrapped?(type, JSON_FIELD)
 
-def wrapped?(type: String, wrapper: String) -> Bool
-  return type.start_with?(wrapper) and type.end_with?("]")
-end
+def wrapped?(type: String, wrapper: String) -> Bool = type.start_with?(wrapper) and type.end_with?("]")
 
 # `Optional[Int]` and `JsonField[Int]` are `Int`: a NULL (and, for a `JsonField`, a missing column) is the only
 # difference.
 def inner_type(type: String) -> String
   for wrapper in [OPTIONAL, JSON_FIELD]
-    if wrapped?(type, wrapper)
-      return type.slice(wrapper.length, type.length - wrapper.length - 1)
-    end
+    return type.slice(wrapper.length, type.length - wrapper.length - 1) if wrapped?(type, wrapper)
   end
 
-  return type
+  type
 end
 
 def field_json(member: StructMember, value: Db.Value) -> Result[Json]
   wanted = inner_type(member.type)
   case value
-    Db.Value.Int(n) if wanted == "Bool" and (n == 0 or n == 1) -> return ok(JSON.from(n == 1))
-    Db.Value.Int(n) if wanted == "Float" -> return exact(member, n)
-    Db.Value.Int(n) -> return ok(JSON.from(n))
-    Db.Value.Float(x) -> return finite(member, x)
-    Db.Value.Text(text) -> return ok(JSON.from(text))
-    Db.Value.Bool(flag) -> return ok(JSON.from(flag))
-    Db.Value.Blob(bytes) -> return ok(JSON.from(bytes.to_a))
-    Db.Value.Null if nullable?(member.type) -> return ok(JSON.null())
-    Db.Value.Null -> return error("#{member.name}: #{NOT_NULLABLE}")
+    Db.Value.Int(n) if wanted == "Bool" and (n == 0 or n == 1) -> ok(JSON.from(n == 1))
+    Db.Value.Int(n) if wanted == "Float" -> exact(member, n)
+    Db.Value.Int(n) -> ok(JSON.from(n))
+    Db.Value.Float(x) -> finite(member, x)
+    Db.Value.Text(text) -> ok(JSON.from(text))
+    Db.Value.Bool(flag) -> ok(JSON.from(flag))
+    Db.Value.Blob(bytes) -> ok(JSON.from(bytes.to_a))
+    Db.Value.Null if nullable?(member.type) -> ok(JSON.null())
+    Db.Value.Null -> error("#{member.name}: #{NOT_NULLABLE}")
   end
 end
 
 # An Int goes into a Float field only when the Float holds it exactly.
-def exact(member: StructMember, n: Int) -> Result[Json]
-  return ok(JSON.from(try exact_float(member, n)))
-end
+def exact(member: StructMember, n: Int) -> Result[Json] = ok(JSON.from(try exact_float(member, n)))
 
 def exact_float(member: StructMember, n: Int) -> Result[Float]
-  if n > MAX_EXACT or n < 0 - MAX_EXACT
-    return error("#{member.name}: #{n} does not fit a Float exactly")
-  end
+  return error("#{member.name}: #{n} does not fit a Float exactly") if n > MAX_EXACT or n < 0 - MAX_EXACT
 
-  return ok(n.to_f)
+  ok(n.to_f)
 end
 
 # A Json number is finite: PostgreSQL can give NaN and Infinity.
 def finite(member: StructMember, x: Float) -> Result[Json]
-  if x - x != 0.0
-    return error("#{member.name}: not a finite Float")
-  end
+  return error("#{member.name}: not a finite Float") if x - x != 0.0
 
-  return ok(JSON.from(x))
+  ok(JSON.from(x))
 end
 
 def int_value(member: StructMember, json: Json) -> Result[Db.Value]
   case JSON.int(json)
-    ok(n) -> return ok(Db.Value.Int(n))
-    error(_) -> return error("#{member.name}: expected Int")
+    ok(n) -> ok(Db.Value.Int(n))
+    error(_) -> error("#{member.name}: expected Int")
   end
 end
 
 def bool_value(member: StructMember, json: Json) -> Result[Db.Value]
   case JSON.bool(json)
-    ok(flag) -> return ok(Db.Value.Bool(flag))
-    error(_) -> return error("#{member.name}: expected Bool")
+    ok(flag) -> ok(Db.Value.Bool(flag))
+    error(_) -> error("#{member.name}: expected Bool")
   end
 end
 
 def text_value(member: StructMember, json: Json) -> Result[Db.Value]
   case JSON.string(json)
-    ok(text) -> return ok(Db.Value.Text(text))
-    error(_) -> return error("#{member.name}: expected String")
+    ok(text) -> ok(Db.Value.Text(text))
+    error(_) -> error("#{member.name}: expected String")
   end
 end
 
 def float_value(member: StructMember, json: Json) -> Result[Db.Value]
-  if JSON.kind(json) == "int"
-    return ok(Db.Value.Float(try exact_float(member, try JSON.int(json))))
-  end
+  return ok(Db.Value.Float(try exact_float(member, try JSON.int(json)))) if JSON.kind(json) == "int"
 
   case JSON.float(json)
-    ok(x) -> return finite_value(member, x)
-    error(_) -> return error("#{member.name}: expected Float")
+    ok(x) -> finite_value(member, x)
+    error(_) -> error("#{member.name}: expected Float")
   end
 end
 
 def finite_value(member: StructMember, x: Float) -> Result[Db.Value]
-  if x - x != 0.0
-    return error("#{member.name}: not a finite Float")
-  end
+  return error("#{member.name}: not a finite Float") if x - x != 0.0
 
-  return ok(Db.Value.Float(x))
+  ok(Db.Value.Float(x))
 end

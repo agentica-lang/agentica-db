@@ -62,7 +62,7 @@ def main() -> Void
 end
 
 def job_step(pattern: String, kind: String) -> BDD.Step
-  return BDD.step(pattern) do |ctx, args| send(ctx, Request(op: "job", name: args[0], kind: kind)) end
+  BDD.step(pattern) do |ctx, args| send(ctx, Request(op: "job", name: args[0], kind: kind)) end
 end
 
 # Sends the request to the driver, started on the first one, and checks that it answers ok. The driver puts what went
@@ -70,13 +70,11 @@ end
 def send(ctx: BDD.Context, req: Request) -> BDD.Context
   running = start(ctx)
   asked = BDD.when_line(running, JSON.encode(req))
-  return BDD.then_line(asked, Protocol.OK, REPLY_MS)
+  BDD.then_line(asked, Protocol.OK, REPLY_MS)
 end
 
 def start(ctx: BDD.Context) -> BDD.Context
-  if BDD.get(ctx, "driver").ok?
-    return ctx
-  end
+  return ctx if BDD.get(ctx, "driver").ok?
 
-  return BDD.set(BDD.given_program(ctx, "driver.agc"), "driver", JSON.from(true))
+  BDD.set(BDD.given_program(ctx, "driver.agc"), "driver", JSON.from(true))
 end

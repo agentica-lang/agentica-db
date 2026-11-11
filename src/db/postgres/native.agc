@@ -106,45 +106,37 @@ extern module "db_postgres"
 end
 
 ## Whether the module opens: false where the built library does not load, and the FFI driver runs.
-export def available?() -> Bool
-  return Native.load("db_postgres").ok?
-end
+export def available?() -> Bool = Native.load("db_postgres").ok?
 
 ## Connects with what libpq takes and a cache of `cache` statements (0: none).
 export def open(conninfo: String, cache: Int, options: Options) -> Result[Session]
   conn = try connect(conninfo, cache)
-  return ok(Session(conn: conn, lock: Native.mutex(), options: options))
+  ok(Session(conn: conn, lock: Native.mutex(), options: options))
 end
 
 ## Runs one statement and gives its rows.
 export def query(session: Session, sql: String, params: List[Value]) -> Result[List[Row]]
   done = try session.lock.synchronize do run(session, sql, params, true) end
-  return ok(done.rows)
+  ok(done.rows)
 end
 
 ## Runs one statement and gives the number of rows it inserted, updated or deleted.
 export def execute(session: Session, sql: String, params: List[Value]) -> Result[Int]
   done = try session.lock.synchronize do run(session, sql, params, false) end
-  return ok(done.changes)
+  ok(done.changes)
 end
 
 ## PQstatus and PQtransactionStatus, as `status * 16 + transaction status`, once a query that a cancelled task left
 ## has ended (while it runs, the transaction status is ACTIVE).
-export def link_status(session: Session) -> Int
-  return session.lock.synchronize do settled_status(session) end
-end
+export def link_status(session: Session) -> Int = session.lock.synchronize do settled_status(session) end
 
 ## Whether the connection is closed.
-export def closed?(session: Session) -> Bool
-  return Native.closed?(session.conn)
-end
+export def closed?(session: Session) -> Bool = Native.closed?(session.conn)
 
 ## What the statement cache holds and has done; none once the connection is closed.
 export def stats(session: Session) -> Optional[CacheStats]
-  return session.lock.synchronize do
-    if Native.closed?(session.conn)
-      return none
-    end
+  session.lock.synchronize do
+    return none if Native.closed?(session.conn)
 
     return some(cache_stats(session.conn))
   end
@@ -168,9 +160,7 @@ end
 # A cached statement runs at once; any other is translated and checked here first, then sent. The adapter checked
 # that the connection was open, but another task may have closed it while this one waited for the mutex.
 def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Result[Done]
-  if Native.closed?(session.conn)
-    return error(CLOSED)
-  end
+  return error(CLOSED) if Native.closed?(session.conn)
 
   plan = Plan(keep: keep)
   step = start(session.conn, sql, params, plan, session.options)
@@ -188,7 +178,7 @@ def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Resul
 
   done = try finish(session, step)
   try PostgresStatement.check_commit(done.tag, verb)
-  return ok(done)
+  ok(done)
 end
 
 # The transaction status that the check of a BEGIN reads is the one after a query that a cancelled task left.
@@ -206,7 +196,7 @@ def plan_of(session: Session, sql: String, params: List[Value], keep: Bool) -> R
     keep: keep,
   )
 
-  return ok(Planned(plan: plan, verb: verb))
+  ok(Planned(plan: plan, verb: verb))
 end
 
 # Waits and resumes until the statement ends. The rows of each batch are kept as a list of batches, joined once.
@@ -230,9 +220,7 @@ def finish(session: Session, first: Step) -> Result[Done]
     end
 
     # Another task may close the connection meanwhile.
-    if Native.closed?(session.conn)
-      return error(CLOSED)
-    end
+    return error(CLOSED) if Native.closed?(session.conn)
 
     if step.state == S_BIG
       step = resume_big(session.conn, session.options)
@@ -241,7 +229,7 @@ def finish(session: Session, first: Step) -> Result[Done]
     end
   end
 
-  return error("postgres error: the query ended without a result")
+  error("postgres error: the query ended without a result")
 end
 
 # Waits for the socket, or asks the server to cancel the query that a cancelled task left. A wait that timed out goes
@@ -257,38 +245,30 @@ def wait(session: Session, step: Step) -> Result[Void]
   end
 
   case waited
-    ok(_) -> return ok()
+    ok(_) -> ok()
     error(message) ->
-      if message == TIMED_OUT
-        return ok()
-      end
+      return ok() if message == TIMED_OUT
 
-      return error("postgres error: #{message}")
+      error("postgres error: #{message}")
   end
 end
 
 def settled_status(session: Session) -> Int
-  if Native.closed?(session.conn)
-    return CLOSED_STATUS
-  end
+  return CLOSED_STATUS if Native.closed?(session.conn)
 
   if left?(session.conn)
     _ = finish(session, drain(session.conn))
-    if Native.closed?(session.conn)
-      return CLOSED_STATUS
-    end
+    return CLOSED_STATUS if Native.closed?(session.conn)
   end
 
-  return status(session.conn)
+  status(session.conn)
 end
 
 # Whether the statement is `DEALLOCATE [PREPARE] ALL` or `DISCARD ALL`, which drop every prepared statement of the
 # session, the cached ones too. WORDS are its first bare words: a statement named `all` must be quoted, and a comment
 # is not a word.
 def drops_all?(words: List[String]) -> Bool
-  if words == ["discard", "all"] or words == ["deallocate", "all"]
-    return true
-  end
+  return true if words == ["discard", "all"] or words == ["deallocate", "all"]
 
-  return words == ["deallocate", "prepare", "all"]
+  words == ["deallocate", "prepare", "all"]
 end
