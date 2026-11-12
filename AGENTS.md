@@ -53,11 +53,11 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 
 ## Commands
 
-- Binary: developing and testing the package needs Agentica 0.30.0 or later and a C compiler
+- Binary: developing and testing the package needs Agentica 0.31.0-alpha.1 or later and a C compiler
   (`cc`, or `CC`); the minimum for a project that uses the package is the one in the README. Download a release
   under `.tools/` (gitignored), never `/tmp`. CI builds Agentica at the commit `AGENTICA_COMMIT` of
-  `.github/workflows/ci.yml`, the one of the tag 0.30.0 (`.github/actions/agentica`); a version bump sets it to the
-  commit of the new tag.
+  `.github/workflows/ci.yml`, the one of the tag 0.31.0-alpha.1 (`.github/actions/agentica`); a version bump sets it
+  to the commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
   sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver. PostgreSQL the same, with
   `AGENTICA_DB_POSTGRES_DRIVER=ffi`. CI runs every scenario of both on both drivers (`native`, then `ffi` with `--tags
@@ -72,8 +72,9 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
   test` there, which is every `.agc` file of the package. `agentica fmt --check` on the same paths (CI runs it;
   `agentica fmt` fixes it), then `agentica test`: the features of `specs/` and the unit tests of `test/`. SQLite needs
   no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`. CI runs `agentica test --jobs 4`
-  (four files at once), so a feature file must not share a path, a port or a table with another: `[SCRATCH]` is a
-  folder of its own for each scenario, and a scenario on a server names its own tables or makes them temporary.
+  (four scenarios at once, also of one file), so a scenario must not share a path, a port or a table with another:
+  `[SCRATCH]` is a folder of its own for each scenario, and a scenario on a server names its own tables or makes them
+  temporary.
 - The pool package has the same three commands in `src/pool` (`agentica check *.agc specs test`,
   `agentica fmt --check *.agc specs test`, `agentica test`); `make check` runs the check. Its features use a fake
   resource (`src/pool/specs/driver.agc`), so they need no server.

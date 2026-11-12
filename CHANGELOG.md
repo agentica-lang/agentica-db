@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** needs Agentica 0.31.0-alpha.1 or later (the HTTP types of `std/http`, `Error` reserved); CI tests
+  with Agentica 0.31.0-alpha.1.
+- **Breaking:** `Orm.Error` is `Orm.Failure` (same cases), since Agentica 0.31 reserves the type name `Error`.
+
 ## [0.9.0] - 2026-11-12
 
 Needs Agentica 0.30.0 or later.

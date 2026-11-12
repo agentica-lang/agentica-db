@@ -1,5 +1,5 @@
-## A small users API in the style of a web handler: each route is a function from an `HttpRequest` to an
-## `HttpResponse`, and the database goes in as an argument. It uses the Orm for everything: a schema, `check`,
+## A small users API in the style of a web handler: each route is a function from an `HTTP.Request` to an
+## `HTTP.Response`, and the database goes in as an argument. It uses the Orm for everything: a schema, `check`,
 ## `insert`, `find`, the query builder, `patch`, `delete` and a transaction that gives back a value.
 ##
 ## It runs on its own against an in-memory SQLite database and prints each request with its response, so no server
@@ -10,6 +10,7 @@
 
 import Db from "../db"
 import Orm from "../orm"
+import HTTP from "std/http"
 
 CREATE_USERS = "create table users (id integer primary key, name text not null unique, age integer)"
 # A list never has more rows than this: a real API would page it with an offset.
@@ -44,10 +45,10 @@ end
 
 # The body of a request is `Bytes`; the handlers read it as UTF-8 text, and an invalid one is an empty text, which
 # the JSON decoding then refuses as a bad body.
-def text_of(request: HttpRequest) -> String = String.from_bytes(request.body).unwrap_or("")
+def text_of(request: HTTP.Request) -> String = String.from_bytes(request.body).unwrap_or("")
 
 # The routes: the method and the parts of the path (`/users/7` is ["", "users", "7"]).
-def handle(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest) -> HttpResponse
+def handle(conn: Db.Connection, schema: Orm.Schema[User], request: HTTP.Request) -> HTTP.Response
   parts = request.path.split("/")
   if parts.size == 2 and parts[1] == "users"
     case request.method
@@ -71,7 +72,7 @@ def handle(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest) 
   failure(404, "no such route")
 end
 
-def user_route(conn: Db.Connection, schema: Orm.Schema[User], request: HttpRequest, id: Int) -> HttpResponse
+def user_route(conn: Db.Connection, schema: Orm.Schema[User], request: HTTP.Request, id: Int) -> HTTP.Response
   case request.method
     "GET" -> show(conn, schema, id)
     "PATCH" -> change(conn, schema, id, text_of(request))
@@ -81,7 +82,7 @@ def user_route(conn: Db.Connection, schema: Orm.Schema[User], request: HttpReque
 end
 
 # POST /users: the body is decoded into a plain struct, and the Orm gives back the row with its new key.
-def create(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HttpResponse
+def create(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HTTP.Response
   case JSON.decode(body, NewUser)
     error(_) -> failure(400, "the body is not a user")
     ok(input) ->
@@ -94,7 +95,7 @@ end
 
 # GET /users, with ?min_age=N and ?sort=COLUMN. The column of the request goes through `order_by`, which checks it
 # against the schema, so a request cannot put sql there; the sql of `where` is a constant of the program.
-def list(conn: Db.Connection, schema: Orm.Schema[User], target: String) -> HttpResponse
+def list(conn: Db.Connection, schema: Orm.Schema[User], target: String) -> HTTP.Response
   case filtered(Orm.from(schema), target)
     error(message) -> failure(400, message)
     ok(query) ->
@@ -119,7 +120,7 @@ def filtered(query: Orm.Query[User], target: String) -> Result[Orm.Query[User]]
 end
 
 # GET /users/7: `find` gives `some` or `none`, so a missing row is a 404 and a broken database is a 500.
-def show(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpResponse
+def show(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HTTP.Response
   case Orm.find(conn, schema, Db.Value.Int(id))
     error(message) -> refused(message)
     ok(found) ->
@@ -132,7 +133,7 @@ end
 
 # PATCH /users/7: the body is a JSON object of the fields to change, passed to `patch` as it is. A key that is not a
 # column is an error of the Orm, and `patch` gives the number of rows it changed.
-def change(conn: Db.Connection, schema: Orm.Schema[User], id: Int, body: String) -> HttpResponse
+def change(conn: Db.Connection, schema: Orm.Schema[User], id: Int, body: String) -> HTTP.Response
   case JSON.parse(body)
     error(_) -> failure(400, "the body is not JSON")
     ok(changes) ->
@@ -144,17 +145,17 @@ def change(conn: Db.Connection, schema: Orm.Schema[User], id: Int, body: String)
   end
 end
 
-def remove(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HttpResponse
+def remove(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HTTP.Response
   case Orm.delete(conn, schema, Db.Value.Int(id))
     error(message) -> refused(message)
     ok(0) -> failure(404, "no such user")
-    ok(_) -> HttpResponse(status: 204, headers: [], body: "".bytes)
+    ok(_) -> HTTP.Response(status: 204, headers: [], body: "".bytes)
   end
 end
 
 # POST /users/import: all the users of the body, or none. The transaction rolls back when an insert fails (a name
 # that is already taken: a conflict) and gives back the users it created when it commits.
-def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HttpResponse
+def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HTTP.Response
   case JSON.decode(body, Batch)
     error(_) -> failure(400, "the body is not a batch of users")
     ok(batch) ->
@@ -176,29 +177,29 @@ end
 
 def users() -> Orm.Schema[User] = Orm.schema("users", User.codec)
 
-def json(status: Int, body: String) -> HttpResponse
-  headers = [Header(name: "Content-Type", value: "application/json")]
-  HttpResponse(status: status, headers: headers, body: body.bytes)
+def json(status: Int, body: String) -> HTTP.Response
+  headers = [HTTP.Header(name: "Content-Type", value: "application/json")]
+  HTTP.Response(status: status, headers: headers, body: body.bytes)
 end
 
-def failure(status: Int, message: String) -> HttpResponse = json(status, JSON.encode({"error": message}))
+def failure(status: Int, message: String) -> HTTP.Response = json(status, JSON.encode({"error": message}))
 
 # The status of a failure comes from its kind (`Orm.classify`), not from its text: a bad request is the client's
 # fault and its message says what to fix, a conflict (a name that is already taken) is a 409, and anything else is a
 # fault of the server that a client has no use for. The payload of a BadRequest is `<table>: <message>`: a real app
 # may drop the table name before it sends the message to a client.
-def refused(message: String) -> HttpResponse
+def refused(message: String) -> HTTP.Response
   case Orm.classify(message)
-    Orm.Error.BadRequest(text) -> failure(400, text)
-    Orm.Error.Conflict(_) -> failure(409, "conflict")
+    Orm.Failure.BadRequest(text) -> failure(400, text)
+    Orm.Failure.Conflict(_) -> failure(409, "conflict")
     _ -> failure(500, "internal error")
   end
 end
 
 # The same for an import: nothing was saved, whatever the reason.
-def refused_import(message: String) -> HttpResponse
+def refused_import(message: String) -> HTTP.Response
   case Orm.classify(message)
-    Orm.Error.Conflict(_) -> failure(409, "nothing was imported")
+    Orm.Failure.Conflict(_) -> failure(409, "nothing was imported")
     _ -> failure(500, "nothing was imported")
   end
 end
@@ -217,7 +218,7 @@ def param(target: String, key: String) -> Optional[String]
 end
 
 # The requests of the example, in order.
-def script() -> List[HttpRequest]
+def script() -> List[HTTP.Request]
   [
     build_request("POST", "/users", "{\"name\": \"Ana\", \"age\": 31}"),
     build_request("POST", "/users", "{\"name\": \"Bob\"}"),
@@ -238,8 +239,8 @@ def script() -> List[HttpRequest]
   ]
 end
 
-def build_request(method: String, target: String, body: String) -> HttpRequest
-  HttpRequest(method: method, target: target, path: target.split("?")[0], headers: [], body: body.bytes)
+def build_request(method: String, target: String, body: String) -> HTTP.Request
+  HTTP.Request(method: method, target: target, path: target.split("?")[0], headers: [], body: body.bytes)
 end
 
 def run() -> Result[Void]
