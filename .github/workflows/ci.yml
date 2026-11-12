@@ -84,9 +84,9 @@ jobs:
           [ -z "$bad" ] || { echo "$bad"; echo "name each scenario 'on <adapter>' or 'on sqlite'"; exit 1; }
 
       # The features of src/db/specs/ and the unit tests of src/db/test/, four scenarios at once, on each driver where
-      # there are two. The variables name the driver outright, so a run cannot fall back to the other one: `native` is an
-      # error when the module did not build, `ffi` skips the native module, and the scenarios of driver_choice.feature
-      # fail when the connection runs another driver than the variable names. The ffi run leaves out @native, the
+      # there are two. The variables name the driver outright, so a run cannot fall back to the other one: `native` is
+      # an error when the module did not build, `ffi` skips the native module, and the scenarios of
+      # driver_choice.feature fail when the connection runs another driver than the variable names. The ffi run leaves out @native, the
       # scenarios of what only the native drivers have (the statement cache, batches, cancels). It runs after the native
       # one, which has the unit tests of src/db/test/ (a run with tags has none). MySQL and MariaDB have the FFI driver
       # only: their native driver joins this loop with agentica-lang/agentica-db#77. The variables point the postgres

@@ -4,6 +4,7 @@
   "description": "Highlights the agentica code blocks of the built site with the TextMate grammar of agentica-lang/agc-tmlanguage",
   "type": "module",
   "grammar": "https://github.com/agentica-lang/agc-tmlanguage/blob/86799d60e8b067cfd64e0f03294f507b849d127e/syntaxes/agentica.tmLanguage.json",
+  "grammarChanges": "repository.builtin-types.match drops the Http* and Header names (HTTP.* of std/http since Agentica 0.31) and adds Error, reserved since 0.31",
   "dependencies": {
     "vscode-oniguruma": "2.0.1",
     "vscode-textmate": "9.3.2"
