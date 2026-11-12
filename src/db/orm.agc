@@ -22,7 +22,7 @@ import Db from "db"
 import Dialect from "orm/dialect"
 import Errors from "orm/errors"
 
-export Errors.Error
+export Errors.Failure
 
 ## The table of a struct `T`: its name, its fields (`T.members`), the codec that builds a `T`, the key column and
 ## whether the database generates the key. Make one with `schema`; change an option with `.with(...)`.
@@ -55,19 +55,19 @@ export def schema[T](table: String, codec: Codec[T]) -> Schema[T]
   Schema(table: table, members: codec.members, codec: codec)
 end
 
-## The kind of the failure a text describes, so that a handler can `case` on it: `Error.BadRequest` (a column, a value
-## or a key the caller got wrong: a 400), `Error.Conflict` (a unique or foreign-key violation: a 409),
-## `Error.NotDecodable` (a row that does not fit its struct), `Error.Schema` (a schema that is not sound) and
-## `Error.Database` (any other error of the database, or of the Orm's own bookkeeping). The text is what an Orm
+## The kind of the failure a text describes, so that a handler can `case` on it: `Failure.BadRequest` (a column, a
+## value or a key the caller got wrong: a 400), `Failure.Conflict` (a unique or foreign-key violation: a 409),
+## `Failure.NotDecodable` (a row that does not fit its struct), `Failure.Schema` (a schema that is not sound) and
+## `Failure.Database` (any other error of the database, or of the Orm's own bookkeeping). The text is what an Orm
 ## function gave in its `error`, or what `Db` gave.
-export def classify(message: String) -> Errors.Error = Errors.classify(message)
+export def classify(message: String) -> Errors.Failure = Errors.classify(message)
 
 ## The name of the kind: `BadRequest`, `Conflict`, `NotDecodable`, `Schema` or `Database`. It is for logs and tests;
-## code should `case` on the `Error`.
-export def kind(failure: Errors.Error) -> String = Errors.kind(failure)
+## code should `case` on the `Failure`.
+export def kind(failure: Errors.Failure) -> String = Errors.kind(failure)
 
 ## The message of the failure, for a log.
-export def message(failure: Errors.Error) -> String = Errors.message(failure)
+export def message(failure: Errors.Failure) -> String = Errors.message(failure)
 
 ## Checks the schema and then the table: the names are plain identifiers, every field is a type a column can hold,
 ## the key is a field that cannot be NULL, and the table has every column. Run it once at start up. It reads no row.

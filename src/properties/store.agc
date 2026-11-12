@@ -136,7 +136,7 @@ end
 # is a one item list that says so. `as_fn` makes a function value of the block, which closes over the connection (the
 # fast function of the law cannot be a block, the last one is).
 def through(conn: Db.Connection, columns: List[Column]) -> Fn[List[String], List[String]]
-  as_fn() do |cells| stored(conn, columns, cells) end
+  as_fn do |cells| stored(conn, columns, cells) end
 end
 
 def as_fn[A, B](f: Fn[A, B]) -> Fn[A, B] = f

@@ -10,11 +10,11 @@ An error is a text, since that is what a `Result` holds. A failure of the Orm is
 
 | Kind | Means | Suggested status |
 |---|---|---|
-| `Orm.Error.BadRequest(message)` | a column, value or key the caller got wrong: a column that is not in the schema, a value of another kind, an unknown key in `patch`, no condition in `delete_all` | 400 |
-| `Orm.Error.Conflict(message)` | a unique or foreign-key violation, on any of the three databases | 409 |
-| `Orm.Error.NotDecodable(message)` | a row that does not fit its struct: a missing column, a NULL in a field that is not an `Optional` or a `JsonField` | 500 |
-| `Orm.Error.Schema(message)` | a schema that is not sound: a name that is not an identifier, a field type no column holds, a key that is not a field | 500 |
-| `Orm.Error.Database(message)` | any other error of the database (a lost connection, a missing table, a not null), or of the Orm's own bookkeeping | 500 |
+| `Orm.Failure.BadRequest(message)` | a column, value or key the caller got wrong: a column that is not in the schema, a value of another kind, an unknown key in `patch`, no condition in `delete_all` | 400 |
+| `Orm.Failure.Conflict(message)` | a unique or foreign-key violation, on any of the three databases | 409 |
+| `Orm.Failure.NotDecodable(message)` | a row that does not fit its struct: a missing column, a NULL in a field that is not an `Optional` or a `JsonField` | 500 |
+| `Orm.Failure.Schema(message)` | a schema that is not sound: a name that is not an identifier, a field type no column holds, a key that is not a field | 500 |
+| `Orm.Failure.Database(message)` | any other error of the database (a lost connection, a missing table, a not null), or of the Orm's own bookkeeping | 500 |
 
 The Orm does not know about HTTP, so the statuses are only suggestions.
 
@@ -30,8 +30,8 @@ end
 
 def status(message: String) -> Int
   case Orm.classify(message)
-    Orm.Error.BadRequest(_) -> return 400
-    Orm.Error.Conflict(_) -> return 409
+    Orm.Failure.BadRequest(_) -> return 400
+    Orm.Failure.Conflict(_) -> return 409
     _ -> return 500
   end
 end

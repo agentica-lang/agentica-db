@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 env:
-  # The package needs Agentica 0.30.0: .github/actions/agentica
-  # builds the commit of the tag 0.30.0 of agentica-lang/agentica.
-  AGENTICA_COMMIT: 36504192bcdb7a0732b28c908165a618b45f4d7f
+  # The package needs Agentica 0.31.0-alpha.1: .github/actions/agentica
+  # builds the commit of the tag 0.31.0-alpha.1 of agentica-lang/agentica.
+  AGENTICA_COMMIT: b7b1956cc3b32d1dbdb3b35f73b498001911f376
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
@@ -83,8 +83,8 @@ jobs:
             | grep -vE 'on (<adapter>|sqlite|postgres|mysql)|The users example' || true)
           [ -z "$bad" ] || { echo "$bad"; echo "name each scenario 'on <adapter>' or 'on sqlite'"; exit 1; }
 
-      # The features of src/db/specs/ and the unit tests of src/db/test/, four files at once, on each driver where there
-      # are two. The variables name the driver outright, so a run cannot fall back to the other one: `native` is an
+      # The features of src/db/specs/ and the unit tests of src/db/test/, four scenarios at once, on each driver where
+      # there are two. The variables name the driver outright, so a run cannot fall back to the other one: `native` is an
       # error when the module did not build, `ffi` skips the native module, and the scenarios of driver_choice.feature
       # fail when the connection runs another driver than the variable names. The ffi run leaves out @native, the
       # scenarios of what only the native drivers have (the statement cache, batches, cancels). It runs after the native

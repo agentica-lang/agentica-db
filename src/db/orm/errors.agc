@@ -22,7 +22,7 @@ CONFLICTS = [
 
 ## What went wrong, for a handler to `case` on. The text is the message for a log: `<table>: <message>` for a
 ## failure of the Orm, the message of the database as it is for the others.
-export enum Error
+export enum Failure
   BadRequest(String)
   Conflict(String)
   NotDecodable(String)
@@ -35,40 +35,40 @@ export def text(code: String, table: String, message: String) -> String = "orm e
 
 ## The kind of the failure a text describes. A text that is no failure of the Orm and no conflict is `Database`: a
 ## failure of the database (a lost connection, a missing table, a not null) or of the Orm's own bookkeeping.
-export def classify(message: String) -> Error
-  return Error.Conflict(message) if CONFLICTS.any? do |prefix| message.start_with?(prefix) end
+export def classify(message: String) -> Failure
+  return Failure.Conflict(message) if CONFLICTS.any? do |prefix| message.start_with?(prefix) end
 
-  return Error.BadRequest(payload(message, BAD_REQUEST)) if message.start_with?("orm error #{BAD_REQUEST}: ")
+  return Failure.BadRequest(payload(message, BAD_REQUEST)) if message.start_with?("orm error #{BAD_REQUEST}: ")
 
-  return Error.Schema(payload(message, SCHEMA)) if message.start_with?("orm error #{SCHEMA}: ")
+  return Failure.Schema(payload(message, SCHEMA)) if message.start_with?("orm error #{SCHEMA}: ")
 
-  return Error.NotDecodable(payload(message, DECODE)) if message.start_with?("orm error #{DECODE}: ")
+  return Failure.NotDecodable(payload(message, DECODE)) if message.start_with?("orm error #{DECODE}: ")
 
-  return Error.Database(payload(message, DATABASE)) if message.start_with?("orm error #{DATABASE}: ")
+  return Failure.Database(payload(message, DATABASE)) if message.start_with?("orm error #{DATABASE}: ")
 
-  Error.Database(message)
+  Failure.Database(message)
 end
 
 ## The name of the kind: `BadRequest`, `Conflict`, `NotDecodable`, `Schema` or `Database`. It is for logs and tests;
-## code should `case` on the `Error`.
-export def kind(failure: Error) -> String
+## code should `case` on the `Failure`.
+export def kind(failure: Failure) -> String
   case failure
-    Error.BadRequest(_) -> "BadRequest"
-    Error.Conflict(_) -> "Conflict"
-    Error.NotDecodable(_) -> "NotDecodable"
-    Error.Schema(_) -> "Schema"
-    Error.Database(_) -> "Database"
+    Failure.BadRequest(_) -> "BadRequest"
+    Failure.Conflict(_) -> "Conflict"
+    Failure.NotDecodable(_) -> "NotDecodable"
+    Failure.Schema(_) -> "Schema"
+    Failure.Database(_) -> "Database"
   end
 end
 
 ## The message of the failure, for a log.
-export def message(failure: Error) -> String
+export def message(failure: Failure) -> String
   case failure
-    Error.BadRequest(text) -> text
-    Error.Conflict(text) -> text
-    Error.NotDecodable(text) -> text
-    Error.Schema(text) -> text
-    Error.Database(text) -> text
+    Failure.BadRequest(text) -> text
+    Failure.Conflict(text) -> text
+    Failure.NotDecodable(text) -> text
+    Failure.Schema(text) -> text
+    Failure.Database(text) -> text
   end
 end
 
