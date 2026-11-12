@@ -132,7 +132,8 @@ end
 
 def repeated_name(names: List[String]) -> String
   counts = names.tally
-  names.find do |name| counts[name] > 1 end.unwrap_or("")
+  repeated = names.find do |name| counts[name] > 1 end
+  repeated.unwrap_or("")
 end
 
 def changes_since(conn: Conn, before: Int) -> Int

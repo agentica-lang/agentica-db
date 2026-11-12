@@ -62,7 +62,8 @@ end
 export def parse(url: String) -> Result[Target]
   return error("mysql error: the url contains a NUL character") if url.include?(String.from_code(0))
 
-  scheme = SCHEMES.find do |prefix| url.start_with?(prefix) end.unwrap_or("")
+  found = SCHEMES.find do |prefix| url.start_with?(prefix) end
+  scheme = found.unwrap_or("")
   rest = url.slice(scheme.length, url.length - scheme.length)
   halves = split_once(rest, "?")
   options = try read_query(halves[1])

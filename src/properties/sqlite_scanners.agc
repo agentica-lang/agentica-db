@@ -265,7 +265,8 @@ def cased(word: String, mode: Int) -> String
 
   letters = word.split("")
   upper = mode == 1
-  letters.map do |letter| letter_cased(letter, upper) end.join("")
+  changed = letters.map do |letter| letter_cased(letter, upper) end
+  changed.join("")
 end
 
 def letter_cased(letter: String, upper: Bool) -> String
@@ -292,7 +293,10 @@ def gap_of(picks: List[Int]) -> String
   gaps_of(picks)
 end
 
-def gaps_of(picks: List[Int]) -> String = picks.map do |pick| GAPS[pick.abs % GAPS.length] end.join("")
+def gaps_of(picks: List[Int]) -> String
+  gaps = picks.map do |pick| GAPS[pick.abs % GAPS.length] end
+  gaps.join("")
+end
 
 def run_twice(conn: Db.Connection, sql: String) -> Result[Void]
   try Db.query(conn, sql, [])

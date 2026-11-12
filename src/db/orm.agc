@@ -261,7 +261,8 @@ export def insert[T](conn: Db.Connection, schema: Schema[T], value: T) -> Result
   return refuse(schema, "no column to insert") if names.empty?
 
   table = try quoted(conn, schema, schema.table)
-  marks = params.map do |_param| "?" end.join(", ")
+  holes = params.map do |_param| "?" end
+  marks = holes.join(", ")
   sql = "insert into #{table} (#{names.join(", ")}) values (#{marks})"
   if schema.generated
     id = try generated_key(conn, schema, sql, params)
