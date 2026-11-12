@@ -130,7 +130,8 @@ end
 
 def repeated_name(names: List[String]) -> String
   counts = names.tally
-  names.find do |name| counts[name] > 1 end.unwrap_or("")
+  repeated = names.find do |name| counts[name] > 1 end
+  repeated.unwrap_or("")
 end
 
 # The result of a statement that succeeded. The caller clears it. The adapter has checked that the handle is open.

@@ -10,10 +10,10 @@ Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.8.0", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.9.0", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.8.0 --subdir src/db`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.9.0 --subdir src/db`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
 
 The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release after 0.3.0 and for `ref = "COMMIT"` (a commit of `main`). The releases up to 0.3.0 have the package at the root of the repository: with those tags leave `subdir` out. The imports are the same in both.
 

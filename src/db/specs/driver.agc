@@ -2158,4 +2158,7 @@ def compare_rows(rows: List[Db.Row], table: List[List[String]]) -> String
   ""
 end
 
-def shown(rows: List[Db.Row]) -> String = rows.map do |row| "{#{Cells.show_row(row)}}" end.join(", ")
+def shown(rows: List[Db.Row]) -> String
+  texts = rows.map do |row| "{#{Cells.show_row(row)}}" end
+  texts.join(", ")
+end

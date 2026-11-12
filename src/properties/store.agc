@@ -151,8 +151,10 @@ end
 def write_row(conn: Db.Connection, columns: List[Column], cells: List[String]) -> Result[Int]
   try Db.execute(conn, "delete from t", [])
   params = try Cells.parse_all(cells)
-  marks = columns.map do |_| "?" end.join(", ")
-  names = columns.map do |column| column.name end.join(", ")
+  holes = columns.map do |_| "?" end
+  marks = holes.join(", ")
+  column_names = columns.map do |column| column.name end
+  names = column_names.join(", ")
   Db.execute(conn, "insert into t (#{names}) values (#{marks})", params)
 end
 
@@ -168,7 +170,8 @@ def read_back(conn: Db.Connection, columns: List[Column], written: Result[Int]) 
 end
 
 def create_sql(columns: List[Column]) -> String
-  definitions = columns.map do |column| "#{column.name} #{column.type}" end.join(", ")
+  typed = columns.map do |column| "#{column.name} #{column.type}" end
+  definitions = typed.join(", ")
   "create temporary table t (#{definitions})"
 end
 
@@ -179,7 +182,9 @@ def render(value: Db.Value) -> String
     Db.Value.Int(n) -> "Int #{n}"
     Db.Value.Float(x) -> Gens.float_text(x)
     Db.Value.Text(text) -> "Text #{text}"
-    Db.Value.Blob(bytes) -> "Blob #{bytes.to_a.map do |byte| byte.to_s end.join(",")}"
+    Db.Value.Blob(bytes) ->
+      shown = bytes.to_a.map do |byte| byte.to_s end
+      "Blob #{shown.join(",")}"
     Db.Value.Bool(flag) -> "Bool #{flag}"
   end
 end

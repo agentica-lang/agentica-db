@@ -72,7 +72,8 @@ export def up(
   highest = applied.reduce(0) do |top, row| max(top, row.version) end
   pending = migrations.select do |migration| not applied.any? do |row| row.version == migration.version end end
   if pending.any? do |migration| migration.version < highest end
-    old = pending.find do |migration| migration.version < highest end.unwrap!
+    first_old = pending.find do |migration| migration.version < highest end
+    old = first_old.unwrap!
     return error(
       "migrate error: migration #{label(old)} is older than the applied migration #{highest}, " +
       "so it would run out of order",

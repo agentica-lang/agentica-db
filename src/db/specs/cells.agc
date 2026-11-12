@@ -40,13 +40,18 @@ export def show(value: Value) -> String
     Value.Int(n) -> "Int #{n}"
     Value.Float(x) -> "Float #{x}"
     Value.Text(text) -> cut("Text #{text.inspect}")
-    Value.Blob(bytes) -> cut("Blob #{bytes.to_a.map do |byte| byte.to_s end.join(",")}")
+    Value.Blob(bytes) ->
+      shown = bytes.to_a.map do |byte| byte.to_s end
+      cut("Blob #{shown.join(",")}")
     Value.Bool(flag) -> "Bool #{flag}"
   end
 end
 
 ## Writes a row as `column: cell` pairs.
-export def show_row(row: Row) -> String = row.keys.map do |name| "#{name}: #{show(row[name])}" end.join(", ")
+export def show_row(row: Row) -> String
+  pairs = row.keys.map do |name| "#{name}: #{show(row[name])}" end
+  pairs.join(", ")
+end
 
 ## True when two values are the same; a NaN is the same as a NaN.
 export def same?(left: Value, right: Value) -> Bool

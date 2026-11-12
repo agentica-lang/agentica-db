@@ -173,7 +173,8 @@ end
 # Bytes with a pick below 0 standing for the byte 0, so that zero bytes are common.
 def blob_gen() -> Prop.Gen[String]
   Prop.map(Prop.list(Prop.int(-20, 255), MAX_BLOB_BYTES)) do |picks|
-    "Blob #{picks.map do |pick| pick.clamp(0, 255).to_s end.join(",")}"
+    shown = picks.map do |pick| pick.clamp(0, 255).to_s end
+    "Blob #{shown.join(",")}"
   end
 end
 
