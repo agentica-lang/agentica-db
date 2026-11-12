@@ -69,7 +69,8 @@ def main() -> Void
   Db.execute(conn, "create table users (id integer primary key, name text not null)", []).unwrap!
   Db.execute(conn, "insert into users (name) values ('Ana'), ('Bob'), ('Cy'), ('Dee')", []).unwrap!
   ids = [1, 3, 4]
-  marks = ids.map do |_id| "?" end.join(", ")
+  holes = ids.map do |_id| "?" end
+  marks = holes.join(", ")
   params = ids.map do |id| Db.Value.Int(id) end
   rows = Db.query(conn, "select name from users where id in (#{marks}) order by id", params).unwrap!
   puts(rows.size)
