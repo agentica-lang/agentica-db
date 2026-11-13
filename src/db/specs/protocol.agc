@@ -9,8 +9,9 @@ OK = "ok"
 
 ## A request. Every field is always sent; each `op` reads the ones it needs. The ops are `open` (text: adapter),
 ## `open_url` (text: url), `execute` and `query` (text: sql, cells: params), `transaction` (table: statements, text:
-## the failure message of the body, empty for ok, nested: start a transaction inside it, gives: the body gives back the
-## rows changed by its last statement, and the transaction gives that count), `close`, `migrate` (text: the history
+## the failure message of the body, empty for ok, kind: with text, the kind of that failure and number its code,
+## nested: start a transaction inside it, gives: the body gives back the rows changed by its last statement, and the
+## transaction gives that count), `close`, `migrate` (text: the history
 ## table or empty, table: header and the version, name and sql of each migration), `write_together` (number: the tasks,
 ## text: a database url, table: statements; each task opens the url and runs the statements in a transaction),
 ## `execute_waiting` (text: a database url, cells: the sql, number: the least time in milliseconds that the failure of
@@ -60,5 +61,6 @@ struct Request
   table: List[List[String]] = []
   nested: Bool = false
   gives: Bool = false
+  kind: String = ""
   partial: Bool = false
 end

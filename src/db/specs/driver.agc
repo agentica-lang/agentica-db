@@ -1280,17 +1280,26 @@ def transaction(state: State, req: Request) -> State
     if req.gives
       counted = Db.transaction(conn) do |tx| run_body(tx, rows, req) end
       case counted
-        error(message) -> return failed(state, message.message)
+        error(e) -> return failed(state, described(e, req))
         ok(count) -> return recorded(state, Outcome.Counted(count))
       end
     end
 
     done = Db.transaction(conn) do |tx| run_void(tx, rows, req) end
     case done
-      error(message) -> return failed(state, message.message)
+      error(e) -> return failed(state, described(e, req))
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
+end
+
+# The text of a failed transaction: its message, or, for a block that fails with a kind and a code, `kind
+# code: message`,
+# so a scenario sees what the call gave back, not only the text.
+def described(e: Error, req: Request) -> String
+  return e.message if req.kind.empty?
+
+  "#{e.kind} #{e.code.unwrap_or(-1)}: #{e.message}"
 end
 
 # The same body for a transaction whose value is Void, so both forms of `Db.transaction` run in CI.
@@ -1312,6 +1321,8 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
   if req.nested
     try Db.transaction(tx) do |_inner| ok() end
   end
+
+  return error(req.text, kind: req.kind, code: req.number) if not req.text.empty? and not req.kind.empty?
 
   return error(req.text) if not req.text.empty?
 

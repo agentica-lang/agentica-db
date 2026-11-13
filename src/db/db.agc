@@ -203,7 +203,7 @@ def run_transaction[R](opener: Connection, conn: Connection, body: Fn[Connection
   done = body.call(conn)
   case done
     ok(value) -> commit(conn, value)
-    error(message) -> abandon(conn, message.message)
+    error(e) -> abandon(conn, e)
   end
 end
 
@@ -211,7 +211,7 @@ def commit[R](conn: Connection, value: R) -> Result[R]
   committed = execute(conn, "COMMIT", [])
   case committed
     ok(_) -> ok(value)
-    error(message) -> abandon(conn, message.message)
+    error(e) -> abandon(conn, e)
   end
 end
 
@@ -226,13 +226,13 @@ end
 # The original error wins; a failed ROLLBACK is appended, since the transaction may still be open. A connection that is
 # no longer in a transaction is left alone: the engine ended it already (SQLite rolls back a write it interrupted), and
 # a ROLLBACK would fail with a message that hides the real error.
-def abandon[R](conn: Connection, message: String) -> Result[R]
-  return error(message) if not in_transaction?(conn)
+def abandon[R](conn: Connection, failure: Error) -> Result[R]
+  return error(failure) if not in_transaction?(conn)
 
   rolled = execute(conn, "ROLLBACK", [])
   case rolled
-    ok(_) -> error(message)
-    error(rollback_message) -> error("#{message}; rollback failed: #{rollback_message}")
+    ok(_) -> error(failure)
+    error(rollback) -> error(failure.with(message: "#{failure.message}; rollback failed: #{rollback.message}"))
   end
 end
 
