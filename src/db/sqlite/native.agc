@@ -9,18 +9,11 @@
 import SqliteWait from "wait"
 import {Row, Value} from "../support/value"
 
-SQLITE_ROW = 100
-SQLITE_DONE = 101
-# What a read may do in a short call on the scheduler: SQLite VM instructions (about 100 microseconds of work) and
-# rows. A longer one goes to the compute pool, run again from its start.
-QUICK_STEPS = 10_000
-QUICK_ROWS = 100
-
 ## What a call may give at once: up to `rows` rows or about `bytes` bytes of values; a longer result takes more calls.
 ## `keep` is false for `execute`, whose rows are stepped over, and `cache` false for a statement that runs once. A
 ## cached read runs in a short call when it takes at most `quick_steps` SQLite VM instructions and gives at most
 ## `quick_rows` rows (0: never).
-export struct Fetch
+struct Fetch
   keep: Bool = true
   cache: Bool = true
   rows: Int = 1000
@@ -28,6 +21,90 @@ export struct Fetch
   quick_rows: Int = QUICK_ROWS
   quick_steps: Int = QUICK_STEPS
 end
+
+## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
+## statement, a `miss` prepared one, an `eviction` finalized the one used least long ago to make room, `shorts`
+## counts the statements that ran whole in a short call on the scheduler, and `fallbacks` the short calls that took a
+## statement and then left it to the compute pool: its bound data too big (before it ran), or a lock, a value too
+## long or rows past the caps (while it ran).
+struct CacheStats
+  size: Int
+  capacity: Int
+  hits: Int
+  misses: Int
+  evictions: Int
+  shorts: Int
+  fallbacks: Int
+end
+
+## The rows and the count of changes of a statement that ran to its end, and the frames in the WAL that no checkpoint
+## has copied after its commit (0 when it did not commit, or the pool does not take the checkpoints of the connection).
+struct Done
+  rows: List[Row]
+  changes: Int
+  frames: Int
+end
+
+extern module "db_sqlite"
+  ## A connection; `Native.close` finalizes its cached statements and closes it.
+  resource Conn
+  ## Stops the statement that runs on the connection, which then fails with `sqlite error 9: interrupted`.
+  def interrupt(conn: Conn) -> Void
+  ## Whether no transaction is open.
+  def autocommit?(conn: Conn) -> Bool
+  def cache_stats(conn: Conn) -> CacheStats
+  ## Lets a short call run the cheap writes and the BEGIN of a transaction (a WAL database only), and with `commits`
+  ## a write that commits too (only after `own_checkpoints`, and where a commit does not sync the WAL).
+  def inline_writes(conn: Conn, commits: Bool) -> Void
+  ## What the connections of a pool share about their WAL: whether a checkpoint runs, or the next write to the WAL
+  ## starts it again, which syncs it; no connection writes in a short call meanwhile.
+  resource Wal
+  def wal() -> Wal
+  ## Turns SQLite's autocheckpoint off for the connection: its pool takes the checkpoints of the WAL that it shares in
+  ## `wal`, and each commit gives the frames in the WAL that no checkpoint has copied (`Done.frames`).
+  compute def own_checkpoints(conn: Conn, wal: Wal) -> Void
+  ## A PASSIVE checkpoint of the WAL shared in `wal`: it copies what no reader needs and waits for nobody.
+  compute def checkpoint(conn: Conn, wal: Wal) -> Void
+end
+
+## Whether the module opens: false where the built library does not load, and the FFI driver runs.
+def available?() -> Bool = Native.load("db_sqlite").ok?
+
+## Opens a database with `flags` (of `sqlite3_open_v2`) and a cache of `cache` statements (0: none).
+def open(path: String, flags: Int, cache: Int) -> Result[Conn] = connect(path, flags, cache)
+
+## Runs one statement and gives its rows.
+def query(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
+  return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(wait)
+
+  run_short(conn, wait, sql, params, options)
+end
+
+## Ends what a cancelled query left on the connection: a statement that a lock stopped holds a write that SQLite never
+## ended, which keeps the connection in a hidden transaction until it is reset. Every fetch does it first; the adapter
+## does it before it reads whether a transaction is open.
+def settle(conn: Conn) -> Void
+  if pending?(conn)
+    tidy(conn)
+  end
+end
+
+## Runs one statement for its effect: its rows are stepped over, and `Done.changes` is the number of rows it inserted,
+## updated or deleted.
+def execute(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
+  return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(wait)
+
+  run_short(conn, wait, sql, params, options.with(keep: false))
+end
+
+private
+
+SQLITE_ROW = 100
+SQLITE_DONE = 101
+# What a read may do in a short call on the scheduler: SQLite VM instructions (about 100 microseconds of work) and
+# rows. A longer one goes to the compute pool, run again from its start.
+QUICK_STEPS = 10_000
+QUICK_ROWS = 100
 
 # One call's part of a statement. `code` is SQLITE_ROW when more rows follow, SQLITE_DONE at the end, else the code of
 # the failure, whose text is `failure`. `upgrade` is a write refused because this connection holds a read lock, which
@@ -43,81 +120,6 @@ struct Batch
   rows: List[Row]
   changes: Int
   frames: Int
-end
-
-## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
-## statement, a `miss` prepared one, an `eviction` finalized the one used least long ago to make room, `shorts`
-## counts the statements that ran whole in a short call on the scheduler, and `fallbacks` the short calls that took a
-## statement and then left it to the compute pool: its bound data too big (before it ran), or a lock, a value too
-## long or rows past the caps (while it ran).
-export struct CacheStats
-  size: Int
-  capacity: Int
-  hits: Int
-  misses: Int
-  evictions: Int
-  shorts: Int
-  fallbacks: Int
-end
-
-## The rows and the count of changes of a statement that ran to its end, and the frames in the WAL that no checkpoint
-## has copied after its commit (0 when it did not commit, or the pool does not take the checkpoints of the connection).
-export struct Done
-  rows: List[Row]
-  changes: Int
-  frames: Int
-end
-
-extern module "db_sqlite"
-  ## A connection; `Native.close` finalizes its cached statements and closes it.
-  export resource Conn
-  ## Stops the statement that runs on the connection, which then fails with `sqlite error 9: interrupted`.
-  export def interrupt(conn: Conn) -> Void
-  ## Whether no transaction is open.
-  export def autocommit?(conn: Conn) -> Bool
-  export def cache_stats(conn: Conn) -> CacheStats
-  ## Lets a short call run the cheap writes and the BEGIN of a transaction (a WAL database only), and with `commits`
-  ## a write that commits too (only after `own_checkpoints`, and where a commit does not sync the WAL).
-  export def inline_writes(conn: Conn, commits: Bool) -> Void
-  ## What the connections of a pool share about their WAL: whether a checkpoint runs, or the next write to the WAL
-  ## starts it again, which syncs it; no connection writes in a short call meanwhile.
-  export resource Wal
-  export def wal() -> Wal
-  ## Turns SQLite's autocheckpoint off for the connection: its pool takes the checkpoints of the WAL that it shares in
-  ## `wal`, and each commit gives the frames in the WAL that no checkpoint has copied (`Done.frames`).
-  export compute def own_checkpoints(conn: Conn, wal: Wal) -> Void
-  ## A PASSIVE checkpoint of the WAL shared in `wal`: it copies what no reader needs and waits for nobody.
-  export compute def checkpoint(conn: Conn, wal: Wal) -> Void
-end
-
-## Whether the module opens: false where the built library does not load, and the FFI driver runs.
-export def available?() -> Bool = Native.load("db_sqlite").ok?
-
-## Opens a database with `flags` (of `sqlite3_open_v2`) and a cache of `cache` statements (0: none).
-export def open(path: String, flags: Int, cache: Int) -> Result[Conn] = connect(path, flags, cache)
-
-## Runs one statement and gives its rows.
-export def query(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
-  return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(wait)
-
-  run_short(conn, wait, sql, params, options)
-end
-
-## Ends what a cancelled query left on the connection: a statement that a lock stopped holds a write that SQLite never
-## ended, which keeps the connection in a hidden transaction until it is reset. Every fetch does it first; the adapter
-## does it before it reads whether a transaction is open.
-export def settle(conn: Conn) -> Void
-  if pending?(conn)
-    tidy(conn)
-  end
-end
-
-## Runs one statement for its effect: its rows are stepped over, and `Done.changes` is the number of rows it inserted,
-## updated or deleted.
-export def execute(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], options: Fetch) -> Result[Done]
-  return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(wait)
-
-  run_short(conn, wait, sql, params, options.with(keep: false))
 end
 
 # The calls that only this file makes. A Cursor holds the statement of one query between its fetch calls; the last

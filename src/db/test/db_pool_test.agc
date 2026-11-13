@@ -1,5 +1,7 @@
 import DbPool from "../db_pool"
 
+private
+
 def main() -> Void
   Test.run([
     Test.test("the default size follows the database, and one for a private memory database") do

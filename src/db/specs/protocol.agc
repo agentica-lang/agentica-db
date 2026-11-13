@@ -5,7 +5,7 @@
 ## with one line: `ok`, or the reason the request or the expectation failed.
 
 ## The reply that means the request worked.
-export OK = "ok"
+OK = "ok"
 
 ## A request. Every field is always sent; each `op` reads the ones it needs. The ops are `open` (text: adapter),
 ## `open_url` (text: url), `execute` and `query` (text: sql, cells: params), `transaction` (table: statements, text:
@@ -52,7 +52,7 @@ export OK = "ok"
 ## (number), `expect_ok`, `expect_timeout` (the failure is one that `Db.timeout?` knows), `expect_prefix`,
 ## `expect_exact`, `expect_mentions`, `expect_hides` and `expect_kind` (text; for the last, the kind that
 ## `Orm.classify` gives the failure, such as `Conflict`).
-export struct Request
+struct Request
   op: String
   text: String = ""
   number: Int = 0

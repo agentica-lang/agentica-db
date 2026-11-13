@@ -1,6 +1,8 @@
 import Prop from "pkg/prop/prop"
 import PoolModel from "../pool_model"
 
+private
+
 # The runs are fewer than in the other properties: a case takes real time (leases, cancels and a close wait for
 # milliseconds), about 100 ms on average, and a test may take 30 s.
 RUNS = 40

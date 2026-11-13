@@ -12,6 +12,8 @@ import Db from "../db"
 import Orm from "../orm"
 import HTTP from "std/http"
 
+private
+
 CREATE_USERS = "create table users (id integer primary key, name text not null unique, age integer)"
 # A list never has more rows than this: a real API would page it with an offset.
 LIST_LIMIT = 100
@@ -87,7 +89,7 @@ def create(conn: Db.Connection, schema: Orm.Schema[User], body: String) -> HTTP.
     error(_) -> failure(400, "the body is not a user")
     ok(input) ->
       case Orm.insert(conn, schema, User(name: input.name, age: input.age))
-        error(message) -> refused(message)
+        error(message) -> refused(message.message)
         ok(user) -> json(201, JSON.encode(user))
       end
   end
@@ -97,11 +99,11 @@ end
 # against the schema, so a request cannot put sql there; the sql of `where` is a constant of the program.
 def list(conn: Db.Connection, schema: Orm.Schema[User], target: String) -> HTTP.Response
   case filtered(Orm.from(schema), target)
-    error(message) -> failure(400, message)
+    error(message) -> failure(400, message.message)
     ok(query) ->
       column = param(target, "sort").unwrap_or("id")
       case Orm.all(Orm.order_by(query, column) |> Orm.limit(LIST_LIMIT), conn)
-        error(message) -> refused(message)
+        error(message) -> refused(message.message)
         ok(found) -> json(200, JSON.encode(found))
       end
   end
@@ -122,7 +124,7 @@ end
 # GET /users/7: `find` gives `some` or `none`, so a missing row is a 404 and a broken database is a 500.
 def show(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HTTP.Response
   case Orm.find(conn, schema, Db.Value.Int(id))
-    error(message) -> refused(message)
+    error(message) -> refused(message.message)
     ok(found) ->
       case found
         none -> failure(404, "no such user")
@@ -138,7 +140,7 @@ def change(conn: Db.Connection, schema: Orm.Schema[User], id: Int, body: String)
     error(_) -> failure(400, "the body is not JSON")
     ok(changes) ->
       case Orm.patch(conn, schema, Db.Value.Int(id), changes)
-        error(message) -> refused(message)
+        error(message) -> refused(message.message)
         ok(0) -> failure(404, "no such user")
         ok(_) -> show(conn, schema, id)
       end
@@ -147,7 +149,7 @@ end
 
 def remove(conn: Db.Connection, schema: Orm.Schema[User], id: Int) -> HTTP.Response
   case Orm.delete(conn, schema, Db.Value.Int(id))
-    error(message) -> refused(message)
+    error(message) -> refused(message.message)
     ok(0) -> failure(404, "no such user")
     ok(_) -> HTTP.Response(status: 204, headers: [], body: "".bytes)
   end
@@ -169,7 +171,7 @@ def import_users(conn: Db.Connection, schema: Orm.Schema[User], body: String) ->
       end
 
       case done
-        error(message) -> refused_import(message)
+        error(message) -> refused_import(message.message)
         ok(created) -> json(201, JSON.encode(created))
       end
   end

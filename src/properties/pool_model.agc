@@ -7,6 +7,92 @@
 import Pool from "pkg/pool/pool"
 import Prop from "pkg/prop/prop"
 
+## The settings of a pool and of the sequence, as the generator makes them. `close_ms` closes the pool in the middle of
+## the sequence.
+struct Setup
+  size: Int
+  max_overflow: Int
+  max_waiting: Int
+  lazy: Bool
+  reuse_crashed: Bool
+  close_ms: Optional[Int]
+end
+
+## What the body of a caller does: holds the resource for `hold_ms`, crashes, fails, or hangs until the lease ends it.
+enum Body
+  Holds
+  Crashes
+  Fails
+  Hangs
+end
+
+## One caller: it starts after `start_ms`, takes a resource and runs a body of its `kind`; `cancel_ms` cancels the
+## caller that long after the start.
+struct Job
+  kind: Body
+  start_ms: Int
+  hold_ms: Int
+  cancel_ms: Optional[Int]
+end
+
+## The generator of a sequence: a setup and up to six jobs, in their small ranges (the numbers that shrink are the
+## generator's, the case that is printed is the folded one).
+def sequence_gen() -> Prop.Gen[Prop.Pair[Setup, List[Job]]]
+  raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.list(Prop.of(Job.codec, JSON.schema(Job)), MAX_JOBS))
+  Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second.map do |job| job_of(job) end) end
+end
+
+## The generator of a burst: a setup and how many callers arrive at once.
+def burst_gen() -> Prop.Gen[Prop.Pair[Setup, Int]]
+  raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.int(1, MAX_BURST))
+  Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second) end
+end
+
+## Runs the jobs on a pool of the setup, a task each, with the cancels and the close of the sequence. It checks that no
+## resource was lent twice or after it ended, that the resources in use never passed `size + max_overflow`, that every
+## caller that was not cancelled got an answer, and, once the pool is closed, that every resource made was ended and
+## that no caller holds one or waits in line.
+def keeps_invariants(setup: Setup, jobs: List[Job]) -> Result[Void]
+  stats: ATS[String, Int] = ATS.new()
+  pool = try Pool.start(spec_of(setup, stats, CHECKOUT_MS, LEASE_MS))
+  closer = start_closer(pool, setup)
+  answered = finish_jobs(start_jobs(pool, stats, jobs, false))
+  Pool.close(pool, CLOSE_DRAIN_MS)
+  try wait_closer(closer)
+  try answered
+  audit(setup, pool, stats)
+end
+
+## A burst of `count` callers that hold a resource at once, until the last of them is refused, holding a resource or
+## standing in line. The pool serves `size + max_overflow` of them and lets `max_waiting` wait, so at least the rest
+## are refused with a full queue, and no more of them hold a resource than the pool has. An eager pool with no
+## overflow has its resources at once, so there the numbers are exact. A resource that the owner is still making (an
+## overflow one, or any of a lazy pool) is not idle when a caller asks, so the caller can be refused although it
+## could be served, even a lone caller of a lazy pool with `max_waiting` 0 (agentica-lang/agentica-db#86): there the
+## numbers are bounds, and for a lazy pool the upper bound of refusals is every caller.
+def keeps_line(setup: Setup, count: Int) -> Result[Void]
+  stats: ATS[String, Int] = ATS.new()
+  pool = try Pool.start(spec_of(setup, stats, BURST_CHECKOUT_MS, BURST_LEASE_MS))
+  jobs: List[Job] = List.repeat(Job(kind: Body.Holds, start_ms: 0, hold_ms: 0, cancel_ms: none), count)
+  started = start_jobs(pool, stats, jobs, true)
+  placed = wait_placed(pool, stats, count)
+  stats.put("release", 1)
+  answered = finish_jobs(started)
+  Pool.close(pool, CLOSE_DRAIN_MS)
+  try placed
+  try answered
+  try audit(setup, pool, stats)
+  try within("callers refused", count_of(stats, "refused"), refusals(setup, count), setup)
+  try within("resources in use at once", peak_of(stats), peaks(setup, count), setup)
+  if count_of(stats, "failed") > 0
+    return error("#{count_of(stats, "failed")} of #{count} callers failed without being refused (#{describe(setup)})")
+  end
+
+  ok()
+end
+
+private
+
 LEASE_MS = 30
 CHECKOUT_MS = 60
 # A burst never times out a caller or a body: it counts who is refused.
@@ -24,34 +110,6 @@ MAX_BURST = 8
 QUEUE_FULL = "pool error: queue full"
 # The counter of the callers in line, which the pool keeps in its public `counts` (the name is the pool's).
 WAITING = "waiting"
-
-## The settings of a pool and of the sequence, as the generator makes them. `close_ms` closes the pool in the middle of
-## the sequence.
-export struct Setup
-  size: Int
-  max_overflow: Int
-  max_waiting: Int
-  lazy: Bool
-  reuse_crashed: Bool
-  close_ms: Optional[Int]
-end
-
-## What the body of a caller does: holds the resource for `hold_ms`, crashes, fails, or hangs until the lease ends it.
-export enum Body
-  Holds
-  Crashes
-  Fails
-  Hangs
-end
-
-## One caller: it starts after `start_ms`, takes a resource and runs a body of its `kind`; `cancel_ms` cancels the
-## caller that long after the start.
-export struct Job
-  kind: Body
-  start_ms: Int
-  hold_ms: Int
-  cancel_ms: Optional[Int]
-end
 
 # The config of the pool: where to count, and whether a resource whose body crashed goes back to the line.
 struct Fake
@@ -91,62 +149,6 @@ end
 struct CloseArgs
   pool: Pool.Pool[Fake, Cell]
   ms: Int
-end
-
-## The generator of a sequence: a setup and up to six jobs, in their small ranges (the numbers that shrink are the
-## generator's, the case that is printed is the folded one).
-export def sequence_gen() -> Prop.Gen[Prop.Pair[Setup, List[Job]]]
-  raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.list(Prop.of(Job.codec, JSON.schema(Job)), MAX_JOBS))
-  Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second.map do |job| job_of(job) end) end
-end
-
-## The generator of a burst: a setup and how many callers arrive at once.
-export def burst_gen() -> Prop.Gen[Prop.Pair[Setup, Int]]
-  raw = Prop.pair(Prop.of(Setup.codec, JSON.schema(Setup)), Prop.int(1, MAX_BURST))
-  Prop.map(raw) do |pair| Prop.Pair(first: setup_of(pair.first), second: pair.second) end
-end
-
-## Runs the jobs on a pool of the setup, a task each, with the cancels and the close of the sequence. It checks that no
-## resource was lent twice or after it ended, that the resources in use never passed `size + max_overflow`, that every
-## caller that was not cancelled got an answer, and, once the pool is closed, that every resource made was ended and
-## that no caller holds one or waits in line.
-export def keeps_invariants(setup: Setup, jobs: List[Job]) -> Result[Void]
-  stats: ATS[String, Int] = ATS.new()
-  pool = try Pool.start(spec_of(setup, stats, CHECKOUT_MS, LEASE_MS))
-  closer = start_closer(pool, setup)
-  answered = finish_jobs(start_jobs(pool, stats, jobs, false))
-  Pool.close(pool, CLOSE_DRAIN_MS)
-  try wait_closer(closer)
-  try answered
-  audit(setup, pool, stats)
-end
-
-## A burst of `count` callers that hold a resource at once, until the last of them is refused, holding a resource or
-## standing in line. The pool serves `size + max_overflow` of them and lets `max_waiting` wait, so at least the rest
-## are refused with a full queue, and no more of them hold a resource than the pool has. An eager pool with no
-## overflow has its resources at once, so there the numbers are exact. A resource that the owner is still making (an
-## overflow one, or any of a lazy pool) is not idle when a caller asks, so the caller can be refused although it
-## could be served, even a lone caller of a lazy pool with `max_waiting` 0 (agentica-lang/agentica-db#86): there the
-## numbers are bounds, and for a lazy pool the upper bound of refusals is every caller.
-export def keeps_line(setup: Setup, count: Int) -> Result[Void]
-  stats: ATS[String, Int] = ATS.new()
-  pool = try Pool.start(spec_of(setup, stats, BURST_CHECKOUT_MS, BURST_LEASE_MS))
-  jobs: List[Job] = List.repeat(Job(kind: Body.Holds, start_ms: 0, hold_ms: 0, cancel_ms: none), count)
-  started = start_jobs(pool, stats, jobs, true)
-  placed = wait_placed(pool, stats, count)
-  stats.put("release", 1)
-  answered = finish_jobs(started)
-  Pool.close(pool, CLOSE_DRAIN_MS)
-  try placed
-  try answered
-  try audit(setup, pool, stats)
-  try within("callers refused", count_of(stats, "refused"), refusals(setup, count), setup)
-  try within("resources in use at once", peak_of(stats), peaks(setup, count), setup)
-  if count_of(stats, "failed") > 0
-    return error("#{count_of(stats, "failed")} of #{count} callers failed without being refused (#{describe(setup)})")
-  end
-
-  ok()
 end
 
 # The least and the most callers that are refused.
@@ -307,7 +309,7 @@ def run_job(args: JobArgs) -> Void
   result = Pool.with(args.pool) do |cell| use(cell, args) end
   case result
     ok(_) -> args.stats.add("answered", 1)
-    error(message) if message.start_with?(QUEUE_FULL) -> args.stats.add("refused", 1)
+    error(e) if e.message.start_with?(QUEUE_FULL) -> args.stats.add("refused", 1)
     error(_) -> args.stats.add("failed", 1)
   end
 end

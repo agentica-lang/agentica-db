@@ -6,6 +6,8 @@ import BDD from "std/bdd"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
+private
+
 REPLY_MS = 60_000
 
 def main() -> Void

@@ -10,40 +10,8 @@
 ## Start the pool in a task that lives as long as the pool (`main`): the owner task ends with the task that started
 ## it. The body of a caller is not cancelled when the caller is; `lease_ms` bounds it.
 
-# Sizes of the queues and the waits that are not part of a `Spec`.
-JOBS_SIZE = 1_024
-CONTROL_SIZE = 16_384
-START_MS = 60_000
-HOOK_MS = 5_000
-SEND_MS = 5_000
-POLL_MS = 500
-CHECKOUT_SLACK_MS = 500
-MAX_RESOURCES = 1_048_576
-REPLY_GRACE_MS = 5_000
-CLOSE_GRACE_MS = 2_000
-CANCEL_GRACE_MS = 20
-INIT_RETRY_MS = 1_000
-MAX_WAIT_MS = 1_000
-
-# The keys of the counters that the owner, the lease tasks and the callers share.
-LIVE = "live"
-WAITING = "waiting"
-NEXT_ID = "next_id"
-NEXT_JOB = "next_job"
-CLOSED = "closed"
-# A key of the counters per failed `init`: the text after the prefix is its error. Only the last one is kept.
-INIT_ERROR = "init failed: "
-# The key a body and its caller race for in `answer` and `await_start`: whoever puts it first decides.
-DECIDED = "decided"
-
-CLOSED_ERROR = "pool error: closed"
-OWNER_ENDED_ERROR = "pool error: owner task ended"
-QUEUE_FULL_ERROR = "pool error: queue full"
-CHECKOUT_TIMEOUT = "pool error: checkout timed out"
-LEASE_TIMEOUT = "pool error: lease timed out"
-
 ## How a body ended, as `checkin` sees it.
-export enum Outcome
+enum Outcome
   Done
   Crashed
   TimedOut
@@ -66,7 +34,7 @@ end
 ## each off; `idle_ms` needs a lazy pool, since an eager pool would make a new resource at once. `max_waiting` is how
 ## many callers may wait in line for a resource at once (0 or more); one more is refused with `pool error: queue full
 ## (max_waiting N)`, and 0 lets nobody wait: a caller that finds every resource busy is refused.
-export struct Spec[A, W]
+struct Spec[A, W]
   config: A
   init: Fn[A, Result[W]]
   checkin: Fn[W, Outcome, Result[Void]]
@@ -85,13 +53,99 @@ export struct Spec[A, W]
 end
 
 ## A running pool. Share it with every task that needs a resource.
-export struct Pool[A, W]
+struct Pool[A, W]
   spec: Spec[A, W]
   jobs: Channel[Job[W]]
   control: Channel[Msg[W]]
   owner: Task[Void]
   counts: ATS[String, Int]
 end
+
+## Starts a pool and waits for it to make its resources (none when `lazy`). An `init` that fails stops the start
+## with its error, after ending the resources already made.
+def start[A, W](spec: Spec[A, W]) -> Result[Pool[A, W]]
+  try check_spec(spec)
+  jobs: Channel[Job[W]] = Channel.new(JOBS_SIZE)
+  control: Channel[Msg[W]] = Channel.new(CONTROL_SIZE)
+  idle: Channel[Slot[W]] = Channel.new(spec.size + spec.max_overflow)
+  ready: Channel[Result[Void]] = Channel.new(1)
+  chans = Chans(jobs: jobs, control: control, idle: idle, ready: ready)
+  counts: ATS[String, Int] = ATS.new()
+  owner = spawn_owner(chans) do |owned| own(spec, counts, owned) end
+  started = chans.ready.recv(START_MS)
+  return error(abandon_start(chans, counts, owner)) if not started.ok?
+
+  try try started
+  ok(Pool(spec: spec, jobs: chans.jobs, control: chans.control, owner: owner, counts: counts))
+end
+
+## Runs the body with a resource of the pool and gives its result. The body runs in a task of the pool, so a crash
+## in it is an `error` here, and the resource is checked in with the outcome. Other errors: `pool error: checkout
+## timed out after N ms` (the caller waited that long for a resource, with the last error of `init` if the pool could
+## not make one, even when the owner is busy in a slow `init`), `pool error: lease timed out after N ms` (the body
+## ran longer than `lease_ms`), `pool error: queue full (max_waiting N)` (`max_waiting` callers wait already),
+## `pool error: closed` and `pool error: owner task ended`. A caller that got an error never has its body run later.
+def with[A, W, R](pool: Pool[A, W], body: Fn[W, Result[R]]) -> Result[R]
+  return error(CLOSED_ERROR) if pool.counts.has_key?(CLOSED)
+
+  events: Channel[Event[R]] = Channel.new(2)
+  claim: ATS[String, Int] = ATS.new()
+  sent = enqueue(pool) do |offer| answer(events, claim, body, offer) end
+  return error(refusal(pool)) if not sent.ok?
+
+  await_start(pool, events, claim)
+end
+
+## Refuses new jobs, lets the running ones and the ones in line finish for up to `drain_ms`, fails the rest with
+## `pool error: closed`, ends every resource and stops the pool. Closing twice does nothing. The owner task serves the
+## close between two steps, so while an `init` or a `terminate` blocks it the close cannot run `terminate`: after
+## `drain_ms` and two more seconds the owner is cancelled, and the VM closes the handles it owns.
+def close[A, W](pool: Pool[A, W], drain_ms: Int) -> Void
+  return if not pool.counts.put_new(CLOSED, 1)
+
+  done: Channel[Bool] = Channel.new(1)
+  closing = Closing(drain_ms: [drain_ms, 0].max.unwrap!, done: done)
+  if send_stop(pool, closing)
+    _ = done.recv(closing.drain_ms + CLOSE_GRACE_MS + CANCEL_GRACE_MS)
+  end
+
+  Task.cancel(pool.owner)
+end
+
+## True for the error of a checkout or a lease that ran out of time.
+def timeout?(message: String) -> Bool = message.start_with?(CHECKOUT_TIMEOUT) or message.start_with?(LEASE_TIMEOUT)
+
+private
+
+# Sizes of the queues and the waits that are not part of a `Spec`.
+JOBS_SIZE = 1_024
+CONTROL_SIZE = 16_384
+START_MS = 60_000
+HOOK_MS = 5_000
+SEND_MS = 5_000
+POLL_MS = 500
+CHECKOUT_SLACK_MS = 500
+MAX_RESOURCES = 1_048_576
+REPLY_GRACE_MS = 5_000
+CLOSE_GRACE_MS = 2_000
+CANCEL_GRACE_MS = 20
+INIT_RETRY_MS = 1_000
+MAX_WAIT_MS = 1_000
+# The keys of the counters that the owner, the lease tasks and the callers share.
+LIVE = "live"
+WAITING = "waiting"
+NEXT_ID = "next_id"
+NEXT_JOB = "next_job"
+CLOSED = "closed"
+# A key of the counters per failed `init`: the text after the prefix is its error. Only the last one is kept.
+INIT_ERROR = "init failed: "
+# The key a body and its caller race for in `answer` and `await_start`: whoever puts it first decides.
+DECIDED = "decided"
+CLOSED_ERROR = "pool error: closed"
+OWNER_ENDED_ERROR = "pool error: owner task ended"
+QUEUE_FULL_ERROR = "pool error: queue full"
+CHECKOUT_TIMEOUT = "pool error: checkout timed out"
+LEASE_TIMEOUT = "pool error: lease timed out"
 
 # A caller's work. It runs the body on a granted resource and gives the caller's result; a denial it gives the caller
 # as an error.
@@ -176,62 +230,6 @@ struct Owned[W]
   closing: Optional[Closing]
   deadline_ms: Int
   done: Bool
-end
-
-## Starts a pool and waits for it to make its resources (none when `lazy`). An `init` that fails stops the start
-## with its error, after ending the resources already made.
-export def start[A, W](spec: Spec[A, W]) -> Result[Pool[A, W]]
-  try check_spec(spec)
-  jobs: Channel[Job[W]] = Channel.new(JOBS_SIZE)
-  control: Channel[Msg[W]] = Channel.new(CONTROL_SIZE)
-  idle: Channel[Slot[W]] = Channel.new(spec.size + spec.max_overflow)
-  ready: Channel[Result[Void]] = Channel.new(1)
-  chans = Chans(jobs: jobs, control: control, idle: idle, ready: ready)
-  counts: ATS[String, Int] = ATS.new()
-  owner = spawn_owner(chans) do |owned| own(spec, counts, owned) end
-  started = chans.ready.recv(START_MS)
-  return error(abandon_start(chans, counts, owner)) if not started.ok?
-
-  try try started
-  ok(Pool(spec: spec, jobs: chans.jobs, control: chans.control, owner: owner, counts: counts))
-end
-
-## Runs the body with a resource of the pool and gives its result. The body runs in a task of the pool, so a crash
-## in it is an `error` here, and the resource is checked in with the outcome. Other errors: `pool error: checkout
-## timed out after N ms` (the caller waited that long for a resource, with the last error of `init` if the pool could
-## not make one, even when the owner is busy in a slow `init`), `pool error: lease timed out after N ms` (the body
-## ran longer than `lease_ms`), `pool error: queue full (max_waiting N)` (`max_waiting` callers wait already),
-## `pool error: closed` and `pool error: owner task ended`. A caller that got an error never has its body run later.
-export def with[A, W, R](pool: Pool[A, W], body: Fn[W, Result[R]]) -> Result[R]
-  return error(CLOSED_ERROR) if pool.counts.has_key?(CLOSED)
-
-  events: Channel[Event[R]] = Channel.new(2)
-  claim: ATS[String, Int] = ATS.new()
-  sent = enqueue(pool) do |offer| answer(events, claim, body, offer) end
-  return error(refusal(pool)) if not sent.ok?
-
-  await_start(pool, events, claim)
-end
-
-## Refuses new jobs, lets the running ones and the ones in line finish for up to `drain_ms`, fails the rest with
-## `pool error: closed`, ends every resource and stops the pool. Closing twice does nothing. The owner task serves the
-## close between two steps, so while an `init` or a `terminate` blocks it the close cannot run `terminate`: after
-## `drain_ms` and two more seconds the owner is cancelled, and the VM closes the handles it owns.
-export def close[A, W](pool: Pool[A, W], drain_ms: Int) -> Void
-  return if not pool.counts.put_new(CLOSED, 1)
-
-  done: Channel[Bool] = Channel.new(1)
-  closing = Closing(drain_ms: [drain_ms, 0].max.unwrap!, done: done)
-  if send_stop(pool, closing)
-    _ = done.recv(closing.drain_ms + CLOSE_GRACE_MS + CANCEL_GRACE_MS)
-  end
-
-  Task.cancel(pool.owner)
-end
-
-## True for the error of a checkout or a lease that ran out of time.
-export def timeout?(message: String) -> Bool
-  message.start_with?(CHECKOUT_TIMEOUT) or message.start_with?(LEASE_TIMEOUT)
 end
 
 def spawn_owner[W](chans: Chans[W], body: Fn[Chans[W], Void]) -> Task[Void] = Task.spawn_owning(body, chans)
@@ -597,7 +595,7 @@ def add_worker[A, W](core: Core[A, W], state: Owned[W]) -> Owned[W]
     error(message) ->
       forget_init_error(core.counts)
       core.counts.put_new("#{INIT_ERROR}#{message}", 1)
-      state.with(failure: message, retry_at_ms: Time.monotonic_ms() + INIT_RETRY_MS)
+      state.with(failure: message.message, retry_at_ms: Time.monotonic_ms() + INIT_RETRY_MS)
     ok(worker) ->
       forget_init_error(core.counts)
       id = core.counts.add(NEXT_ID, 1)
@@ -780,7 +778,7 @@ def lease[A, W](held: Lease[A, W]) -> Void
   core = held.core
   case take(core)
     error(message) ->
-      _ = held.job.call(Offer.Deny(message))
+      _ = held.job.call(Offer.Deny(message.message))
       notify(core, Msg.GaveUp(held.job_id))
     ok(slot) ->
       outcome = run_body(held, slot)
@@ -850,7 +848,7 @@ def run_body[A, W](held: Lease[A, W], slot: Slot[W]) -> Outcome
       _ = held.job.call(Offer.Deny("#{LEASE_TIMEOUT} after #{lease_ms} ms"))
       Outcome.TimedOut
     Await.Done(error(message)) ->
-      _ = held.job.call(Offer.Deny(message))
+      _ = held.job.call(Offer.Deny(message.message))
       Outcome.Crashed
     Await.Done(_) -> Outcome.Done
   end

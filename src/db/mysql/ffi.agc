@@ -18,6 +18,61 @@ import MysqlStatement from "statement"
 import MysqlUrl from "url"
 import {Row, Value} from "../support/value"
 
+## An open connection (a `MYSQL *`).
+type Handle = RawHandle
+
+## Connects to the target (see `MysqlUrl`). The client character set is utf8mb4. A url with `timeout_ms` sets the
+## client read and write timeouts to that limit plus 10 seconds, in whole seconds (see `mysql.agc`).
+def open(target: MysqlUrl.Target) -> Result[Handle]
+  try load_library()
+  mysql = try init()
+  configured = configure(mysql, target)
+  if not configured.ok?
+    Native.close(mysql)
+    return error(configured.message)
+  end
+
+  connected = mysql_real_connect(
+    mysql,
+    target.host,
+    target.user,
+    target.password,
+    target.database,
+    target.port,
+    Native.null(),
+    FOUND_ROWS,
+  )
+
+  return abandon(mysql) if Native.null?(connected)
+
+  return abandon(mysql) if mysql_set_character_set(mysql, CHARSET) != 0
+
+  ok(mysql)
+end
+
+## Runs one statement with bound parameters and gives its rows. A statement without parameters that the server does
+## not prepare (`START TRANSACTION`, `BEGIN`, `SAVEPOINT`, `USE` and `LOCK TABLES` on MySQL) goes through the text
+## protocol, which is safe because there is nothing to bind.
+def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]] = run_query(handle, sql, params)
+
+## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
+## replaced.
+def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int] = run_execute(handle, sql, params)
+
+## Whether the server says a transaction is open, from the status of its last reply: no round trip.
+def in_transaction?(handle: Handle) -> Bool = transaction_open?(handle)
+
+## Whether the client library still has its link to the server, with no round trip.
+def connected?(handle: Handle) -> Bool = mysql_get_socket(handle) != NO_SOCKET
+
+## Whether the server answers a ping.
+def healthy?(handle: Handle) -> Bool = mysql_ping(handle) == 0
+
+## The version of the server, `8.4.3` or `11.4.2-MariaDB`.
+def server_info(handle: Handle) -> String = mysql_get_server_info(handle)
+
+private
+
 POINTER_SIZE = 8
 CHARSET = "utf8mb4"
 # The client flag CLIENT_FOUND_ROWS: an UPDATE counts the rows it matched, as in the other adapters, not only the
@@ -95,8 +150,7 @@ end
 # The names of the library start with `mysql_`, so a connection and a statement can be resources that the end of the
 # task frees. `mysql_close` blocks while it says goodbye to the server, and a free runs on the scheduler.
 extern "mariadb"
-  ## An open connection (a `MYSQL *`).
-  export resource Handle, free: mysql_close
+  resource RawHandle, free: mysql_close
   resource Stmt, free: mysql_stmt_close
   # MYSQL_BIND, in the order of mysql.h. The pointers and the callbacks after `buffer` are the library's own.
   struct MysqlBind
@@ -152,20 +206,20 @@ extern "mariadb"
     extension: C.Pointer
   end
 
-  def mysql_init(mysql: C.Pointer) -> Handle
-  compute def mysql_real_connect(mysql: Handle, host: C.String, user: C.String, password: C.String,
+  def mysql_init(mysql: C.Pointer) -> RawHandle
+  compute def mysql_real_connect(mysql: RawHandle, host: C.String, user: C.String, password: C.String,
                                  database: C.String, port: C.Int32, socket: C.Pointer,
                                  flags: C.Long) -> C.Pointer
-  def mysql_options(mysql: Handle, option: C.Int32, value: C.Pointer) -> C.Int32
-  def mysql_options_text(mysql: Handle, option: C.Int32, value: C.String) -> C.Int32 = "mysql_options"
-  compute def mysql_set_character_set(mysql: Handle, name: C.String) -> C.Int32
-  def mysql_get_server_info(mysql: Handle) -> C.String
-  compute def mysql_ping(mysql: Handle) -> C.Int32
-  def mysql_errno(mysql: Handle) -> C.Int32
-  def mysql_get_socket(mysql: Handle) -> C.Int32
-  def mysql_error(mysql: Handle) -> C.String
-  def mariadb_get_info(mysql: Handle, value: C.Int32, arg: C.Pointer) -> C.Bool
-  def mysql_stmt_init(mysql: Handle) -> Stmt
+  def mysql_options(mysql: RawHandle, option: C.Int32, value: C.Pointer) -> C.Int32
+  def mysql_options_text(mysql: RawHandle, option: C.Int32, value: C.String) -> C.Int32 = "mysql_options"
+  compute def mysql_set_character_set(mysql: RawHandle, name: C.String) -> C.Int32
+  def mysql_get_server_info(mysql: RawHandle) -> C.String
+  compute def mysql_ping(mysql: RawHandle) -> C.Int32
+  def mysql_errno(mysql: RawHandle) -> C.Int32
+  def mysql_get_socket(mysql: RawHandle) -> C.Int32
+  def mysql_error(mysql: RawHandle) -> C.String
+  def mariadb_get_info(mysql: RawHandle, value: C.Int32, arg: C.Pointer) -> C.Bool
+  def mysql_stmt_init(mysql: RawHandle) -> Stmt
   compute def mysql_stmt_prepare(stmt: Stmt, sql: C.String, bytes: C.Long) -> C.Int32
   def mysql_stmt_param_count(stmt: Stmt) -> C.Long
   def mysql_stmt_bind_param(stmt: Stmt, binds: C.Pointer) -> C.Bool
@@ -180,70 +234,18 @@ extern "mariadb"
   def mysql_stmt_errno(stmt: Stmt) -> C.Int32
   def mysql_stmt_error(stmt: Stmt) -> C.String
   # The text protocol, for the statements that the server does not prepare.
-  compute def mysql_real_query(mysql: Handle, sql: C.String, bytes: C.Long) -> C.Int32
-  compute def mysql_store_result(mysql: Handle) -> C.Pointer
-  def mysql_field_count(mysql: Handle) -> C.Int32
-  def mysql_affected_rows(mysql: Handle) -> C.Int64
+  compute def mysql_real_query(mysql: RawHandle, sql: C.String, bytes: C.Long) -> C.Int32
+  compute def mysql_store_result(mysql: RawHandle) -> C.Pointer
+  def mysql_field_count(mysql: RawHandle) -> C.Int32
+  def mysql_affected_rows(mysql: RawHandle) -> C.Int64
   def mysql_fetch_row(result: C.Pointer) -> C.Pointer
   def mysql_fetch_lengths(result: C.Pointer) -> C.Pointer
-  def mysql_more_results(mysql: Handle) -> C.Bool
-  compute def mysql_next_result(mysql: Handle) -> C.Int32
+  def mysql_more_results(mysql: RawHandle) -> C.Bool
+  compute def mysql_next_result(mysql: RawHandle) -> C.Int32
   def mysql_free_result(result: C.Pointer) -> Void
   def mysql_num_fields(result: C.Pointer) -> C.Int32
   def mysql_fetch_field_direct(result: C.Pointer, index: C.Int32) -> C.Pointer
 end
-
-## Connects to the target (see `MysqlUrl`). The client character set is utf8mb4. A url with `timeout_ms` sets the
-## client read and write timeouts to that limit plus 10 seconds, in whole seconds (see `mysql.agc`).
-export def open(target: MysqlUrl.Target) -> Result[Handle]
-  try load_library()
-  mysql = try init()
-  configured = configure(mysql, target)
-  if not configured.ok?
-    Native.close(mysql)
-    return error(configured.message)
-  end
-
-  connected = mysql_real_connect(
-    mysql,
-    target.host,
-    target.user,
-    target.password,
-    target.database,
-    target.port,
-    Native.null(),
-    FOUND_ROWS,
-  )
-
-  return abandon(mysql) if Native.null?(connected)
-
-  return abandon(mysql) if mysql_set_character_set(mysql, CHARSET) != 0
-
-  ok(mysql)
-end
-
-## Runs one statement with bound parameters and gives its rows. A statement without parameters that the server does
-## not prepare (`START TRANSACTION`, `BEGIN`, `SAVEPOINT`, `USE` and `LOCK TABLES` on MySQL) goes through the text
-## protocol, which is safe because there is nothing to bind.
-export def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
-  run_query(handle, sql, params)
-end
-
-## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
-## replaced.
-export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int] = run_execute(handle, sql, params)
-
-## Whether the server says a transaction is open, from the status of its last reply: no round trip.
-export def in_transaction?(handle: Handle) -> Bool = transaction_open?(handle)
-
-## Whether the client library still has its link to the server, with no round trip.
-export def connected?(handle: Handle) -> Bool = mysql_get_socket(handle) != NO_SOCKET
-
-## Whether the server answers a ping.
-export def healthy?(handle: Handle) -> Bool = mysql_ping(handle) == 0
-
-## The version of the server, `8.4.3` or `11.4.2-MariaDB`.
-export def server_info(handle: Handle) -> String = mysql_get_server_info(handle)
 
 def run_query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
   try check_open(handle)
@@ -251,7 +253,7 @@ def run_query(handle: Handle, sql: String, params: List[Value]) -> Result[List[R
   try check_params(params)
   try MysqlStatement.check_begin(transaction_open?(handle), statement.verb)
   case start(handle, sql)
-    error(message) if text_only?(message, params) -> text_query(handle, sql)
+    error(message) if text_only?(message.message, params) -> text_query(handle, sql)
     error(message) -> error(message)
     ok(stmt) ->
       rows = launch_query(stmt, params)
@@ -266,7 +268,7 @@ def run_execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
   try check_params(params)
   try MysqlStatement.check_begin(transaction_open?(handle), statement.verb)
   case start(handle, sql)
-    error(message) if text_only?(message, params) -> text_execute(handle, sql, statement.verb)
+    error(message) if text_only?(message.message, params) -> text_execute(handle, sql, statement.verb)
     error(message) -> error(message)
     ok(stmt) ->
       changed = launch_execute(stmt, params, statement.verb)

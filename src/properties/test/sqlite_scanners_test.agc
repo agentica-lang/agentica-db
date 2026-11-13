@@ -1,6 +1,8 @@
 import Prop from "pkg/prop/prop"
 import Scanners from "../sqlite_scanners"
 
+private
+
 # These read the statement cache of the native driver (`shorts`), so the FFI run of CI leaves this file out.
 RUNS = 100
 

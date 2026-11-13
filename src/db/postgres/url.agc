@@ -9,6 +9,26 @@
 
 import Milliseconds from "../support/milliseconds"
 
+## What libpq is given, the limit of each statement (0: none), the prepared statements that the native driver keeps
+## per connection, and what one call of it gives at most: `batch_rows` rows or about `batch_bytes` bytes of values (a
+## longer result takes more calls). The FFI driver has no cache and reads the whole result at once.
+struct Target
+  conninfo: String
+  timeout_ms: Int = 0
+  statement_cache: Int = 100
+  batch_rows: Int = 100
+  batch_bytes: Int = 262_144
+end
+
+## Reads a url or a conninfo string.
+def parse(text: String) -> Result[Target]
+  return strip_url(text) if URL_PREFIXES.any? do |prefix| text.start_with?(prefix) end
+
+  strip_conninfo(text)
+end
+
+private
+
 URL_PREFIXES = ["postgres://", "postgresql://"]
 PARAMETER = "timeout_ms"
 PARAMETERS = Set.new([PARAMETER, "statement_cache", "batch_rows", "batch_bytes"])
@@ -22,24 +42,6 @@ MAX_BATCH_BYTES = 262_144
 MAX_DIGITS = 9
 DIGIT_ZERO = 48
 DIGIT_NINE = 57
-
-## What libpq is given, the limit of each statement (0: none), the prepared statements that the native driver keeps
-## per connection, and what one call of it gives at most: `batch_rows` rows or about `batch_bytes` bytes of values (a
-## longer result takes more calls). The FFI driver has no cache and reads the whole result at once.
-export struct Target
-  conninfo: String
-  timeout_ms: Int = 0
-  statement_cache: Int = 100
-  batch_rows: Int = 100
-  batch_bytes: Int = 262_144
-end
-
-## Reads a url or a conninfo string.
-export def parse(text: String) -> Result[Target]
-  return strip_url(text) if URL_PREFIXES.any? do |prefix| text.start_with?(prefix) end
-
-  strip_conninfo(text)
-end
 
 def strip_url(url: String) -> Result[Target]
   found = url.index_of("?")

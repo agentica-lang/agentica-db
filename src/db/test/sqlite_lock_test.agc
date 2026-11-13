@@ -1,5 +1,7 @@
 import SqliteLock from "../sqlite/lock"
 
+private
+
 def main() -> Void
   Test.run([
     Test.test("a lock that another connection lets go is waited for, a stale snapshot is not") do

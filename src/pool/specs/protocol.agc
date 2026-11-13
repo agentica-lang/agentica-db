@@ -5,7 +5,7 @@
 ## reason the request or the expectation failed.
 
 ## The reply that means the request worked.
-export OK = "ok"
+OK = "ok"
 
 ## A request. The ops are `start` and `start_fails` (table: the settings, a header and a name and value per row;
 ## text: for `start_fails`, the start of the error), `job` (name, kind: `holds`, `probe`, `loops`, `crashes`,
@@ -15,7 +15,7 @@ export OK = "ok"
 ## `expect_job` (name, text: the start of its result), `expect_timeout` (name), `expect_order` (text: the names in
 ## the order they finished, joined by commas), `expect_count` (name: the counter, number: its value, kind: `is` or
 ## `reaches`, wait: the milliseconds to wait for it).
-export struct Request
+struct Request
   op: String
   name: String = ""
   kind: String = ""

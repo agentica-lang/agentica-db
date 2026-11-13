@@ -4,6 +4,52 @@
 
 import Prop from "pkg/prop/prop"
 
+## Which special floats a generator may make: false for a database that cannot hold them.
+struct FloatKinds
+  nan: Bool
+  infinite: Bool
+  negative_zero: Bool
+end
+
+## A cell of a bigint column, or `Null`.
+def int_cell() -> Prop.Gen[String] = nullable(int_gen())
+
+## A cell of a double column, or `Null`.
+def float_cell(kinds: FloatKinds) -> Prop.Gen[String] = nullable(float_gen(kinds))
+
+## A cell of a text column, or `Null`.
+def text_cell() -> Prop.Gen[String] = nullable(text_gen())
+
+## A cell of a blob column, or `Null`.
+def blob_cell() -> Prop.Gen[String] = nullable(blob_gen())
+
+## A cell of a numeric(20, 4) or decimal(20, 4) column, as text with four decimals, or `Null`.
+def decimal_cell() -> Prop.Gen[String] = nullable(decimal_gen())
+
+## A cell of a date column (years 1000 to 9999, the range that MySQL and PostgreSQL share), or `Null`.
+def date_cell() -> Prop.Gen[String] = nullable(Prop.map(year_month_day()) do |text| "Text #{text}" end)
+
+## A cell of a timestamp or datetime column (whole seconds), or `Null`.
+def timestamp_cell() -> Prop.Gen[String]
+  nullable(Prop.map(Prop.pair(year_month_day(), time_of_day())) do |pair| "Text #{pair.first} #{pair.second}" end)
+end
+
+## A cell of a time column, or `Null`.
+def time_cell() -> Prop.Gen[String] = nullable(Prop.map(time_of_day()) do |text| "Text #{text}" end)
+
+## The cell of a Float, with the spellings of the special values that a cell takes.
+def float_text(x: Float) -> String
+  return "Float NaN" if x != x
+
+  return "Float Infinity" if x > MAX_FLOAT
+
+  return "Float -Infinity" if x < 0.0 - MAX_FLOAT
+
+  "Float #{x}"
+end
+
+private
+
 MAX_FLOAT = 1.7976931348623157e308
 # The edge values of an Int, which a pick of the generator takes in half of the cases, so that the limits come up in
 # every run; the other half is any Int.
@@ -48,50 +94,6 @@ LAST_CODE_POINT = 1_114_111
 MAX_TEXT_PIECES = 4
 MAX_BLOB_BYTES = 12
 MAX_DECIMAL_DIGITS = 18
-
-## Which special floats a generator may make: false for a database that cannot hold them.
-export struct FloatKinds
-  nan: Bool
-  infinite: Bool
-  negative_zero: Bool
-end
-
-## A cell of a bigint column, or `Null`.
-export def int_cell() -> Prop.Gen[String] = nullable(int_gen())
-
-## A cell of a double column, or `Null`.
-export def float_cell(kinds: FloatKinds) -> Prop.Gen[String] = nullable(float_gen(kinds))
-
-## A cell of a text column, or `Null`.
-export def text_cell() -> Prop.Gen[String] = nullable(text_gen())
-
-## A cell of a blob column, or `Null`.
-export def blob_cell() -> Prop.Gen[String] = nullable(blob_gen())
-
-## A cell of a numeric(20, 4) or decimal(20, 4) column, as text with four decimals, or `Null`.
-export def decimal_cell() -> Prop.Gen[String] = nullable(decimal_gen())
-
-## A cell of a date column (years 1000 to 9999, the range that MySQL and PostgreSQL share), or `Null`.
-export def date_cell() -> Prop.Gen[String] = nullable(Prop.map(year_month_day()) do |text| "Text #{text}" end)
-
-## A cell of a timestamp or datetime column (whole seconds), or `Null`.
-export def timestamp_cell() -> Prop.Gen[String]
-  nullable(Prop.map(Prop.pair(year_month_day(), time_of_day())) do |pair| "Text #{pair.first} #{pair.second}" end)
-end
-
-## A cell of a time column, or `Null`.
-export def time_cell() -> Prop.Gen[String] = nullable(Prop.map(time_of_day()) do |text| "Text #{text}" end)
-
-## The cell of a Float, with the spellings of the special values that a cell takes.
-export def float_text(x: Float) -> String
-  return "Float NaN" if x != x
-
-  return "Float Infinity" if x > MAX_FLOAT
-
-  return "Float -Infinity" if x < 0.0 - MAX_FLOAT
-
-  "Float #{x}"
-end
 
 # A cell, or `Null` (the shrunk case).
 def nullable(gen: Prop.Gen[String]) -> Prop.Gen[String]

@@ -1,5 +1,7 @@
 import Pool from "../pool"
 
+private
+
 def main() -> Void
   Test.run([
     Test.test("only the checkout and the lease timeouts are timeouts") do

@@ -1,5 +1,7 @@
 import Dialect from "../orm/dialect"
 
+private
+
 def main() -> Void
   Test.run([
     Test.test("a name is a letter or an underscore, then letters, digits or underscores") do

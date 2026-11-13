@@ -1,5 +1,7 @@
 import MysqlSql from "../mysql/sql"
 
+private
+
 MORE_THAN_ONE = "mysql error: the sql has more than one statement"
 NO_STATEMENT = "mysql error: the sql has no statement"
 

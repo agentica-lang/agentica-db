@@ -71,7 +71,7 @@ done
 
 ## query
 
-The sql is yours, with `?` for the parameters. The columns it returns are matched with the fields by name, in any order, and the case must be the same. The database decides the name of a result column (SQLite and MySQL give the case of the table), so use `as` to choose it. An extra column is ignored. A missing column is an error, even for an `Optional` field (select its column, NULL or not), unless the field is a `JsonField`, which reads it as `Absent`.
+The sql is yours, with `?` for the parameters. The columns it returns are matched with the fields by name, in any order, and the case must be the same. The database decides the name of a result column (SQLite and MySQL give the case of the table), so use `as` to choose it. An extra column is ignored. A missing column is an error, even for an `Optional` field (select its column, NULL or not), unless the field is a `JSON.Field`, which reads it as `Absent`.
 
 Inside a transaction pass its connection: `Db.transaction(conn) do |tx| Orm.query(tx, users, sql, []) end`.
 

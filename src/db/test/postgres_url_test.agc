@@ -1,5 +1,7 @@
 import PostgresUrl from "../postgres/url"
 
+private
+
 def target_of(text: String) -> PostgresUrl.Target = PostgresUrl.parse(text).unwrap!
 
 def conninfo_of(text: String) -> String = target_of(text).conninfo

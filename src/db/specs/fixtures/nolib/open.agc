@@ -3,6 +3,8 @@
 
 import Db from "../../../db"
 
+private
+
 def main() -> Void
   line = IO.gets
   while line.ok?

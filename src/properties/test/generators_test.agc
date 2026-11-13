@@ -1,6 +1,8 @@
 import Prop from "pkg/prop/prop"
 import Gens from "../value_gens"
 
+private
+
 SAMPLE_SEED = 42
 SAMPLE_SIZE = 400
 

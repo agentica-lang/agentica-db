@@ -1,5 +1,7 @@
 import PostgresSql from "../postgres/sql"
 
+private
+
 MORE_THAN_ONE = "postgres error: the sql has more than one statement"
 NO_STATEMENT = "postgres error: the sql has no statement"
 HAND_WRITTEN = "postgres error: write ? for a parameter, not a $n placeholder"

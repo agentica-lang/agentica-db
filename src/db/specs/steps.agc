@@ -8,6 +8,8 @@ import BDD from "std/bdd"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
+private
+
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 REPLY_MS = 60_000
 SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"

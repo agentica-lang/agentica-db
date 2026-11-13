@@ -7,6 +7,42 @@ import SqliteLock from "lock"
 import SqliteWait from "wait"
 import {Row, Value} from "../support/value"
 
+## An open database; `Native.close` closes it.
+type Handle = RawHandle
+
+## Opens a database with `flags` (of `sqlite3_open_v2`).
+def open(path: String, flags: Int) -> Result[Handle]
+  try load_library()
+  opened = sqlite3_open_v2(path, flags, Native.pointer(0))
+  if opened.result != SQLITE_OK
+    # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
+    Native.close(opened.db)
+    return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
+  end
+
+  ok(opened.db)
+end
+
+## Runs one statement and gives its rows.
+def query(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[List[Row]]
+  run_query(Conn(handle: handle, wait: wait), sql, params)
+end
+
+## Runs one statement for its effect and gives the number of rows it inserted, updated or deleted.
+def execute(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[Int]
+  run_execute(Conn(handle: handle, wait: wait), sql, params)
+end
+
+## Stops the statement that runs on the connection, which then fails with `sqlite error 9: interrupted`.
+def sqlite3_interrupt(db: Handle) -> Void
+  raw_interrupt(db)
+end
+
+## 0 while a transaction is open.
+def sqlite3_get_autocommit(db: Handle) -> Int = raw_get_autocommit(db)
+
+private
+
 SQLITE_OK = 0
 SQLITE_ROW = 100
 SQLITE_DONE = 101
@@ -37,28 +73,25 @@ struct Stepped
 end
 
 extern "sqlite3"
-  ## An open database; `Native.close` closes it.
-  export resource Handle, free: sqlite3_close_v2
+  resource RawHandle, free: sqlite3_close_v2
   resource Stmt, free: sqlite3_finalize
-  compute def sqlite3_open_v2(filename: C.String, out db: Handle, flags: C.Int32, vfs: C.Pointer) -> C.Int32
-  def sqlite3_extended_errcode(db: Handle) -> C.Int32
-  def sqlite3_errmsg(db: Handle) -> C.String
+  compute def sqlite3_open_v2(filename: C.String, out db: RawHandle, flags: C.Int32, vfs: C.Pointer) -> C.Int32
+  def sqlite3_extended_errcode(db: RawHandle) -> C.Int32
+  def sqlite3_errmsg(db: RawHandle) -> C.String
   def sqlite3_errstr(code: C.Int32) -> C.String
-  ## Stops the statement that runs on the connection, which then fails with `sqlite error 9: interrupted`.
-  export def sqlite3_interrupt(db: Handle) -> Void
-  ## 0 while a transaction is open.
-  export def sqlite3_get_autocommit(db: Handle) -> C.Int32
-  def sqlite3_changes(db: Handle) -> C.Int32
-  def sqlite3_total_changes(db: Handle) -> C.Int32
+  def raw_interrupt(db: RawHandle) -> Void = "sqlite3_interrupt"
+  def raw_get_autocommit(db: RawHandle) -> C.Int32 = "sqlite3_get_autocommit"
+  def sqlite3_changes(db: RawHandle) -> C.Int32
+  def sqlite3_total_changes(db: RawHandle) -> C.Int32
   # Prepare is compute too: a big schema makes it slow. The probe is the same C function with an out pointer.
-  compute def sqlite3_prepare_v2(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: Stmt,
+  compute def sqlite3_prepare_v2(db: RawHandle, sql: C.Pointer, bytes: C.Int32, out stmt: Stmt,
                                  out tail: C.Pointer) -> C.Int32
-  compute def sqlite3_probe(db: Handle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
+  compute def sqlite3_probe(db: RawHandle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
                             out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
   compute def sqlite3_step(stmt: Stmt) -> C.Int32
   def sqlite3_stmt_readonly(stmt: Stmt) -> C.Int32
   def sqlite3_libversion_number() -> C.Int32
-  def sqlite3_txn_state(db: Handle, schema: C.Pointer) -> C.Int32
+  def sqlite3_txn_state(db: RawHandle, schema: C.Pointer) -> C.Int32
   def sqlite3_bind_parameter_count(stmt: Stmt) -> C.Int32
   def sqlite3_bind_null(stmt: Stmt, index: C.Int32) -> C.Int32
   def sqlite3_bind_int64(stmt: Stmt, index: C.Int32, value: C.Int64) -> C.Int32
@@ -74,29 +107,6 @@ extern "sqlite3"
   def sqlite3_column_text(stmt: Stmt, col: C.Int32) -> C.Pointer
   def sqlite3_column_blob(stmt: Stmt, col: C.Int32) -> C.Pointer
   def sqlite3_column_bytes(stmt: Stmt, col: C.Int32) -> C.Int32
-end
-
-## Opens a database with `flags` (of `sqlite3_open_v2`).
-export def open(path: String, flags: Int) -> Result[Handle]
-  try load_library()
-  opened = sqlite3_open_v2(path, flags, Native.pointer(0))
-  if opened.result != SQLITE_OK
-    # The handle may be NULL (out of memory), which errmsg cannot take, so the text comes from the code.
-    Native.close(opened.db)
-    return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
-  end
-
-  ok(opened.db)
-end
-
-## Runs one statement and gives its rows.
-export def query(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[List[Row]]
-  run_query(Conn(handle: handle, wait: wait), sql, params)
-end
-
-## Runs one statement for its effect and gives the number of rows it inserted, updated or deleted.
-export def execute(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[Int]
-  run_execute(Conn(handle: handle, wait: wait), sql, params)
 end
 
 def run_query(conn: Conn, sql: String, params: List[Value]) -> Result[List[Row]]
