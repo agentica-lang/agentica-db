@@ -61,16 +61,17 @@ Feature: Pooling
       | postgres | postgres error 42P01:          |
       | mysql    | mysql error 1146:              |
 
-  # The block runs past lease_ms: the caller gets the lease timeout, and the connection is closed and replaced.
+  # The block runs past lease_ms: the caller gets the lease timeout, and the connection is closed and replaced. A
+  # shorter lease_ms can time out the CREATE before it on a busy CI runner.
   Scenario Outline: A block that runs past lease_ms ends its connection on <adapter>
     Given a "<adapter>" database
     When I start a pool on "[URL]" with:
       | option   | value |
       | size     | 1     |
-      | lease_ms | 200   |
+      | lease_ms | 1000  |
     And I execute "create temporary table t (x integer)" in the pool
     And I keep a connection of the pool for 3000 ms
-    Then it fails with "pool error: lease timed out after 200 ms"
+    Then it fails with "pool error: lease timed out after 1000 ms"
     When I query "select x from t" in the pool
     Then it fails with "<missing table>"
 
