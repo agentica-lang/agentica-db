@@ -4,12 +4,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-13
+
 Needs Agentica 0.31.0 or later.
 
 ### Changed
 
 - **Breaking:** needs Agentica 0.31.0 or later: the sources use `private` (a file is public above a `private` line, so `export` before a declaration is gone) and the nested builtin names (`JSON.Value`, `JSON.Field`), and the errors of Agentica are records. The public names of the package do not change. CI tests with Agentica 0.31.0.
-- **Breaking:** `DbPool` is built on the `pool` package of agentica-lang/packages (tag `pool-0.1.0`), and `src/pool` is gone from this repository. `DbPool` and its public names do not change, and a project that imports `db_pool` outside the workspace gets `pool` as a dependency of `db`. What changes for users of `DbPool`: cancelling a caller now cancels its block, and the connection is interrupted, closed and replaced (it ran on for up to `lease_ms` before); `lease_ms: 0` is valid and runs the block in the caller with no limit, a crash in it is then the caller's own, the check-in of the connection is not bounded, and a block still running when the drain of `DbPool.close` ends finds its connection closed (on SQLite its next call crashes the caller), while with a `lease_ms` above 0 it is cancelled and its caller gets `pool error: closed`; the errors of the pool have kinds (`pool.timeout.checkout`, `pool.timeout.lease`, `pool.full`, `pool.closed`) and the same texts; the error of a setting out of range says `checkout_ms must be at least 1, and lease_ms 0 or more` (it said `checkout_ms and lease_ms must be at least 1`); the first health check of a connection comes at the first tick after `health_ms` of idleness; a connection is opened in a task of the pool of its own, not in the task that started the pool; a task that has used the pool counts its crash as observed (the run exits 0 when it is the only unobserved crash; the crash still prints), until [agentica-lang/agentica#1522](https://github.com/agentica-lang/agentica/issues/1522) is fixed; `DbPool.Pool` has no public fields `jobs` and `control` any more. The messages of `with` and the settings with their defaults are the same.
+- **Breaking:** `DbPool` is built on the `pool` package of agentica-lang/packages (tag `pool-0.1.1`), and `src/pool` is gone from this repository. `DbPool` and its public names do not change, and a project that imports `db_pool` outside the workspace gets `pool` as a dependency of `db`. What changes for users of `DbPool`: cancelling a caller now cancels its block, and the connection is interrupted, closed and replaced (it ran on for up to `lease_ms` before); `lease_ms: 0` is valid and runs the block in the caller with no limit, a crash in it is then the caller's own, the check-in of the connection is not bounded, and a block still running when the drain of `DbPool.close` ends finds its connection closed (on SQLite its next call crashes the caller), while with a `lease_ms` above 0 it is cancelled and its caller gets `pool error: closed`; the errors of the pool have kinds (`pool.timeout.checkout`, `pool.timeout.lease`, `pool.full`, `pool.closed`) and the same texts; the error of a setting out of range says `checkout_ms must be at least 1, and lease_ms 0 or more` (it said `checkout_ms and lease_ms must be at least 1`); the first health check of a connection comes at the first tick after `health_ms` of idleness; a connection is opened in a task of the pool of its own, not in the task that started the pool; a task that has used the pool counts its crash as observed (the run exits 0 when it is the only unobserved crash; the crash still prints), until [agentica-lang/agentica#1522](https://github.com/agentica-lang/agentica/issues/1522) is fixed; `DbPool.Pool` has no public fields `jobs` and `control` any more. The messages of `with` and the settings with their defaults are the same.
 - **Breaking, for the code of users:** `error(message)` in a `case` binds an `Error`, not a text. `Db.timeout?`, `DbPool.timeout?` and `Orm.classify` still take the text, so pass `e.message`. The messages of the failures are the same.
 - `Db.transaction` gives the error of its block as it is, with its kind, code and cause (it gave a plain error with the same text before); a failed rollback is still added to the message after a semicolon.
 
@@ -238,7 +240,8 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.10.0-alpha.1...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...HEAD
+[0.10.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.0-alpha.1...0.10.0
 [0.10.0-alpha.1]: https://github.com/agentica-lang/agentica-db/compare/0.9.0...0.10.0-alpha.1
 [0.9.0]: https://github.com/agentica-lang/agentica-db/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/agentica-lang/agentica-db/compare/0.7.0...0.8.0

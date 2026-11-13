@@ -3,7 +3,7 @@ name = "db"
 # db_pool.agc is a pool of connections on the generic pool, the `pool` package of agentica-lang/packages (its own tag,
 # `pool-X.Y.Z`; its releases are in that repository).
 [dependencies]
-pool = { git = "https://github.com/agentica-lang/packages", tag = "pool-0.1.0", subdir = "pool" }
+pool = { git = "https://github.com/agentica-lang/packages", tag = "pool-0.1.1", subdir = "pool" }
 
 # The system SQLite; `extern "sqlite3"` in sqlite/sqlite.agc opens the entry of the running system.
 [native.sqlite3]
