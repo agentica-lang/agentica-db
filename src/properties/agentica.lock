@@ -11,9 +11,9 @@ workspace = true
 name = "pool"
 git = "https://github.com/agentica-lang/packages"
 subdir = "pool"
-tag = "pool-0.1.0"
-commit = "78b279118b0ab37a598a577e4b78d44db4f67b5a"
-hash = "sha256:064784fb049ccc96798ec12537c76a6c94ce144b76811cc8eed8ce27d1c9cdff"
+tag = "pool-0.1.1"
+commit = "5aac32c3aee16b71effebb1125c9f6f265fde244"
+hash = "sha256:68ac2a47e1b6c762d524f793ad52c2f554f03d072892d30a2350e7212e635cdf"
 
 [[package]]
 name = "prop"

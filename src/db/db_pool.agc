@@ -54,11 +54,11 @@ type Pool = P.Pool[Config, Db.Connection]
 ## the Connection pool guide): `checkout_ms` is how long a caller waits for a connection and `lease_ms` how long a
 ## block may run, both in milliseconds (`lease_ms` 0 runs the block in the caller with no limit: a crash in it is the
 ## caller's own, the check-in after it is not bounded, and a block still running when the drain of `close` ends finds
-## its connection closed: on SQLite its next call crashes the caller); `max_age_ms` closes a connection that old and `idle_ms` one
-## unused that long (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check that pings the
-## idle connections and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0);
-## `max_waiting` is how many callers may wait in line for a connection at once (0 or more; 0 lets nobody wait, so a
-## caller that finds every connection busy is refused at once).
+## its connection closed: on SQLite its next call crashes the caller); `max_age_ms` closes a connection that old and
+## `idle_ms` one unused that long (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check
+## that pings the idle connections and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms`
+## must be 0); `max_waiting` is how many callers may wait in line for a connection at once (0 or more; 0 lets nobody
+## wait, so a caller that finds every connection busy is refused at once).
 ##
 ## The last three are the checkpoints of a SQLite file in WAL mode (see the top of this file): a commit that leaves
 ## `checkpoint_frames` frames (pages) in the WAL that no checkpoint has copied wakes the checkpointer, which also runs
