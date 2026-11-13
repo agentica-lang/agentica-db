@@ -6,7 +6,7 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.31.0 or later, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports the package first runs or is compiled: Agentica builds the native SQLite and PostgreSQL drivers then (see [SQLite](/databases/sqlite/#drivers)). agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.31.0-alpha.1 for the tag `0.10.0-alpha.1` (the release after it needs 0.31.0), and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports the package first runs or is compiled: Agentica builds the native SQLite and PostgreSQL drivers then (see [SQLite](/databases/sqlite/#drivers)). agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]

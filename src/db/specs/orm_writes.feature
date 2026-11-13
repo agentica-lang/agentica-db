@@ -1,9 +1,9 @@
 Feature: Orm writes
   Orm inserts, updates, deletes and patches the rows of a table through its schema. The scenarios use the `people`
   table and the struct Person of the driver, as in orm.feature, with a key the database numbers: the `create` column of
-  the examples is the table of each adapter. An insert leaves out a generated key and the JsonField age of a Partial
+  the examples is the table of each adapter. An insert leaves out a generated key and the JSON.Field age of a Partial
   that is Absent (the database default applies) and gives the row back as the database stored it; an age that is
-  `none` is a NULL. Update, delete and patch give the number of rows they changed. A cell `Absent` is a JsonField with
+  `none` is a NULL. Update, delete and patch give the number of rows they changed. A cell `Absent` is a JSON.Field with
   no value, so only a partial person has one.
 
   Scenario Outline: An insert gives the row back with its generated key and its defaults on <adapter>

@@ -4,8 +4,8 @@ Feature: Orm builder
   the kind of its column, or the query fails when it ends, before any sql runs. The scenarios use the `people` table
   and the struct Person of the driver, as in orm.feature. Each row of the table of a query is a step of the builder:
   `where_eq`, `order_by`, `order_by_desc`, `limit`, `offset` (column or number, then a typed cell), `where_in` and
-  `where` (a column or an sql, then typed cells apart by `; `), and `changes` (the Json of `update_all`). A result
-  shows the persons read; a count shows in the changed row count.
+  `where` (a column or an sql, then typed cells apart by `; `), and `changes` (the `JSON.Value` of `update_all`). A
+  result shows the persons read; a count shows in the changed row count.
 
   Scenario Outline: A query filters, orders and reads the rows on <adapter>
     Given a "<adapter>" database

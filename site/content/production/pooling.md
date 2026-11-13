@@ -93,7 +93,7 @@ Since its `COMMIT` no longer checkpoints, the `COMMIT` of a transaction of short
 - `pool error: closed`: the pool is closed.
 - `sqlite error 9: interrupted`, `postgres error 57014: ...` and the like: a statement ran over its `timeout_ms`.
 
-`DbPool.timeout?(message)` is true for the first two and for a statement that ran over its `timeout_ms` (the same as `Db.timeout?`), so a handler can answer "busy, try later" to all of them. The other errors are those of the block. Cancelling a caller does not cancel its block: `lease_ms` bounds it.
+`DbPool.timeout?(e.message)` is true for the first two and for a statement that ran over its `timeout_ms` (the same as `Db.timeout?`), so a handler can answer "busy, try later" to all of them. The other errors are those of the block. Cancelling a caller does not cancel its block: `lease_ms` bounds it.
 
 ## A block that runs past `lease_ms`
 

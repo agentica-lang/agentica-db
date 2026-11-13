@@ -4,8 +4,8 @@ Database package for [Agentica](https://github.com/agentica-lang/agentica): one 
 MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI; SQLite and
 PostgreSQL also have a native driver (a statement cache, many rows per call), the default.
 
-agentica-db 0.10.0-alpha.1 needs Agentica 0.31.0 or later, and a C compiler (`cc`, or `CC`; on
-Debian `gcc` and `libc6-dev`) where a program that imports it first runs or is compiled: Agentica then builds the
+agentica-db 0.10.0-alpha.1 needs Agentica 0.31.0-alpha.1 (the release after it needs 0.31.0), and a C compiler (`cc`, or
+`CC`; on Debian `gcc` and `libc6-dev`) where a program that imports it first runs or is compiled: Agentica then builds the
 native SQLite and PostgreSQL drivers into its package cache. Documentation: https://agentica-lang.github.io/agentica-db/
 
 ## Install
