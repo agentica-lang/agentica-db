@@ -64,12 +64,8 @@ def keeps_invariants(setup: Setup, jobs: List[Job]) -> Result[Void]
 end
 
 ## A burst of `count` callers that hold a resource at once, until the last of them is refused, holding a resource or
-## standing in line. The pool serves `size + max_overflow` of them and lets `max_waiting` wait, so at least the rest
-## are refused with a full queue, and no more of them hold a resource than the pool has. An eager pool with no
-## overflow has its resources at once, so there the numbers are exact. A resource that the owner is still making (an
-## overflow one, or any of a lazy pool) is not idle when a caller asks, so the caller can be refused although it
-## could be served, even a lone caller of a lazy pool with `max_waiting` 0 (agentica-lang/agentica-db#86): there the
-## numbers are bounds, and for a lazy pool the upper bound of refusals is every caller.
+## standing in line. The pool serves `size + max_overflow` of them and lets `max_waiting` wait, and refuses the rest
+## with a full queue, also while it is still making the resources (an overflow one, or any of a lazy pool).
 def keeps_line(setup: Setup, count: Int) -> Result[Void]
   stats: ATS[String, Int] = ATS.new()
   pool = try Pool.start(spec_of(setup, stats, BURST_CHECKOUT_MS, BURST_LEASE_MS))
@@ -82,8 +78,10 @@ def keeps_line(setup: Setup, count: Int) -> Result[Void]
   try placed
   try answered
   try audit(setup, pool, stats)
-  try within("callers refused", count_of(stats, "refused"), refusals(setup, count), setup)
-  try within("resources in use at once", peak_of(stats), peaks(setup, count), setup)
+  capacity = setup.size + setup.max_overflow
+  refused = [0, count - capacity - setup.max_waiting].max.unwrap!
+  try exactly("callers refused", count_of(stats, "refused"), refused, setup)
+  try exactly("resources in use at once", peak_of(stats), [count, capacity].min.unwrap!, setup)
   if count_of(stats, "failed") > 0
     return error("#{count_of(stats, "failed")} of #{count} callers failed without being refused (#{describe(setup)})")
   end
@@ -130,11 +128,6 @@ struct JobArgs
   gated: Bool
 end
 
-struct Bounds
-  least: Int
-  most: Int
-end
-
 # The tasks of the callers: the ones that are awaited, and the ones that cancel a caller.
 struct Started
   waited: List[Task[Void]]
@@ -151,31 +144,8 @@ struct CloseArgs
   ms: Int
 end
 
-# The least and the most callers that are refused.
-def refusals(setup: Setup, count: Int) -> Bounds
-  least = [0, count - setup.size - setup.max_overflow - setup.max_waiting].max.unwrap!
-  most = [0, count - setup.size - setup.max_waiting].max.unwrap!
-  if setup.lazy
-    most = count
-  end
-
-  Bounds(least: least, most: most)
-end
-
-# The least and the most resources in use at once.
-def peaks(setup: Setup, count: Int) -> Bounds
-  least = [count, setup.size].min.unwrap!
-  if setup.lazy
-    least = 0
-  end
-
-  Bounds(least: least, most: [count, setup.size + setup.max_overflow].min.unwrap!)
-end
-
-def within(what: String, found: Int, bounds: Bounds, setup: Setup) -> Result[Void]
-  if found < bounds.least or found > bounds.most
-    return error("#{found} #{what}, from #{bounds.least} to #{bounds.most} expected (#{describe(setup)})")
-  end
+def exactly(what: String, found: Int, expected: Int, setup: Setup) -> Result[Void]
+  return error("#{found} #{what}, #{expected} expected (#{describe(setup)})") if found != expected
 
   ok()
 end
