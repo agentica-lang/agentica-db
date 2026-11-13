@@ -70,8 +70,7 @@ jobs:
         run: |
           agentica --version
           make check
-          (cd src/db && agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test)
-          (cd src/properties && agentica fmt --check *.agc test)
+          make fmt-check
           make site-samples
 
       # The sqlite job of macOS and Windows runs the scenarios named "on sqlite" (an outline has "on <adapter>"), so a
