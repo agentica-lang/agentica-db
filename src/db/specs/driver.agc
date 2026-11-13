@@ -1293,9 +1293,8 @@ def transaction(state: State, req: Request) -> State
   end
 end
 
-# The text of a failed transaction: its message, or, for a block that fails with a kind and a code, `kind
-# code: message`,
-# so a scenario sees what the call gave back, not only the text.
+# The text of a failed transaction: its message, or, for a block that fails with a kind and a code, `kind code:
+# message`, so a scenario sees what the call gave back, not only the text.
 def described(e: Error, req: Request) -> String
   return e.message if req.kind.empty?
 

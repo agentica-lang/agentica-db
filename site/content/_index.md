@@ -47,4 +47,4 @@ end
 
 Not yet: preloading of related rows.
 
-agentica-db needs Agentica 0.31.0 or later and a C compiler, and is under the Apache License 2.0.
+agentica-db 0.10.0-alpha.1 needs Agentica 0.31.0-alpha.1 (the release after it needs 0.31.0) and a C compiler, and is under the Apache License 2.0.
