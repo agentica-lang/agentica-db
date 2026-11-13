@@ -5,25 +5,22 @@
 import Db from "../db"
 import Dialect from "dialect"
 
-# The largest Int: a page with an offset and no limit still needs a limit in SQLite and MySQL.
-NO_LIMIT = 9223372036854775807
-
 ## One condition: a column equal to a value (`Null` is `is null`), a column among values (no value matches nothing),
 ## or a piece of sql of the caller with its parameters.
-export enum Cond
+enum Cond
   Eq(String, Db.Value)
   In(String, List[Db.Value])
   Raw(String, List[Db.Value])
 end
 
 ## One column of the order, ascending or not.
-export struct Order
+struct Order
   column: String
   desc: Bool
 end
 
 ## What a query holds: the conditions (all of them must hold), the order, the limit (-1 for none) and the offset.
-export struct Plan
+struct Plan
   conds: List[Cond] = []
   orders: List[Order] = []
   limit: Int = -1
@@ -31,13 +28,13 @@ export struct Plan
 end
 
 ## A piece of sql and its parameters, in the order of the `?` in the sql.
-export struct Piece
+struct Piece
   sql: String
   params: List[Db.Value]
 end
 
 ## ` where a and b`, or nothing when the plan has no condition.
-export def where_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
+def where_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
   texts: List[String] = []
   params: List[Db.Value] = []
   for cond in plan.conds
@@ -52,7 +49,7 @@ export def where_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
 end
 
 ## ` order by a, b desc limit ? offset ?`, with only the parts the plan has.
-export def tail_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
+def tail_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
   names: List[String] = []
   for order in plan.orders
     quoted = try Dialect.quote(conn, order.column)
@@ -83,7 +80,12 @@ export def tail_piece(conn: Db.Connection, plan: Plan) -> Result[Piece]
 end
 
 ## Whether the plan has an order, a limit or an offset.
-export def paged?(plan: Plan) -> Bool = not plan.orders.empty? or plan.limit >= 0 or plan.offset > 0
+def paged?(plan: Plan) -> Bool = not plan.orders.empty? or plan.limit >= 0 or plan.offset > 0
+
+private
+
+# The largest Int: a page with an offset and no limit still needs a limit in SQLite and MySQL.
+NO_LIMIT = 9223372036854775807
 
 def max_rows(plan: Plan) -> Int
   return plan.limit if plan.limit >= 0

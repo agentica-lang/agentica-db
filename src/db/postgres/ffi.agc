@@ -5,6 +5,47 @@
 import PostgresStatement from "statement"
 import {Row, Value} from "../support/value"
 
+## An open connection.
+type Handle = RawHandle
+
+## Connects with what libpq takes (a url or a conninfo string) and sets the client encoding to UTF8.
+def open(conninfo: String) -> Result[Handle]
+  try load_library()
+  case pq_connectdb(conninfo)
+    error(_) -> error("postgres error: out of memory")
+    ok(handle) ->
+      try check_connection(handle)
+      ok(handle)
+  end
+end
+
+## PQstatus and PQtransactionStatus of the connection, as `status * 16 + transaction status`.
+def status(handle: Handle) -> Int = pq_status(handle) * 16 + pq_transaction_status(handle)
+
+## Runs one statement with bound parameters and gives its rows. Two columns with one name are an error.
+def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
+  res = try run(handle, sql, params)
+  names = column_names(res)
+  if names.uniq.size != names.size
+    pq_clear(res)
+    return error("postgres error: the result has the column #{repeated_name(names)} twice, alias one of them")
+  end
+
+  rows = read_rows(res, names)
+  pq_clear(res)
+  rows
+end
+
+## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
+def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
+  res = try run(handle, sql, params)
+  changed = changed_rows(res)
+  pq_clear(res)
+  changed
+end
+
+private
+
 CONNECTION_OK = 0
 PGRES_EMPTY_QUERY = 0
 PGRES_COMMAND_OK = 1
@@ -37,15 +78,14 @@ EXPONENT_LIMIT = 400
 
 # The libpq names start with a capital letter, which a def name cannot, so each def says its C name.
 extern "pq"
-  ## An open connection.
-  export resource Handle, free: PQfinish
-  compute def pq_connectdb(conninfo: C.String) -> Handle = "PQconnectdb"
-  def pq_status(conn: Handle) -> C.Int32 = "PQstatus"
-  def pq_transaction_status(conn: Handle) -> C.Int32 = "PQtransactionStatus"
-  def pq_error_message(conn: Handle) -> C.String = "PQerrorMessage"
+  resource RawHandle, free: PQfinish
+  compute def pq_connectdb(conninfo: C.String) -> RawHandle = "PQconnectdb"
+  def pq_status(conn: RawHandle) -> C.Int32 = "PQstatus"
+  def pq_transaction_status(conn: RawHandle) -> C.Int32 = "PQtransactionStatus"
+  def pq_error_message(conn: RawHandle) -> C.String = "PQerrorMessage"
   # The two calls below wait for the server, so they are compute.
-  compute def pq_set_client_encoding(conn: Handle, encoding: C.String) -> C.Int32 = "PQsetClientEncoding"
-  compute def pq_exec_params(conn: Handle, command: C.String, count: C.Int32, types: C.Pointer,
+  compute def pq_set_client_encoding(conn: RawHandle, encoding: C.String) -> C.Int32 = "PQsetClientEncoding"
+  compute def pq_exec_params(conn: RawHandle, command: C.String, count: C.Int32, types: C.Pointer,
                              values: C.Pointer, lengths: C.Pointer, formats: C.Pointer,
                              format: C.Int32) -> C.Pointer = "PQexecParams"
   def pq_clear(res: C.Pointer) -> Void = "PQclear"
@@ -63,45 +103,9 @@ extern "pq"
   def pq_unescape_bytea(text: C.Pointer, out length: C.Int64) -> C.Pointer = "PQunescapeBytea"
   def pq_freemem(memory: C.Pointer) -> Void = "PQfreemem"
   # The calls that leave a COPY that a statement started.
-  def pq_put_copy_end(conn: Handle, message: C.String) -> C.Int32 = "PQputCopyEnd"
-  compute def pq_get_copy_data(conn: Handle, out data: C.Pointer, async: C.Int32) -> C.Int32 = "PQgetCopyData"
-  compute def pq_get_result(conn: Handle) -> C.Pointer = "PQgetResult"
-end
-
-## Connects with what libpq takes (a url or a conninfo string) and sets the client encoding to UTF8.
-export def open(conninfo: String) -> Result[Handle]
-  try load_library()
-  case pq_connectdb(conninfo)
-    error(_) -> error("postgres error: out of memory")
-    ok(handle) ->
-      try check_connection(handle)
-      ok(handle)
-  end
-end
-
-## PQstatus and PQtransactionStatus of the connection, as `status * 16 + transaction status`.
-export def status(handle: Handle) -> Int = pq_status(handle) * 16 + pq_transaction_status(handle)
-
-## Runs one statement with bound parameters and gives its rows. Two columns with one name are an error.
-export def query(handle: Handle, sql: String, params: List[Value]) -> Result[List[Row]]
-  res = try run(handle, sql, params)
-  names = column_names(res)
-  if names.uniq.size != names.size
-    pq_clear(res)
-    return error("postgres error: the result has the column #{repeated_name(names)} twice, alias one of them")
-  end
-
-  rows = read_rows(res, names)
-  pq_clear(res)
-  rows
-end
-
-## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
-export def execute(handle: Handle, sql: String, params: List[Value]) -> Result[Int]
-  res = try run(handle, sql, params)
-  changed = changed_rows(res)
-  pq_clear(res)
-  changed
+  def pq_put_copy_end(conn: RawHandle, message: C.String) -> C.Int32 = "PQputCopyEnd"
+  compute def pq_get_copy_data(conn: RawHandle, out data: C.Pointer, async: C.Int32) -> C.Int32 = "PQgetCopyData"
+  compute def pq_get_result(conn: RawHandle) -> C.Pointer = "PQgetResult"
 end
 
 # A library that is missing is an error here, not a stop of the program at the first call.

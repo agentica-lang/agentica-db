@@ -5,6 +5,57 @@
 ## (`-- ?`, `/* ? */`, which nest) stays as it is. The PostgreSQL operators that contain `?` (jsonb `?`, `?|`, `?&`)
 ## are not available: call `jsonb_exists`, `jsonb_exists_any` or `jsonb_exists_all`.
 
+## The sql with `$n` placeholders, how many there are, and its first word in lower case (`begin`, `commit`,
+## `select`; empty when the statement starts with something else), read after any whitespace and comments.
+struct Translated
+  sql: String
+  count: Int
+  verb: String
+end
+
+## Translates `?` to `$1..$n`. An error is `postgres error: <message>` for a NUL, a second statement, no statement
+## at all, or a `$n` written by hand.
+def translate(sql: String) -> Result[Translated]
+  return error("postgres error: the sql contains a NUL character") if sql.include?(String.from_code(0))
+
+  bytes = sql.bytes
+  scan = Scan(parts: [], from: 0, at: 0, count: 0, depth: 0, ended: false, content: false, verb: "")
+  while scan.at < bytes.size
+    scan = try step(bytes, scan)
+  end
+
+  return error("postgres error: the sql has no statement") if not scan.content
+
+  translated = try String.from_bytes(Bytes.concat(scan.parts.push(bytes.drop(scan.from))))
+  ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
+end
+
+## The first `limit` bare words of the sql in lower case, outside literals, quoted names and comments (`deallocate
+## mine /* all */` gives `["deallocate", "mine"]`). A scan of its own, apart from `translate`, so that only the
+## statements that need it pay for it.
+def first_words(sql: String, limit: Int) -> List[String]
+  bytes = sql.bytes
+  words: List[String] = []
+  at = 0
+  while at < bytes.size and words.size < limit
+    byte = bytes[at]
+    stop = span_end(bytes, at)
+    if stop > at
+      at = stop
+    elsif (letter?(byte) or byte >= FIRST_NON_ASCII) and not word_before?(bytes, at)
+      word = bare_word_at(bytes, at)
+      words = words.push(word.downcase)
+      at = word_end(bytes, at)
+    else
+      at += 1
+    end
+  end
+
+  words
+end
+
+private
+
 TAB = 9
 NEWLINE = 10
 CARRIAGE_RETURN = 13
@@ -31,14 +82,6 @@ LOWER_E = 101
 LOWER_Z = 122
 FIRST_NON_ASCII = 128
 
-## The sql with `$n` placeholders, how many there are, and its first word in lower case (`begin`, `commit`,
-## `select`; empty when the statement starts with something else), read after any whitespace and comments.
-export struct Translated
-  sql: String
-  count: Int
-  verb: String
-end
-
 # The state of the walk: the parts of the translated sql so far, the start of the bytes not copied yet (they are
 # copied as they are, in one slice, when a placeholder or the end comes), the next byte to read, and what has been
 # seen.
@@ -51,47 +94,6 @@ struct Scan
   ended: Bool
   content: Bool
   verb: String
-end
-
-## Translates `?` to `$1..$n`. An error is `postgres error: <message>` for a NUL, a second statement, no statement
-## at all, or a `$n` written by hand.
-export def translate(sql: String) -> Result[Translated]
-  return error("postgres error: the sql contains a NUL character") if sql.include?(String.from_code(0))
-
-  bytes = sql.bytes
-  scan = Scan(parts: [], from: 0, at: 0, count: 0, depth: 0, ended: false, content: false, verb: "")
-  while scan.at < bytes.size
-    scan = try step(bytes, scan)
-  end
-
-  return error("postgres error: the sql has no statement") if not scan.content
-
-  translated = try String.from_bytes(Bytes.concat(scan.parts.push(bytes.drop(scan.from))))
-  ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
-end
-
-## The first `limit` bare words of the sql in lower case, outside literals, quoted names and comments (`deallocate
-## mine /* all */` gives `["deallocate", "mine"]`). A scan of its own, apart from `translate`, so that only the
-## statements that need it pay for it.
-export def first_words(sql: String, limit: Int) -> List[String]
-  bytes = sql.bytes
-  words: List[String] = []
-  at = 0
-  while at < bytes.size and words.size < limit
-    byte = bytes[at]
-    stop = span_end(bytes, at)
-    if stop > at
-      at = stop
-    elsif (letter?(byte) or byte >= FIRST_NON_ASCII) and not word_before?(bytes, at)
-      word = bare_word_at(bytes, at)
-      words = words.push(word.downcase)
-      at = word_end(bytes, at)
-    else
-      at += 1
-    end
-  end
-
-  words
 end
 
 # Reads one literal, comment, placeholder or byte.

@@ -6,37 +6,14 @@
 ## control character after the two dashes) and `#` comments run to the end of the line, and `/* .. */` comments do
 ## not nest. A `/*! .. */` or `/*M! .. */` comment is code for the server, so it counts as content.
 
-TAB = 9
-NEWLINE = 10
-CARRIAGE_RETURN = 13
-SPACE = 32
-EXCLAMATION = 33
-DOUBLE_QUOTE = 34
-HASH = 35
-SINGLE_QUOTE = 39
-STAR = 42
-MINUS = 45
-SLASH = 47
-SEMICOLON = 59
-UPPER_A = 65
-UPPER_M = 77
-UPPER_Z = 90
-BACKSLASH = 92
-BACKTICK = 96
-LOWER_A = 97
-LOWER_Z = 122
-# The characters that start a literal, an identifier, a comment or a second statement. Sql with none of them is one
-# statement, and the scan below, which costs about 60 VM steps for each byte, is not needed.
-SCAN_MARKS = ["'", "\"", "`", "#", "-", "/", ";"]
-
 ## The first word of the statement in lower case (`begin`, `start`, `insert`, `select`; empty when the statement
 ## starts with something else), read after any whitespace and comments.
-export struct Statement
+struct Statement
   verb: String
 end
 
 ## Checks the sql. An error is `mysql error: <message>` for a NUL, a second statement, or no statement at all.
-export def inspect(sql: String) -> Result[Statement]
+def inspect(sql: String) -> Result[Statement]
   return error("mysql error: the sql contains a NUL character") if sql.include?(String.from_code(0))
 
   return plain_statement(sql) if not SCAN_MARKS.any? do |mark| sql.include?(mark) end
@@ -73,6 +50,31 @@ export def inspect(sql: String) -> Result[Statement]
 
   ok(Statement(verb: verb))
 end
+
+private
+
+TAB = 9
+NEWLINE = 10
+CARRIAGE_RETURN = 13
+SPACE = 32
+EXCLAMATION = 33
+DOUBLE_QUOTE = 34
+HASH = 35
+SINGLE_QUOTE = 39
+STAR = 42
+MINUS = 45
+SLASH = 47
+SEMICOLON = 59
+UPPER_A = 65
+UPPER_M = 77
+UPPER_Z = 90
+BACKSLASH = 92
+BACKTICK = 96
+LOWER_A = 97
+LOWER_Z = 122
+# The characters that start a literal, an identifier, a comment or a second statement. Sql with none of them is one
+# statement, and the scan below, which costs about 60 VM steps for each byte, is not needed.
+SCAN_MARKS = ["'", "\"", "`", "#", "-", "/", ";"]
 
 # The statement of sql that has none of SCAN_MARKS: its first word, after the white space.
 def plain_statement(sql: String) -> Result[Statement]

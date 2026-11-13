@@ -4,6 +4,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Needs Agentica 0.31.0 or later.
+
+### Changed
+
+- **Breaking:** needs Agentica 0.31.0 or later: the sources use `private` (a file is public above a `private` line, so `export` before a declaration is gone) and the nested builtin names (`JSON.Value`, `JSON.Field`), and the errors of Agentica are records. The public names of the package do not change. CI tests with Agentica 0.31.0.
+- **Breaking, for the code of users:** `error(message)` in a `case` binds an `Error`, not a text. `Db.timeout?`, `DbPool.timeout?` and `Orm.classify` still take the text, so pass `e.message`. The messages of the failures are the same.
+- `Db.transaction` gives the error of its block as it is, with its kind, code and cause (it gave a plain error with the same text before); a failed rollback is still added to the message after a semicolon.
+
 ## [0.10.0-alpha.1] - 2026-11-12
 
 Needs Agentica 0.31.0-alpha.1 or later.

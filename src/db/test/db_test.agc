@@ -1,5 +1,7 @@
 import Db from "../db"
 
+private
+
 def main() -> Void
   Test.run([
     Test.test("the failures of a statement that ran over its time are timeouts, and no other") do

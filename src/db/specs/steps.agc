@@ -8,6 +8,8 @@ import BDD from "std/bdd"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
+private
+
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 REPLY_MS = 60_000
 SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"
@@ -93,6 +95,11 @@ def main() -> Void
     end,
     BDD.step("I run these statements in a transaction that fails with {string}:") do |ctx, args|
       send(ctx, Request(op: "transaction", text: args[0], table: BDD.table(ctx)))
+    end,
+    BDD.step(
+      "I run these statements in a transaction that fails with {string}, kind {string} and code {int}:",
+    ) do |ctx, args|
+      send(ctx, Request(op: "transaction", text: args[0], kind: args[1], number: args[2].to_i!, table: BDD.table(ctx)))
     end,
     BDD.step("I run these statements in a transaction that gives a count:") do |ctx, _args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), gives: true))

@@ -6,13 +6,13 @@ aliases:
   - /guide/orm-errors/
 ---
 
-An error is a text, since that is what a `Result` holds. A failure of the Orm is `orm error <code>: <table>: <message>`, and `Orm.classify(text)` gives its kind to `case` on, so a handler never matches message text.
+A failure is an `Error` of Agentica, and its `message` is the text: a failure of the Orm is `orm error <code>: <table>: <message>`, and `Orm.classify(e.message)` gives its kind to `case` on, so a handler never matches message text.
 
 | Kind | Means | Suggested status |
 |---|---|---|
 | `Orm.Failure.BadRequest(message)` | a column, value or key the caller got wrong: a column that is not in the schema, a value of another kind, an unknown key in `patch`, no condition in `delete_all` | 400 |
 | `Orm.Failure.Conflict(message)` | a unique or foreign-key violation, on any of the three databases | 409 |
-| `Orm.Failure.NotDecodable(message)` | a row that does not fit its struct: a missing column, a NULL in a field that is not an `Optional` or a `JsonField` | 500 |
+| `Orm.Failure.NotDecodable(message)` | a row that does not fit its struct: a missing column, a NULL in a field that is not an `Optional` or a `JSON.Field` | 500 |
 | `Orm.Failure.Schema(message)` | a schema that is not sound: a name that is not an identifier, a field type no column holds, a key that is not a field | 500 |
 | `Orm.Failure.Database(message)` | any other error of the database (a lost connection, a missing table, a not null), or of the Orm's own bookkeeping | 500 |
 
@@ -43,12 +43,12 @@ def run() -> Result[Void]
   try Orm.insert(conn, users, User(name: "Ana"))
   case Orm.insert(conn, users, User(name: "Ana"))
     ok(_) -> puts("inserted")
-    error(message) -> puts(status(message))
+    error(e) -> puts(status(e.message))
   end
 
   case Orm.from(users) |> Orm.where_eq("nickname", Db.Value.Text("x")) |> Orm.all(conn)
     ok(_) -> puts("found")
-    error(message) -> puts(status(message))
+    error(e) -> puts(status(e.message))
   end
 
   Db.close(conn)

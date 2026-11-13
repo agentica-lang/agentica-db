@@ -1,5 +1,7 @@
 import MysqlUrl from "../mysql/url"
 
+private
+
 def target_of(url: String) -> MysqlUrl.Target = MysqlUrl.parse(url).unwrap!
 
 def refused(url: String, message: String) -> Result[Void]

@@ -10,21 +10,16 @@ import Prop from "pkg/prop/prop"
 import Gens from "value_gens"
 
 ## The databases a property runs on.
-export enum Adapter
+enum Adapter
   Sqlite
   Postgres
   Mysql
 end
 
-struct Column
-  name: String
-  type: String
-end
-
 ## Writes generated rows to a database of `adapter` and reads them back, `runs` times, and checks that each row reads
 ## back as `held` says (`Prop.oracle`: a failure names the shrunk row and the seed). PostgreSQL and MySQL need their
 ## url variable.
-export def reads_back(adapter: Adapter, runs: Int) -> Result[Void]
+def reads_back(adapter: Adapter, runs: Int) -> Result[Void]
   conn = try connect(adapter)
   columns = columns_of(adapter)
   made = Db.execute(conn, create_sql(columns), [])
@@ -42,7 +37,7 @@ export def reads_back(adapter: Adapter, runs: Int) -> Result[Void]
 end
 
 ## The generator of a row of the table of `adapter`: a list of cells, one for each column.
-export def row_gen(adapter: Adapter) -> Prop.Gen[List[String]]
+def row_gen(adapter: Adapter) -> Prop.Gen[List[String]]
   kinds = float_kinds(adapter)
 
   core = Prop.pair(Prop.pair(Gens.int_cell(), Gens.float_cell(kinds)), Prop.pair(Gens.text_cell(), Gens.blob_cell()))
@@ -69,6 +64,13 @@ export def row_gen(adapter: Adapter) -> Prop.Gen[List[String]]
       pair.second.second.second,
     ]
   end
+end
+
+private
+
+struct Column
+  name: String
+  type: String
 end
 
 def connect(adapter: Adapter) -> Result[Db.Connection]

@@ -22,48 +22,34 @@
 
 import Db from "db"
 
-VERSION_COLUMNS = "version, name, checksum"
-MAX_NAME_BYTES = 255
-
 ## What a migration does: run these statements (one per entry, each with no parameters), or call this function.
-export enum Action
+enum Action
   Statements(List[String])
   Code(Fn[Db.Connection, Result[Void]])
 end
 
 ## One step of the history of a database. Make one with `sql` or `code`.
-export struct Migration
+struct Migration
   version: Int
   name: String
   action: Action
 end
 
-# A row of the history table.
-struct Row
-  version: Int
-  name: String
-  checksum: String
-end
-
 ## A migration that runs sql statements, one `Db.execute` each.
-export def sql(version: Int, name: String, statements: List[String]) -> Migration
+def sql(version: Int, name: String, statements: List[String]) -> Migration
   Migration(version: version, name: name, action: Action.Statements(statements))
 end
 
 ## A migration that calls `body` with the connection of its transaction. A function has no text to check, so a change
 ## to it is not noticed.
-export def code(version: Int, name: String, body: Fn[Db.Connection, Result[Void]]) -> Migration
+def code(version: Int, name: String, body: Fn[Db.Connection, Result[Void]]) -> Migration
   Migration(version: version, name: name, action: Action.Code(body))
 end
 
 ## Applies the migrations that are not recorded yet, in order, and gives their versions (empty when there was nothing
 ## to do). `table` is where the history is kept (letters, digits and `_`); two lists with two tables are two
 ## histories.
-export def up(
-  conn: Db.Connection,
-  migrations: List[Migration],
-  table: String = "schema_migrations",
-) -> Result[List[Int]]
+def up(conn: Db.Connection, migrations: List[Migration], table: String = "schema_migrations") -> Result[List[Int]]
   try check_table(table)
   try check_list(migrations)
   try prepare_history(conn, table)
@@ -87,6 +73,18 @@ export def up(
   end
 
   ok(done)
+end
+
+private
+
+VERSION_COLUMNS = "version, name, checksum"
+MAX_NAME_BYTES = 255
+
+# A row of the history table.
+struct Row
+  version: Int
+  name: String
+  checksum: String
 end
 
 def label(migration: Migration) -> String = "#{migration.version} (#{migration.name})"

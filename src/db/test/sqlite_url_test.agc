@@ -1,5 +1,7 @@
 import SqliteUrl from "../sqlite/url"
 
+private
+
 def target_of(text: String) -> SqliteUrl.Target = SqliteUrl.parse(text).unwrap!
 
 def refused(text: String, message: String) -> Result[Void]

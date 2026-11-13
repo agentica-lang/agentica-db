@@ -36,42 +36,20 @@ import PostgresUrl from "url"
 import {Row, Value} from "../support/value"
 
 ## The statement that starts a transaction.
-export BEGIN_SQL = "BEGIN"
-CONNECTION_OK = 0
-# PGTransactionStatusType: a transaction is open (INTRANS) or failed (INERROR), or the state is not known.
-PQTRANS_INTRANS = 2
-PQTRANS_INERROR = 3
-PQTRANS_UNKNOWN = 4
-# The verbs of the statements that begin, end or step inside a transaction, and `set` (`SET TRANSACTION` fails after
-# any other statement of the transaction, 25001).
-TRANSACTION_VERBS = Set.new(["begin", "start", "commit", "end", "rollback", "abort", "savepoint", "release", "set"])
-SET_TIMEOUT_SQL = "SELECT set_config('statement_timeout', ?, false)"
-DRIVER_VARIABLE = "AGENTICA_DB_POSTGRES_DRIVER"
+BEGIN_SQL = "BEGIN"
 
 ## An open connection and the `statement_timeout` it was opened with (0: none). `link` is public because a struct
 ## has no private fields, but its type is not exported (a user cannot name it): treat it as opaque and pass the
 ## `Connection` around.
-export struct Connection
+struct Connection
   link: Link
   timeout_ms: Int = 0
-end
-
-# The connection of the driver that runs it.
-enum Link
-  Native(PostgresNative.Session)
-  Ffi(PostgresFfi.Handle)
-end
-
-# libpq's PQstatus and PQtransactionStatus of a connection.
-struct Status
-  connection: Int
-  transaction: Int
 end
 
 ## Connects with a `postgres://` or `postgresql://` url, which libpq parses (`?sslmode=disable`, `connect_timeout`
 ## and the other parameters of the url work as in libpq), or with a conninfo string. `timeout_ms`, `statement_cache`,
 ## `batch_rows` and `batch_bytes` are read here, not by libpq. The client encoding is set to UTF8.
-export def open(url: String) -> Result[Connection]
+def open(url: String) -> Result[Connection]
   return error("postgres error: the url contains a NUL character") if has_nul?(url)
 
   target = try PostgresUrl.parse(url)
@@ -82,7 +60,7 @@ export def open(url: String) -> Result[Connection]
 end
 
 ## Closes the connection; closing it again does nothing.
-export def close(conn: Connection) -> Void
+def close(conn: Connection) -> Void
   case conn.link
     Link.Native(session) -> Native.close(session.conn)
     Link.Ffi(handle) -> Native.close(handle)
@@ -92,19 +70,19 @@ end
 ## Runs one statement with bound parameters and gives its rows, which are empty for a statement without a result.
 ## Two columns with one name are an error: alias them. `timeout_ms` is the limit of this call: -1 takes the one of
 ## the connection, 0 is none.
-export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
+def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
   limited(conn, timeout_ms, sql) do run_query(conn.link, sql, params) end
 end
 
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated or deleted.
 ## `timeout_ms` is as in `query`.
-export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
+def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
   limited(conn, timeout_ms, sql) do run_execute(conn.link, sql, params) end
 end
 
 ## Whether a transaction is open or failed and waits for its ROLLBACK, as libpq knows it: no round trip. A closed
 ## connection is not in one.
-export def in_transaction?(conn: Connection) -> Bool
+def in_transaction?(conn: Connection) -> Bool
   return false if closed?(conn.link)
 
   status = status_of(conn.link).transaction
@@ -113,7 +91,7 @@ end
 
 ## Whether libpq still has the connection up, from its own state and with no round trip: it is open, its status is OK
 ## and the transaction status is known. A connection the server ended shows here after the first call that fails on it.
-export def connected?(conn: Connection) -> Bool
+def connected?(conn: Connection) -> Bool
   return false if closed?(conn.link)
 
   status = status_of(conn.link)
@@ -122,7 +100,7 @@ end
 
 ## Whether the connection works: libpq says it is up and the server answers `SELECT 1`. A failed transaction is
 ## healthy, since the connection is.
-export def healthy?(conn: Connection) -> Bool
+def healthy?(conn: Connection) -> Bool
   return false if closed?(conn.link)
 
   status = status_of(conn.link)
@@ -135,11 +113,36 @@ end
 
 ## The statement cache of a connection of the native driver; none for the FFI driver, which has none, and for a closed
 ## connection.
-export def statement_cache(conn: Connection) -> Optional[PostgresNative.CacheStats]
+def statement_cache(conn: Connection) -> Optional[PostgresNative.CacheStats]
   case conn.link
     Link.Native(session) -> PostgresNative.stats(session)
     Link.Ffi(_) -> none
   end
+end
+
+private
+
+CONNECTION_OK = 0
+# PGTransactionStatusType: a transaction is open (INTRANS) or failed (INERROR), or the state is not known.
+PQTRANS_INTRANS = 2
+PQTRANS_INERROR = 3
+PQTRANS_UNKNOWN = 4
+# The verbs of the statements that begin, end or step inside a transaction, and `set` (`SET TRANSACTION` fails after
+# any other statement of the transaction, 25001).
+TRANSACTION_VERBS = Set.new(["begin", "start", "commit", "end", "rollback", "abort", "savepoint", "release", "set"])
+SET_TIMEOUT_SQL = "SELECT set_config('statement_timeout', ?, false)"
+DRIVER_VARIABLE = "AGENTICA_DB_POSTGRES_DRIVER"
+
+# The connection of the driver that runs it.
+enum Link
+  Native(PostgresNative.Session)
+  Ffi(PostgresFfi.Handle)
+end
+
+# libpq's PQstatus and PQtransactionStatus of a connection.
+struct Status
+  connection: Int
+  transaction: Int
 end
 
 # The driver that the variable names, else the native one when its library loads, else the FFI one.

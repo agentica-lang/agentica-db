@@ -14,6 +14,8 @@ import {Request} from "protocol"
 import Sqlite from "../sqlite/sqlite"
 import SqliteNative from "../sqlite/native"
 
+private
+
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
 SESSIONS_SQL = {
@@ -96,7 +98,7 @@ end
 struct Partial
   id: Int = 0
   name: String
-  age: JsonField[Int]
+  age: JSON.Field[Int]
   admin: Bool
   score: Float
 end
@@ -117,7 +119,7 @@ end
 # A struct with nothing to write but its generated key.
 struct Marker
   id: Int = 0
-  note: JsonField[String]
+  note: JSON.Field[String]
 end
 
 # A struct whose key can be none.
@@ -381,7 +383,7 @@ def open_at(state: State, adapter: String, url: String) -> State
 
   case Db.open(url)
     error(message) ->
-      State(conns: [], pools: state.pools, adapter: adapter, last: Outcome.Failed(message), checked: false)
+      State(conns: [], pools: state.pools, adapter: adapter, last: Outcome.Failed(message.message), checked: false)
     ok(conn) -> State(conns: [conn], pools: state.pools, adapter: adapter, last: Outcome.Done, checked: false)
   end
 end
@@ -435,10 +437,10 @@ def pool_start(state: State, req: Request) -> State
 
   stopped = State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
   case pool_options(url, req.table.drop(1))
-    error(message) -> failed(stopped, message)
+    error(message) -> failed(stopped, message.message)
     ok(options) ->
       case DbPool.start(options)
-        error(message) -> failed(stopped, message)
+        error(message) -> failed(stopped, message.message)
         ok(pool) ->
           State(conns: stopped.conns, pools: [pool], adapter: stopped.adapter, last: Outcome.Done, checked: false)
       end
@@ -483,7 +485,7 @@ def pool_query(state: State, req: Request) -> State
     sql = sql_of(state, req.text)
     found = DbPool.with(pool) do |conn| Db.query(conn, sql, [], req.number) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
     end
   end
@@ -494,7 +496,7 @@ def pool_execute(state: State, req: Request) -> State
     sql = sql_of(state, req.text)
     found = DbPool.with(pool) do |conn| Db.execute(conn, sql, [], req.number) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
@@ -506,7 +508,7 @@ def pool_script(state: State, rows: List[List[String]]) -> State
   with_pool(state) do |pool|
     found = DbPool.with(pool) do |conn| run_rows(conn, rows) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
@@ -521,7 +523,7 @@ def pool_close_connection(state: State) -> State
     end
 
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
@@ -533,7 +535,7 @@ def pool_crash(state: State) -> State
     # The crash is inside a transaction, which holds the turn of the writers of a SQLite pool.
     found = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| ok("not a number".to_i!) end end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
@@ -543,7 +545,7 @@ end
 def pool_hold(state: State, ms: Int) -> State
   with_pool(state) do |pool|
     case hold(Held(pool: pool, ms: ms))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
@@ -582,7 +584,7 @@ def pool_transaction(state: State, req: Request) -> State
     Task.sleep(TICKER_START_MS)
     done = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, rows) end end
     case Task.await(ticker)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
       ok(_) -> return checked(state, done)
     end
@@ -688,7 +690,7 @@ def pool_stat(state: State, name: String) -> State
   with_pool(state) do |pool|
     found = DbPool.with(pool) do |conn| ok(stat_of(conn, name)) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(row) -> return stat_row(state, name, row)
     end
   end
@@ -758,7 +760,7 @@ def transaction_while_locked(state: State, req: Request) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
   case Db.open(expand(state, req.text))
-    error(message) -> Handled(state: state, reply: message)
+    error(message) -> Handled(state: state, reply: message.message)
     ok(other) ->
       taken = Db.execute(other, "BEGIN IMMEDIATE", [])
       if not taken.ok?
@@ -789,7 +791,7 @@ end
 def file_size(state: State, req: Request) -> Handled
   path = expand(state, req.text)
   case File.stat(path, IO_TIMEOUT_MS)
-    error(message) -> Handled(state: state, reply: message)
+    error(message) -> Handled(state: state, reply: message.message)
     ok(info) if info.size_bytes > req.number -> Handled(state: state, reply: "it holds #{info.size_bytes} bytes")
     ok(_) -> reply_ok(state)
   end
@@ -804,7 +806,7 @@ def migrate(state: State, req: Request) -> State
     list = req.table.drop(1).map do |row| migration_of(row) end
     done = migrate_run(conn, list, req.text)
     case done
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(versions) -> return recorded(state, Outcome.Rows(versions.map do |v| {"version": Db.Value.Int(v)} end))
     end
   end
@@ -864,7 +866,7 @@ def set_access(state: State, path: String, writable: Bool) -> State
 
   started = Process.spawn(command, args, Process.Options(timeout_ms: IO_TIMEOUT_MS))
   case started
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(process) ->
       code = Process.wait(process, IO_TIMEOUT_MS).unwrap_or(-1)
       return failed(state, "#{command} failed with #{code}") if code != 0
@@ -882,7 +884,7 @@ end
 
 def with_params(state: State, req: Request, run: Fn[State, String, List[Db.Value], State]) -> State
   case Cells.parse_all(req.cells)
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(params) -> run.call(state, sql_of(state, req.text), params)
   end
 end
@@ -898,7 +900,7 @@ end
 def execute_within(state: State, sql: String, params: List[Db.Value], timeout_ms: Int) -> State
   with_conn(state) do |conn|
     case Db.execute(conn, sql, params, timeout_ms)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
@@ -907,7 +909,7 @@ end
 def query_within(state: State, sql: String, params: List[Db.Value], timeout_ms: Int) -> State
   with_conn(state) do |conn|
     case Db.query(conn, sql, params, timeout_ms)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
     end
   end
@@ -937,7 +939,7 @@ end
 def orm_builder(state: State, ending: String, table: List[List[String]]) -> State
   with_conn(state) do |conn|
     case build(table.drop(1))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(query) -> return finished(state, conn, ending, query, changes_of(table.drop(1)))
     end
   end
@@ -997,7 +999,7 @@ end
 
 def persons(state: State, found: Result[List[Person]]) -> State
   case found
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(list) -> recorded(state, Outcome.Rows(list.map do |person| person_row(person) end))
   end
 end
@@ -1012,7 +1014,7 @@ end
 def orm_find(state: State, key: String) -> State
   with_conn(state) do |conn|
     case Cells.parse(key)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(id) -> return persons(state, optional(Orm.find(conn, people(), id)))
     end
   end
@@ -1035,7 +1037,7 @@ end
 def read_rows[T](state: State, schema: Orm.Schema[T], sql: String, params: List[Db.Value], row: Fn[T, Db.Row]) -> State
   with_conn(state) do |conn|
     case Orm.query(conn, schema, sql, params)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(found) -> return recorded(state, Outcome.Rows(found.map do |value| row.call(value) end))
     end
   end
@@ -1057,11 +1059,11 @@ def partial_row(partial: Partial) -> Db.Row
   person_row(person).put("age", age_value(partial.age))
 end
 
-def age_value(age: JsonField[Int]) -> Db.Value
+def age_value(age: JSON.Field[Int]) -> Db.Value
   case age
-    JsonField.Value(years) -> Db.Value.Int(years)
-    JsonField.Null -> Db.Value.Null
-    JsonField.Absent -> Db.Value.Text("absent")
+    JSON.Field.Value(years) -> Db.Value.Int(years)
+    JSON.Field.Null -> Db.Value.Null
+    JSON.Field.Absent -> Db.Value.Text("absent")
   end
 end
 
@@ -1070,7 +1072,7 @@ def orm_query_as(state: State, sql: String) -> State
   with_conn(state) do |conn|
     found = Orm.query_as(conn, sql, []) do |row| name_of(row) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(names) -> return recorded(state, Outcome.Rows(names.map do |name| {"name": Db.Value.Text(name)} end))
     end
   end
@@ -1106,7 +1108,7 @@ def nullable_key() -> Orm.Schema[MaybeKeyed] = Orm.schema("people", MaybeKeyed.c
 def injected() -> Orm.Schema[Person] = people().with(table: "a; drop table x")
 
 # The Partial of a table of one row: the header names the fields, each cell is a typed cell. The id is 0 unless
-# given, and a cell `Absent` is a JsonField with no value.
+# given, and a cell `Absent` is a JSON.Field with no value.
 def partial_of(table: List[List[String]]) -> Result[Partial]
   cells: Map[String, String] = {}
   for i in 0...table[0].size
@@ -1126,9 +1128,9 @@ def person_of(table: List[List[String]]) -> Result[Person]
   partial = try partial_of(table)
   person = Person(id: partial.id, name: partial.name, admin: partial.admin, score: partial.score)
   case partial.age
-    JsonField.Value(years) -> ok(person.with(age: some(years)))
-    JsonField.Null -> ok(person)
-    JsonField.Absent -> error("an Absent age needs a partial person")
+    JSON.Field.Value(years) -> ok(person.with(age: some(years)))
+    JSON.Field.Null -> ok(person)
+    JSON.Field.Absent -> error("an Absent age needs a partial person")
   end
 end
 
@@ -1160,12 +1162,12 @@ def float_cell(cell: String) -> Result[Float]
   end
 end
 
-def age_cell(cell: String) -> Result[JsonField[Int]]
-  return ok(JsonField.Absent) if cell == "Absent"
+def age_cell(cell: String) -> Result[JSON.Field[Int]]
+  return ok(JSON.Field.Absent) if cell == "Absent"
 
   case try Cells.parse(cell)
-    Db.Value.Null -> ok(JsonField.Null)
-    Db.Value.Int(n) -> ok(JsonField.Value(n))
+    Db.Value.Null -> ok(JSON.Field.Null)
+    Db.Value.Int(n) -> ok(JSON.Field.Value(n))
     _ -> error("expected an Int, Null or Absent cell, got #{cell}")
   end
 end
@@ -1181,10 +1183,10 @@ end
 def inserted[T](state: State, schema: Orm.Schema[T], value: Result[T], row: Fn[T, Db.Row]) -> State
   with_conn(state) do |conn|
     case value
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(item) ->
         case Orm.insert(conn, schema, item)
-          error(message) -> return failed(state, message)
+          error(message) -> return failed(state, message.message)
           ok(stored) -> return recorded(state, Outcome.Rows([row.call(stored)]))
         end
     end
@@ -1200,7 +1202,7 @@ end
 def updated[T](state: State, schema: Orm.Schema[T], value: Result[T]) -> State
   with_conn(state) do |conn|
     case value
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(item) -> return counted(state, Orm.update(conn, schema, item))
     end
   end
@@ -1209,7 +1211,7 @@ end
 def orm_patch(state: State, id: Int, changes: String) -> State
   with_conn(state) do |conn|
     case JSON.parse(Cells.expand(changes))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(json) -> return counted(state, Orm.patch(conn, people(), Db.Value.Int(id), json))
     end
   end
@@ -1221,7 +1223,7 @@ def orm_delete(state: State, req: Request) -> State
     id = Db.Value.Int(req.number)
     if not req.cells.empty?
       case Cells.parse(req.cells[0])
-        error(message) -> return failed(state, message)
+        error(message) -> return failed(state, message.message)
         ok(value) -> id = value
       end
     end
@@ -1236,10 +1238,10 @@ end
 def orm_marker(state: State, which: String) -> State
   with_conn(state) do |conn|
     markers = Orm.schema("markers", Marker.codec)
-    marker = Marker(note: JsonField.Absent)
+    marker = Marker(note: JSON.Field.Absent)
     if which == "insert"
       case Orm.insert(conn, markers, marker)
-        error(message) -> return failed(state, message)
+        error(message) -> return failed(state, message.message)
         ok(_) -> return recorded(state, Outcome.Done)
       end
     end
@@ -1250,14 +1252,14 @@ end
 
 def counted(state: State, done: Result[Int]) -> State
   case done
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(count) -> recorded(state, Outcome.Counted(count))
   end
 end
 
 def checked(state: State, done: Result[Void]) -> State
   case done
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(_) -> recorded(state, Outcome.Done)
   end
 end
@@ -1278,17 +1280,25 @@ def transaction(state: State, req: Request) -> State
     if req.gives
       counted = Db.transaction(conn) do |tx| run_body(tx, rows, req) end
       case counted
-        error(message) -> return failed(state, message)
+        error(e) -> return failed(state, described(e, req))
         ok(count) -> return recorded(state, Outcome.Counted(count))
       end
     end
 
     done = Db.transaction(conn) do |tx| run_void(tx, rows, req) end
     case done
-      error(message) -> return failed(state, message)
+      error(e) -> return failed(state, described(e, req))
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
+end
+
+# The text of a failed transaction: its message, or, for a block that fails with a kind and a code, `kind code:
+# message`, so a scenario sees what the call gave back, not only the text.
+def described(e: Error, req: Request) -> String
+  return e.message if req.kind.empty?
+
+  "#{e.kind} #{e.code.unwrap_or(-1)}: #{e.message}"
 end
 
 # The same body for a transaction whose value is Void, so both forms of `Db.transaction` run in CI.
@@ -1310,6 +1320,8 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
   if req.nested
     try Db.transaction(tx) do |_inner| ok() end
   end
+
+  return error(req.text, kind: req.kind, code: req.number) if not req.text.empty? and not req.kind.empty?
 
   return error(req.text) if not req.text.empty?
 
@@ -1438,7 +1450,7 @@ def execute_waiting(state: State, req: Request) -> Handled
         return Handled(state: state, reply: "it failed after #{waited} ms, less than #{req.number} ms: #{message}")
       end
 
-      reply_ok(failed(state, message))
+      reply_ok(failed(state, message.message))
   end
 end
 
@@ -1488,7 +1500,7 @@ def query_until_commit(state: State, req: Request) -> Handled
   end
 
   case timed.found
-    error(message) -> reply_ok(failed(state, message))
+    error(message) -> reply_ok(failed(state, message.message))
     ok(rows) -> reply_ok(recorded(state, Outcome.Rows(rows)))
   end
 end
@@ -1505,7 +1517,7 @@ def write_while_blocked(state: State, req: Request) -> Handled
 
   url = expand(state, req.text)
   case Db.open(probe_url(url))
-    error(message) -> Handled(state: state, reply: message)
+    error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&commit_write, Fresh(url: url, sql: Cells.expand(req.cells[0])))
       seen = blocked?(probe)
@@ -1524,7 +1536,7 @@ def write_while_blocked(state: State, req: Request) -> Handled
       end
 
       case tried
-        error(message) -> reply_ok(failed(state, message))
+        error(message) -> reply_ok(failed(state, message.message))
         ok(count) -> reply_ok(recorded(state, Outcome.Counted(count)))
       end
   end
@@ -1546,7 +1558,7 @@ def query_while_locked(state: State, req: Request) -> Handled
 
   url = expand(state, req.text)
   case Db.open(probe_url(url))
-    error(message) -> Handled(state: state, reply: message)
+    error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
       seen = blocked?(probe)
@@ -1562,7 +1574,7 @@ def query_while_locked(state: State, req: Request) -> Handled
       end
 
       case found
-        error(message) -> reply_ok(failed(state, message))
+        error(message) -> reply_ok(failed(state, message.message))
         ok(rows) -> reply_ok(recorded(state, Outcome.Rows(rows)))
       end
   end
@@ -1574,7 +1586,7 @@ end
 def open_while_locked(state: State, req: Request) -> Handled
   url = expand(state, req.text)
   case Db.open(probe_url(url))
-    error(message) -> Handled(state: state, reply: message)
+    error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
       seen = blocked?(probe)
@@ -1615,7 +1627,7 @@ def run_job(job: Job) -> Result[Int] = Db.execute(job.conn, job.sql, [])
 def execute_in_task(state: State, sql: String) -> State
   with_conn(state) do |conn|
     case Task.await(Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(sql))))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
@@ -1653,7 +1665,7 @@ end
 def cancel_beside_long(state: State, req: Request) -> State
   with_conn(state) do |conn|
     case Db.open(expand(state, req.text))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(other) -> return cancel_with_lock(state, conn, other, req)
     end
   end
@@ -1674,7 +1686,7 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   _ = Db.execute(other, "rollback", [])
   Db.close(other)
   case pause
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(ms) if ms >= req.number -> failed(state, "the scheduler stopped for #{ms} ms")
     ok(_) -> recorded(state, Outcome.Done)
   end
@@ -1683,7 +1695,7 @@ end
 # A statement on a connection of its own to `req.text`, closed after it: its rows, or its count for `execute`.
 def on_other(state: State, req: Request) -> State
   case Db.open(expand(state, req.text))
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(other) ->
       sql = Cells.expand(req.cells[0])
       if req.number == OTHER_QUERY
@@ -1713,7 +1725,7 @@ end
 
 def beside_rows(state: State, rows: Result[List[Db.Row]], pause: Result[Int], limit: Int) -> State
   case pause
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(ms) if ms >= limit -> failed(state, "the scheduler stopped for #{ms} ms")
     ok(_) -> recorded_rows(state, rows)
   end
@@ -1721,7 +1733,7 @@ end
 
 def recorded_rows(state: State, rows: Result[List[Db.Row]]) -> State
   case rows
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(found) -> recorded(state, Outcome.Rows(found))
   end
 end
@@ -1748,7 +1760,7 @@ def same_rows(state: State, results: List[Result[List[Db.Row]]]) -> State
   found: List[List[Db.Row]] = []
   for result in results
     case result
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(rows) -> found = found.push(rows)
     end
   end
@@ -1867,7 +1879,7 @@ def cache_beside_big(state: State, req: Request) -> State
     reader = Task.spawn(&read_cache, conn)
     rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text("x" * req.number)])
     case Task.await(reader)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded_rows(state, rows)
     end
   end
@@ -1897,7 +1909,7 @@ def close_beside_queries(state: State, req: Request) -> State
     Db.close(conn)
     _ = Task.await(first)
     case Task.await(second)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
@@ -1913,7 +1925,7 @@ end
 def query_in_new_task(state: State, sql: String) -> State
   job = Fresh(url: server_url(state.adapter), sql: Cells.expand(sql))
   case Task.await(Task.spawn(&fresh_query, job))
-    error(message) -> failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(rows) -> recorded(state, Outcome.Rows(rows))
   end
 end
@@ -2004,7 +2016,7 @@ def round_trips(state: State, table: List[List[String]]) -> Handled
 
   for row in table.drop(1)
     case Cells.parse(row[1])
-      error(message) -> return Handled(state: state, reply: message)
+      error(message) -> return Handled(state: state, reply: message.message)
       ok(value) ->
         verdict = round_trip(state.conns[0], row[0], value)
         return Handled(state: state, reply: "a #{row[0]} column: #{verdict}") if not verdict.empty?
@@ -2145,7 +2157,7 @@ def compare_rows(rows: List[Db.Row], table: List[List[String]]) -> String
 
     for c in 0...header.size
       case Cells.parse(wanted[i][c])
-        error(message) -> return message
+        error(message) -> return message.message
         ok(expected) ->
           actual = rows[i][header[c]]
           if not Cells.same?(actual, expected)

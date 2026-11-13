@@ -1,7 +1,9 @@
 import Db from "../../db"
 import Migrate from "../../migrate"
 
-export def migration() -> Migrate.Migration = Migrate.code(3, "first user", &first_user)
+def migration() -> Migrate.Migration = Migrate.code(3, "first user", &first_user)
+
+private
 
 def first_user(tx: Db.Connection) -> Result[Void]
   try Db.execute(tx, "insert into users (name) values (?)", [Db.Value.Text("ana")])

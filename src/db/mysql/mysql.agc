@@ -38,16 +38,10 @@ import MysqlUrl from "url"
 import {Row, Value} from "../support/value"
 
 ## The statement that starts a transaction.
-export BEGIN_SQL = "START TRANSACTION"
-MS_PER_SECOND = 1000
-DRIVER_VARIABLE = "AGENTICA_DB_MYSQL_DRIVER"
-CLOSED = "mysql error: the connection is closed"
-NATIVE_OFF = (
-  "mysql error: the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
-)
+BEGIN_SQL = "START TRANSACTION"
 
 ## The server software, which decides the variable that limits a statement.
-export enum Flavor
+enum Flavor
   MySql
   MariaDb
 end
@@ -55,19 +49,14 @@ end
 ## An open connection, the server it talks to and the limit of a statement it was opened with (0: none). `link` is
 ## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
 ## opaque and pass the `Connection` around.
-export struct Connection
+struct Connection
   link: Link
   flavor: Flavor
   timeout_ms: Int = 0
 end
 
-# The connection of the driver that runs it (one driver for now; the native one comes with agentica#1193).
-enum Link
-  Ffi(MysqlFfi.Handle)
-end
-
 ## Connects with a `mysql://` or `mariadb://` url (see `MysqlUrl`). The client character set is utf8mb4.
-export def open(url: String) -> Result[Connection]
+def open(url: String) -> Result[Connection]
   target = try MysqlUrl.parse(url)
   link = try connect(target)
   conn = Connection(link: link, flavor: flavor_of(server_version(link)), timeout_ms: target.timeout_ms)
@@ -81,7 +70,7 @@ export def open(url: String) -> Result[Connection]
 end
 
 ## Closes the connection; closing it again does nothing.
-export def close(conn: Connection) -> Void
+def close(conn: Connection) -> Void
   case conn.link
     Link.Ffi(handle) -> Native.close(handle)
   end
@@ -92,19 +81,19 @@ end
 ## connection, 0 is none. A statement without parameters that the server does not prepare (`START TRANSACTION`,
 ## `BEGIN`, `SAVEPOINT`, `USE` and `LOCK TABLES` on MySQL) goes through the text protocol, which is safe because there
 ## is nothing to bind.
-export def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
+def query(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[List[Row]]
   limited(conn, timeout_ms) do run_query(conn.link, sql, params) end
 end
 
 ## Runs one statement with bound parameters and gives the number of rows it inserted, updated (matched), deleted or
 ## replaced. The text protocol is used as for `query`, and `timeout_ms` is as there.
-export def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
+def execute(conn: Connection, sql: String, params: List[Value], timeout_ms: Int = -1) -> Result[Int]
   limited(conn, timeout_ms) do run_execute(conn.link, sql, params) end
 end
 
 ## Whether the server says a transaction is open on the connection, from the status of its last reply: no round trip.
 ## A closed connection is not in one.
-export def in_transaction?(conn: Connection) -> Bool
+def in_transaction?(conn: Connection) -> Bool
   case conn.link
     Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.in_transaction?(handle)
   end
@@ -113,17 +102,31 @@ end
 ## Whether the connection is open and the client library still has its link to the server, with no round trip. The
 ## library closes the link when a call finds the server gone (error 2006 or 2013), so a connection the server ended
 ## shows here after the first call that fails on it; `healthy?` asks the server.
-export def connected?(conn: Connection) -> Bool
+def connected?(conn: Connection) -> Bool
   case conn.link
     Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.connected?(handle)
   end
 end
 
 ## Whether the connection works: it is open and the server answers a ping.
-export def healthy?(conn: Connection) -> Bool
+def healthy?(conn: Connection) -> Bool
   case conn.link
     Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.healthy?(handle)
   end
+end
+
+private
+
+MS_PER_SECOND = 1000
+DRIVER_VARIABLE = "AGENTICA_DB_MYSQL_DRIVER"
+CLOSED = "mysql error: the connection is closed"
+NATIVE_OFF = (
+  "mysql error: the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
+)
+
+# The connection of the driver that runs it (one driver for now; the native one comes with agentica#1193).
+enum Link
+  Ffi(MysqlFfi.Handle)
 end
 
 # The driver that the variable names; unset is the FFI one, the only one for now.

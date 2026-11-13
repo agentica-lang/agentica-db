@@ -8,6 +8,8 @@ import Pool from "../pool"
 import Protocol from "protocol"
 import {Request} from "protocol"
 
+private
+
 # Gap after a job starts, so that its task is in line for a resource before the next request starts another.
 JOB_GAP_MS = 40
 WAIT_JOBS_MS = 10_000
@@ -139,7 +141,7 @@ end
 
 def start(driver: Driver, req: Request) -> Handled
   case spec_of(driver, req.table)
-    error(message) -> reply(driver, message)
+    error(message) -> reply(driver, message.message)
     ok(spec) ->
       case Pool.start(spec)
         error(message) -> reply(driver, "the pool did not start: #{message}")
@@ -152,11 +154,11 @@ def with_pool(driver: Driver, pool: Pool.Pool[Fake, Cell]) -> Driver = driver.wi
 
 def start_fails(driver: Driver, req: Request) -> Handled
   case spec_of(driver, req.table)
-    error(message) -> reply(driver, message)
+    error(message) -> reply(driver, message.message)
     ok(spec) ->
       case Pool.start(spec)
         ok(_) -> reply(driver, "the pool started")
-        error(message) -> reply(driver, expected_prefix(message, req.text))
+        error(message) -> reply(driver, expected_prefix(message.message, req.text))
       end
   end
 end

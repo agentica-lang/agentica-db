@@ -7,16 +7,13 @@
 
 import {Row, Value} from "../support/value"
 
-SHOW_LIMIT = 60
-MARKERS = {"[NUL]": 0, "[TAB]": 9, "[LF]": 10, "[VT]": 11, "[FF]": 12, "[CR]": 13, "[SP]": 32}
-
 ## Replaces the markers of characters in `text` with the characters.
-export def expand(text: String) -> String
+def expand(text: String) -> String
   MARKERS.keys.reduce(text) do |acc, marker| acc.replace(marker, String.from_code(MARKERS[marker])) end
 end
 
 ## Reads a typed cell.
-export def parse(cell: String) -> Result[Value]
+def parse(cell: String) -> Result[Value]
   case cell.index_of(" ")
     none -> parse_tagged(cell, "")
     some(at) -> parse_tagged(cell.slice(0, at), cell.slice(at + 1, cell.length - at - 1))
@@ -24,7 +21,7 @@ export def parse(cell: String) -> Result[Value]
 end
 
 ## Reads a list of typed cells.
-export def parse_all(cells: List[String]) -> Result[List[Value]]
+def parse_all(cells: List[String]) -> Result[List[Value]]
   values: List[Value] = []
   for cell in cells
     values = values.push(try parse(cell))
@@ -34,7 +31,7 @@ export def parse_all(cells: List[String]) -> Result[List[Value]]
 end
 
 ## Writes a value as a cell, cut when it is long.
-export def show(value: Value) -> String
+def show(value: Value) -> String
   case value
     Value.Null -> "Null"
     Value.Int(n) -> "Int #{n}"
@@ -48,17 +45,22 @@ export def show(value: Value) -> String
 end
 
 ## Writes a row as `column: cell` pairs.
-export def show_row(row: Row) -> String
+def show_row(row: Row) -> String
   pairs = row.keys.map do |name| "#{name}: #{show(row[name])}" end
   pairs.join(", ")
 end
 
 ## True when two values are the same; a NaN is the same as a NaN.
-export def same?(left: Value, right: Value) -> Bool
+def same?(left: Value, right: Value) -> Bool
   return true if nan?(left) and nan?(right)
 
   Test.eq(left, right).ok?
 end
+
+private
+
+SHOW_LIMIT = 60
+MARKERS = {"[NUL]": 0, "[TAB]": 9, "[LF]": 10, "[VT]": 11, "[FF]": 12, "[CR]": 13, "[SP]": 32}
 
 def parse_tagged(tag: String, rest: String) -> Result[Value]
   case tag

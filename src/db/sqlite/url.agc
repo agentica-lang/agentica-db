@@ -13,20 +13,6 @@
 
 import Milliseconds from "../support/milliseconds"
 
-JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
-SYNCHRONOUS_MODES = ["off", "normal", "full", "extra"]
-NAMES = [
-  "journal_mode, foreign_keys, busy_timeout, timeout_ms, synchronous, mmap_size, cache_size, ",
-  "journal_size_limit, fts5, statement_cache, batch_rows or batch_bytes",
-].join("")
-# At most 15 digits, so that a number is far from the limit of an Int and of what SQLite takes.
-MAX_DIGITS = 15
-MINUS = 45
-DIGIT_ZERO = 48
-DIGIT_NINE = 57
-URI_PREFIX = "file:"
-MAX_STATEMENT_CACHE = 10_000
-
 ## What a url sets besides the path. The defaults suit a web app: WAL lets readers run beside the one writer, foreign
 ## keys are checked, and a busy database is waited for, not failed at once. `journal_given` says that the url named
 ## the journal mode, which makes a WAL that cannot be set an error, not a skip. `uri` says that the name is a `file:`
@@ -41,7 +27,7 @@ MAX_STATEMENT_CACHE = 10_000
 ## The native driver keeps up to `statement_cache` prepared statements per connection, and a call of it gives at most
 ## `batch_rows` rows or about `batch_bytes` bytes of values: a longer result takes more calls. The FFI driver has no
 ## cache and reads row by row.
-export struct Settings
+struct Settings
   journal_mode: String = "wal"
   journal_given: Bool = false
   uri: Bool = false
@@ -59,13 +45,13 @@ export struct Settings
 end
 
 ## The name to open and the settings to apply.
-export struct Target
+struct Target
   path: String
   settings: Settings
 end
 
 ## Reads the text after `sqlite:`.
-export def parse(text: String) -> Result[Target]
+def parse(text: String) -> Result[Target]
   return ok(Target(path: text, settings: Settings(uri: true))) if text.start_with?(URI_PREFIX)
 
   return ok(Target(path: text, settings: Settings())) if not text.include?("?")
@@ -74,6 +60,22 @@ export def parse(text: String) -> Result[Target]
   settings = try read_settings(halves[1])
   ok(Target(path: halves[0], settings: settings))
 end
+
+private
+
+JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
+SYNCHRONOUS_MODES = ["off", "normal", "full", "extra"]
+NAMES = [
+  "journal_mode, foreign_keys, busy_timeout, timeout_ms, synchronous, mmap_size, cache_size, ",
+  "journal_size_limit, fts5, statement_cache, batch_rows or batch_bytes",
+].join("")
+# At most 15 digits, so that a number is far from the limit of an Int and of what SQLite takes.
+MAX_DIGITS = 15
+MINUS = 45
+DIGIT_ZERO = 48
+DIGIT_NINE = 57
+URI_PREFIX = "file:"
+MAX_STATEMENT_CACHE = 10_000
 
 # The text before the first `separator` and the text after it (empty when there is none).
 def split_once(text: String, separator: String) -> List[String]

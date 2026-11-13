@@ -44,42 +44,8 @@ import Db from "db"
 import P from "pkg/pool/pool"
 import Sqlite from "sqlite/sqlite"
 
-SQLITE_PREFIX = "sqlite:"
-SQLITE_URI_PREFIX = "sqlite:file:"
-SQLITE_MEMORY = "sqlite::memory:"
-SQLITE_SIZE = 4
-SERVER_SIZE = 10
-# Every connection of a private in-memory database is a database of its own.
-MEMORY_SIZE = 1
-# A `checkpoint_cap` of 0 is this many times `checkpoint_frames`.
-CAP_FACTOR = 4
-
 ## A pool of connections.
-export type Pool = P.Pool[Config, Db.Connection]
-
-# What each connection of the pool is opened with: the url, and the line that the SQLite writers of the pool share
-# (`gate` holds one token) with the lease of a block, which bounds the wait in it, and the checkpointer of a
-# SQLite file.
-struct Config
-  url: String
-  gate: Channel[Int]
-  lease_ms: Int
-  checkpointer: Optional[Checkpointer]
-end
-
-# The task that checkpoints the WAL of the pool's database, and how the commits of the pool reach it (`plan.nudge`).
-struct Checkpointer
-  plan: Sqlite.Checkpoints
-  task: Task[Result[Void]]
-end
-
-# What the checkpointer task needs: the url of its own connection, the checkpoints of the pool (`plan.nudge` wakes it,
-# and closed stops it), and the time between two checkpoints when nothing wakes it.
-struct Watch
-  url: String
-  plan: Sqlite.Checkpoints
-  every_ms: Int
-end
+type Pool = P.Pool[Config, Db.Connection]
 
 ## How to open a pool. `url` is anything `Db.open` takes. `size` 0 takes the size of the database: 4 for SQLite (1 for
 ## a private in-memory database), 10 for PostgreSQL and MySQL. The other fields are the ones of the generic pool (see
@@ -95,7 +61,7 @@ end
 ## every `checkpoint_ms`, and a commit that leaves `checkpoint_cap` such frames checkpoints itself (0: four times
 ## `checkpoint_frames`). A
 ## `checkpoint_frames` of 0 leaves the checkpoints to SQLite (its autocheckpoint, at 1000 frames, inside a COMMIT).
-export struct Options
+struct Options
   url: String
   size: Int = 0
   max_overflow: Int = 0
@@ -117,7 +83,7 @@ end
 ## `sqlite:file::memory:`, a `file:` name with `mode=memory`), each of which would be an empty database of its
 ## own. With `cache=shared` in the name the database is one to all, and the size is free. A checkpoint option below
 ## 0, or a `checkpoint_ms` of 0, is an error too, and so is a negative `max_waiting`.
-export def start(options: Options) -> Result[Pool]
+def start(options: Options) -> Result[Pool]
   size = options.size
   if size == 0
     size = default_size(options.url)
@@ -163,27 +129,63 @@ end
 ## more than `max_waiting` callers in line get `pool error: queue full (max_waiting N)`; a closed pool gives `pool
 ## error: closed`. The connection is checked in after the block (see the top of this file). Cancelling the caller does
 ## not cancel the block; `lease_ms` bounds it.
-export def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R] = P.with(pool, body)
+def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R] = P.with(pool, body)
 
 ## Refuses new callers, lets the blocks that run and the callers in line finish for up to `drain_ms`, fails the rest
 ## with `pool error: closed`, closes every connection and stops the pool, then its checkpointer, which ends its
 ## checkpoint, if one runs, and closes its connection before `close` returns.
-export def close(pool: Pool, drain_ms: Int) -> Void
+def close(pool: Pool, drain_ms: Int) -> Void
   P.close(pool, drain_ms)
   stop_checkpointer(pool.spec.config.checkpointer)
 end
 
 ## True for a failure that ran out of time: a caller that waited too long for a connection or a block that ran too
 ## long (`pool error: ... timed out`), and a statement that ran over its `timeout_ms` (`Db.timeout?`).
-export def timeout?(message: String) -> Bool = P.timeout?(message) or Db.timeout?(message)
+def timeout?(message: String) -> Bool = P.timeout?(message) or Db.timeout?(message)
 
 ## The size of a pool for a url when `Options.size` is 0.
-export def default_size(url: String) -> Int
+def default_size(url: String) -> Int
   return MEMORY_SIZE if private_memory?(url)
 
   return SQLITE_SIZE if url.start_with?(SQLITE_PREFIX)
 
   SERVER_SIZE
+end
+
+private
+
+SQLITE_PREFIX = "sqlite:"
+SQLITE_URI_PREFIX = "sqlite:file:"
+SQLITE_MEMORY = "sqlite::memory:"
+SQLITE_SIZE = 4
+SERVER_SIZE = 10
+# Every connection of a private in-memory database is a database of its own.
+MEMORY_SIZE = 1
+# A `checkpoint_cap` of 0 is this many times `checkpoint_frames`.
+CAP_FACTOR = 4
+
+# What each connection of the pool is opened with: the url, and the line that the SQLite writers of the pool share
+# (`gate` holds one token) with the lease of a block, which bounds the wait in it, and the checkpointer of a
+# SQLite file.
+struct Config
+  url: String
+  gate: Channel[Int]
+  lease_ms: Int
+  checkpointer: Optional[Checkpointer]
+end
+
+# The task that checkpoints the WAL of the pool's database, and how the commits of the pool reach it (`plan.nudge`).
+struct Checkpointer
+  plan: Sqlite.Checkpoints
+  task: Task[Result[Void]]
+end
+
+# What the checkpointer task needs: the url of its own connection, the checkpoints of the pool (`plan.nudge` wakes it,
+# and closed stops it), and the time between two checkpoints when nothing wakes it.
+struct Watch
+  url: String
+  plan: Sqlite.Checkpoints
+  every_ms: Int
 end
 
 # A SQLite url whose database lives in the connection: `sqlite::memory:`, or a `file:` name that is `:memory:` or has

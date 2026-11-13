@@ -7,7 +7,7 @@ name = "properties"
 # prop is a normal dependency for now: the manifest has no test-only dependency yet. Move it to one when Agentica
 # supports it (https://github.com/agentica-lang/agentica/issues/1196).
 [dependencies]
-prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.2.1", subdir = "prop" }
+prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.3.0", subdir = "prop" }
 db = { git = "https://github.com/agentica-lang/agentica-db", ref = "6ed767b557afe9d10bcbe020e58c5ed3f661d8ae", subdir = "src/db" }
 pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf", subdir = "src/pool" }
 

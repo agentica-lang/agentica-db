@@ -7,6 +7,8 @@ import Db from "../db"
 import Migrate from "../migrate"
 import Migrations from "migrations"
 
+private
+
 def main() -> Void
   case run()
     ok(_) -> puts("done")

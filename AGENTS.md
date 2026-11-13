@@ -26,7 +26,7 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                sees it)
   mysql/       mysql.agc (the adapter: picks a driver, timeouts), ffi.agc (the driver over extern calls),
                statement.agc (what a driver reads of a verb), sql.agc (the statement scanner), url.agc
-  orm/         build.agc (the sql of the query builder), codec.agc (row to Json for T.codec), dialect.agc
+  orm/         build.agc (the sql of the query builder), codec.agc (row to JSON.Value for T.codec), dialect.agc
                (identifier names and quotes), errors.agc
   support/     value.agc (Value, Row; db.agc re-exports them), milliseconds.agc (the timeout_ms and
                busy_timeout numbers of the url readers)
@@ -53,10 +53,10 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 
 ## Commands
 
-- Binary: developing and testing the package needs Agentica 0.31.0-alpha.1 or later and a C compiler
+- Binary: developing and testing the package needs Agentica 0.31.0 or later and a C compiler
   (`cc`, or `CC`); the minimum for a project that uses the package is the one in the README. Download a release
   under `.tools/` (gitignored), never `/tmp`. CI builds Agentica at the commit `AGENTICA_COMMIT` of
-  `.github/workflows/ci.yml`, the one of the tag 0.31.0-alpha.1 (`.github/actions/agentica`); a version bump sets it
+  `.github/workflows/ci.yml`, the one of the tag 0.31.0 (`.github/actions/agentica`); a version bump sets it
   to the commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
   sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver. PostgreSQL the same, with
@@ -110,9 +110,11 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 ## Rules
 
 - Search with `rg`.
-- An adapter keeps its `extern` block private and exports only the wrapper (SQLite's drivers export their resource
-  and a few calls to `sqlite.agc`, which alone is the adapter) (`wrapping` guide of the Agentica
-  site: `library/io-and-system/native/wrapping`). An adapter has the same functions as `db.agc`:
+- An adapter keeps its `extern` block private (below the `private` line, since a block is public or private as a
+  whole) and makes public only the wrapper: the FFI drivers name their resource `RawHandle` and give `Handle` as a
+  type alias, with a public wrapper for each raw call that `sqlite.agc` makes (SQLite's drivers also have a few more
+  public calls; `sqlite.agc` alone is the adapter) (`wrapping` guide of the Agentica site:
+  `library/io-and-system/native/wrapping`). An adapter has the same functions as `db.agc`:
   `open`, `close`, `query`, `execute` (both take a last `timeout_ms`, -1 for the connection's), `in_transaction?`,
   `connected?` and `healthy?` (SQLite also has `interrupt`, for the pool only). `db.agc` dispatches on `Connection`;
   `transaction` stays in `db.agc`.
@@ -129,7 +131,7 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
 - Tests are BDD-first (the paths below are in `src/db`): behavior is a Gherkin scenario in `specs/*.feature`, run by
   `agentica test`, not a test file. The contract every adapter must meet is in the common features (`opening`,
   `values`, `queries`, `errors`, `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct
-  `Person` of `specs/driver.agc`, with an `Optional` age, or `Partial`, the same with a `JsonField` age), each scenario
+  `Person` of `specs/driver.agc`, with an `Optional` age, or `Partial`, the same with a `JSON.Field` age), each scenario
   an outline over an `adapter` column (`sqlite`, `postgres`, `mysql`); what only one adapter promises is in
   `sqlite.feature`, `postgres.feature` or `mysql.feature`. The sql of a common scenario runs on all three:
   `create temporary table`, `varchar(50)` where a column is unique, no `cast(? as integer)`, a CTE and not a temporary

@@ -50,7 +50,7 @@ The pages of [SQLite](/databases/sqlite/), [PostgreSQL](/databases/postgresql/) 
 
 ## Errors
 
-An error is a `Result` failure: `error(message)`. There are two shapes. An engine failure is `<adapter> error <code>: <message>`, as in `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs, is `<adapter> error: <message>`. A failure of `Db` itself, such as an unknown url, is `db error: <message>`. A bad input is an error and never stops the program.
+An error is a `Result` failure: `error(message)`, an `Error` whose `message` is the text below. There are two shapes. An engine failure is `<adapter> error <code>: <message>`, as in `sqlite error 1: near "from": syntax error`. A bad input, refused before the statement runs, is `<adapter> error: <message>`. A failure of `Db` itself, such as an unknown url, is `db error: <message>`. A bad input is an error and never stops the program.
 
 The code of PostgreSQL is its five character SQLSTATE. The code of MySQL is the number of the server or of the client library.
 

@@ -1,5 +1,7 @@
 import Errors from "../orm/errors"
 
+private
+
 def kind_of(message: String) -> String = Errors.kind(Errors.classify(message))
 
 def main() -> Void

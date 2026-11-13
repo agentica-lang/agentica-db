@@ -21,7 +21,7 @@ description: Limit the time of a statement with timeout_ms, as a url parameter o
 
 ## Tell a timeout
 
-`Db.timeout?(message)` says whether the failure message is the one of a statement that ran over its `timeout_ms`. It knows the four messages in the table below.
+`Db.timeout?(e.message)` says whether the failure message is the one of a statement that ran over its `timeout_ms`. It knows the four messages in the table below.
 
 ```agentica
 import Db from "pkg/db/db"
@@ -38,11 +38,11 @@ end
 def main() -> Void
   case run()
     ok(_) -> puts("done")
-    error(message) ->
-      if Db.timeout?(message)
+    error(e) ->
+      if Db.timeout?(e.message)
         puts("timed out")
       else
-        puts(message)
+        puts(e.message)
       end
   end
 end

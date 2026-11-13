@@ -12,29 +12,16 @@
 
 import Milliseconds from "../support/milliseconds"
 
-SCHEMES = ["mysql://", "mariadb://"]
-DEFAULT_PORT = 3306
-MAX_PORT = 65535
-HEX_BASE = 16
-PERCENT = 37
-DIGIT_ZERO = 48
-DIGIT_NINE = 57
-UPPER_A = 65
-UPPER_F = 70
-LOWER_A = 97
-LOWER_F = 102
-LETTER_OFFSET = 10
-
 ## The TLS mode of a connection: what the client library does by default, TLS with any certificate, or TLS with a
 ## certificate that the system authorities vouch for.
-export enum Tls
+enum Tls
   Default
   Required
   Verify
 end
 
 ## Where and how to connect. An empty `user` is the user of the process, and an empty `database` selects none.
-export struct Target
+struct Target
   host: String
   port: Int
   user: String
@@ -46,20 +33,8 @@ export struct Target
   ca: String = ""
 end
 
-struct Address
-  host: String
-  port: Int
-end
-
-struct Options
-  timeout: Int
-  timeout_ms: Int
-  tls: Tls
-  ca: String
-end
-
 ## Reads the url. An error is `mysql error: <message>`.
-export def parse(url: String) -> Result[Target]
+def parse(url: String) -> Result[Target]
   return error("mysql error: the url contains a NUL character") if url.include?(String.from_code(0))
 
   found = SCHEMES.find do |prefix| url.start_with?(prefix) end
@@ -95,6 +70,33 @@ export def parse(url: String) -> Result[Target]
       ca: options.ca,
     ),
   )
+end
+
+private
+
+SCHEMES = ["mysql://", "mariadb://"]
+DEFAULT_PORT = 3306
+MAX_PORT = 65535
+HEX_BASE = 16
+PERCENT = 37
+DIGIT_ZERO = 48
+DIGIT_NINE = 57
+UPPER_A = 65
+UPPER_F = 70
+LOWER_A = 97
+LOWER_F = 102
+LETTER_OFFSET = 10
+
+struct Address
+  host: String
+  port: Int
+end
+
+struct Options
+  timeout: Int
+  timeout_ms: Int
+  tls: Tls
+  ca: String
 end
 
 # The text before the first `separator` and the text after it (empty when there is none).

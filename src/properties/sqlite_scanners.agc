@@ -16,6 +16,109 @@ import Db from "pkg/db/db"
 import Prop from "pkg/prop/prop"
 import Sqlite from "pkg/db/sqlite/sqlite"
 
+## What a read looks like, by the words it starts with.
+enum ReadShape
+  Select
+  With
+  Values
+  UserVersion
+  DataVersion
+  Explain
+  ForeignKeys
+end
+
+## A read statement of a shape, dressed: `lead` before it, `gap` between its first word and the rest, `mode` for the
+## case of its keywords, `end_mark` after it.
+struct Read
+  shape: ReadShape
+  lead: List[Int]
+  gap: List[Int]
+  mode: Int
+  end_mark: Int
+end
+
+## The PRAGMAs that the driver tells apart, and unknown ones that must not be taken for them.
+enum PragmaName
+  JournalMode
+  Synchronous
+  LockingMode
+  WalAutocheckpoint
+  WalCheckpoint
+  UserVersion
+  CacheSize
+  ForeignKeys
+  Unknown
+  UnknownLong
+  UnknownPrefix
+end
+
+## How a PRAGMA is written: a bare read, `= value`, or `(value)`.
+enum PragmaForm
+  Read
+  Assign
+  Call
+end
+
+## A PRAGMA, dressed: in a schema or not (`schema` 0 is none), its name bare or quoted, `gap` between its words.
+struct Pragma
+  name: PragmaName
+  form: PragmaForm
+  schema: Int
+  quote: Int
+  mode: Int
+  gap: List[Int]
+end
+
+## The generator of a read statement.
+def read_gen() -> Prop.Gen[Read] = Prop.of(Read.codec, JSON.schema(Read))
+
+## The generator of a PRAGMA.
+def pragma_gen() -> Prop.Gen[Pragma] = Prop.of(Pragma.codec, JSON.schema(Pragma))
+
+## A read runs in a short call from its second run (the first prepares it) exactly when it is a SELECT, WITH, VALUES,
+## or the PRAGMA data_version or user_version, whatever surrounds it.
+def read_runs_short_as_modelled(read: Read) -> Result[Void]
+  sql = read_sql(read)
+  conn = try Db.open("sqlite::memory:")
+  ran = run_twice(conn, sql)
+  counted = shorts_of(conn)
+  Db.close(conn)
+  try ran
+  shorts = try counted
+  expected = 0
+  if quick?(read.shape)
+    expected = 1
+  end
+
+  return error("#{sql.inspect} ran #{shorts} statements in a short call, expected #{expected}") if shorts != expected
+
+  ok()
+end
+
+## A PRAGMA run between two transactions of cheap writes ends their short calls exactly when it sets journal_mode,
+## synchronous, locking_mode or wal_autocheckpoint, or is a wal_checkpoint, whatever surrounds it.
+def pragma_ends_short_writes_as_modelled(pragma: Pragma) -> Result[Void]
+  dir = try scratch_dir()
+  outcome = pragma_outcome(dir, pragma)
+  _ = Path.remove(dir)
+  shorts = try outcome
+  expected = SHORTS_PER_TXN
+  if ends_short_writes?(pragma)
+    expected = 0
+  end
+
+  if shorts != expected
+    return error(
+      "#{pragma_sql(pragma).inspect}: a transaction after it ran #{shorts} statements in a short call, " +
+      "expected #{expected}",
+    )
+  end
+
+  ok()
+end
+
+private
+
 # What SQLite skips between two words. Some hold the words the scanners look for, a `;` or a `*`, which must not
 # end or start anything.
 GAPS = [
@@ -40,107 +143,6 @@ CASE_MODES = 3
 QUOTES = 4
 TXN_SQL = "insert into t (n) values (1)"
 SHORTS_PER_TXN = 2
-
-## What a read looks like, by the words it starts with.
-export enum ReadShape
-  Select
-  With
-  Values
-  UserVersion
-  DataVersion
-  Explain
-  ForeignKeys
-end
-
-## A read statement of a shape, dressed: `lead` before it, `gap` between its first word and the rest, `mode` for the
-## case of its keywords, `end_mark` after it.
-export struct Read
-  shape: ReadShape
-  lead: List[Int]
-  gap: List[Int]
-  mode: Int
-  end_mark: Int
-end
-
-## The PRAGMAs that the driver tells apart, and unknown ones that must not be taken for them.
-export enum PragmaName
-  JournalMode
-  Synchronous
-  LockingMode
-  WalAutocheckpoint
-  WalCheckpoint
-  UserVersion
-  CacheSize
-  ForeignKeys
-  Unknown
-  UnknownLong
-  UnknownPrefix
-end
-
-## How a PRAGMA is written: a bare read, `= value`, or `(value)`.
-export enum PragmaForm
-  Read
-  Assign
-  Call
-end
-
-## A PRAGMA, dressed: in a schema or not (`schema` 0 is none), its name bare or quoted, `gap` between its words.
-export struct Pragma
-  name: PragmaName
-  form: PragmaForm
-  schema: Int
-  quote: Int
-  mode: Int
-  gap: List[Int]
-end
-
-## The generator of a read statement.
-export def read_gen() -> Prop.Gen[Read] = Prop.of(Read.codec, JSON.schema(Read))
-
-## The generator of a PRAGMA.
-export def pragma_gen() -> Prop.Gen[Pragma] = Prop.of(Pragma.codec, JSON.schema(Pragma))
-
-## A read runs in a short call from its second run (the first prepares it) exactly when it is a SELECT, WITH, VALUES,
-## or the PRAGMA data_version or user_version, whatever surrounds it.
-export def read_runs_short_as_modelled(read: Read) -> Result[Void]
-  sql = read_sql(read)
-  conn = try Db.open("sqlite::memory:")
-  ran = run_twice(conn, sql)
-  counted = shorts_of(conn)
-  Db.close(conn)
-  try ran
-  shorts = try counted
-  expected = 0
-  if quick?(read.shape)
-    expected = 1
-  end
-
-  return error("#{sql.inspect} ran #{shorts} statements in a short call, expected #{expected}") if shorts != expected
-
-  ok()
-end
-
-## A PRAGMA run between two transactions of cheap writes ends their short calls exactly when it sets journal_mode,
-## synchronous, locking_mode or wal_autocheckpoint, or is a wal_checkpoint, whatever surrounds it.
-export def pragma_ends_short_writes_as_modelled(pragma: Pragma) -> Result[Void]
-  dir = try scratch_dir()
-  outcome = pragma_outcome(dir, pragma)
-  _ = Path.remove(dir)
-  shorts = try outcome
-  expected = SHORTS_PER_TXN
-  if ends_short_writes?(pragma)
-    expected = 0
-  end
-
-  if shorts != expected
-    return error(
-      "#{pragma_sql(pragma).inspect}: a transaction after it ran #{shorts} statements in a short call, " +
-      "expected #{expected}",
-    )
-  end
-
-  ok()
-end
 
 def quick?(shape: ReadShape) -> Bool
   case shape
