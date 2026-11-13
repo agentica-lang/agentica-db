@@ -13,8 +13,7 @@
 ##   a caller that is cancelled while it holds the connection: the block is cancelled with it, the connection is
 ##   interrupted (SQLite), closed and replaced.
 ## - A connection the block closed or lost, one that fails its rollback, and one that fails the health check are closed
-##   and replaced the same way. A connection that was closed or lost while it was idle is not lent: the pool checks
-##   `Db.connected?` before each block (no round trip) and gives the caller the next connection.
+##   and replaced the same way.
 ##
 ## Each connection is opened in a task of the pool of its own, which owns it: start the pool in a task that lives as
 ## long as the pool does, such as `main`.
@@ -54,7 +53,8 @@ type Pool = P.Pool[Config, Db.Connection]
 ## a private in-memory database), 10 for PostgreSQL and MySQL. The other fields are the ones of the generic pool (see
 ## the Connection pool guide): `checkout_ms` is how long a caller waits for a connection and `lease_ms` how long a
 ## block may run, both in milliseconds (`lease_ms` 0 runs the block in the caller with no limit: a crash in it is the
-## caller's own, and the check-in after it is not bounded); `max_age_ms` closes a connection that old and `idle_ms` one
+## caller's own, the check-in after it is not bounded, and a block still running when the drain of `close` ends finds
+## its connection closed: on SQLite its next call crashes the caller); `max_age_ms` closes a connection that old and `idle_ms` one
 ## unused that long (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check that pings the
 ## idle connections and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0);
 ## `max_waiting` is how many callers may wait in line for a connection at once (0 or more; 0 lets nobody wait, so a
@@ -105,7 +105,6 @@ def start(options: Options) -> Result[Pool]
     config: Config(url: options.url, gate: gate, lease_ms: options.lease_ms, checkpointer: checkpointer),
     init: &connect,
     checkin: &check_in,
-    checkout: some(&lendable),
     terminate: &Db.close,
     ping: &ping,
     size: size,
@@ -140,7 +139,10 @@ def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R] = P.wit
 
 ## Refuses new callers, lets the blocks that run and the callers in line finish for up to `drain_ms`, fails the rest
 ## with `pool error: closed`, closes every connection and stops the pool, then its checkpointer, which ends its
-## checkpoint, if one runs, and closes its connection before `close` returns.
+## checkpoint, if one runs, and closes its connection before `close` returns. A block that runs in a task of the pool
+## (`lease_ms` above 0) and outlasts the drain is cancelled, and its caller gets `pool error: closed`; one that runs in
+## its caller (`lease_ms` 0) is not: it finds its connection closed (on SQLite its next call crashes the caller), so
+## drain for longer than your blocks run.
 def close(pool: Pool, drain_ms: Int) -> Void
   P.close(pool, drain_ms)
   stop_checkpointer(pool.spec.config.checkpointer)
@@ -318,13 +320,6 @@ def check_in(conn: Db.Connection, outcome: P.Outcome) -> Result[Void]
       error("db pool: the block crashed")
     P.Outcome.Done -> reset(conn)
   end
-end
-
-# The check before a block: a connection that the server or a block closed while it was idle is not lent again.
-def lendable(conn: Db.Connection) -> Result[Void]
-  return ok() if Db.connected?(conn)
-
-  error("db pool: the connection is closed or lost")
 end
 
 def reset(conn: Db.Connection) -> Result[Void]

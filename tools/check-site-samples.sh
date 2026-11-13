@@ -40,8 +40,8 @@ hash="$(
 )"
 
 # The pool is the package `pool` of agentica-lang/packages, which the db package declares at a tag
-# (src/db/agentica.toml): the project names the same dependency and the lock entry that src/db/agentica.lock has for it (its commit and hash),
-# and it is installed from git below. One name stands for one source in a build.
+# (src/db/agentica.toml): the project names the same dependency and the lock entry that src/db/agentica.lock has for
+# it (its commit and hash), and it is installed from git below. One name stands for one source in a build.
 commit="0000000000000000000000000000000000000000"
 pool_dependency="$(sed -n 's/^pool = //p' "$db_root/agentica.toml")"
 [ -n "$pool_dependency" ] || { echo "check-site-samples: no pool dependency in $db_root/agentica.toml" >&2; exit 2; }

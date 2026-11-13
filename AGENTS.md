@@ -76,9 +76,9 @@ new release of it, change the tag in both manifests and run `agentica update poo
   `[SCRATCH]` is a folder of its own for each scenario, and a scenario on a server names its own tables or makes them
   temporary.
 - The properties package has the same commands in `src/properties` (`agentica install` first, which fetches prop and
-  pool into `deps/`; then `agentica check *.agc test`, `agentica fmt --check *.agc test` and `agentica test`). A property is a
-  `test_` function of `test/*_test.agc` that calls `Prop.check` or one of its laws (`Prop.oracle`, ...) with 100 runs
-  (the pool ones 40, since a case takes real time); a failure prints the seed and the shrunk case, and
+  pool into `deps/`; then `agentica check *.agc test`, `agentica fmt --check *.agc test` and `agentica test`). A
+  property is a `test_` function of `test/*_test.agc` that calls `Prop.check` or one of its laws (`Prop.oracle`, ...)
+  with 100 runs (the pool ones 40, since a case takes real time); a failure prints the seed and the shrunk case, and
   `Prop.Config(seed: some(N))` or `agentica --seed N test` replays it. `test/values_test.agc` is the one that runs on
   both drivers (CI runs it with each variable); the scanners read the statement cache of the native SQLite driver, so
   they run on the native run only. Names of the SQLite properties have "on sqlite" like the scenarios. A test has a
