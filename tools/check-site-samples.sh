@@ -3,9 +3,9 @@
 # from the API. A block that an ```output block follows is also run, and its standard output must be that text.
 # A block is a whole program, and must not start a server when it has an output block. A fence that starts with
 # `agentica` but has other words, and an output block that no agentica block precedes, are failures too.
-# The packages are imported as `pkg/db/...` and `pkg/pool/...`, which this script sets up in a temporary project from
-# the files of this checkout (the folders src/db and src/pool, the `subdir` of each package): a manifest, a lock with
-# the hash that the build verifies, and deps/db/ and deps/pool/.
+# The package is imported as `pkg/db/...`, which this script sets up in a temporary project from the files of this
+# checkout (the folder src/db, the `subdir` of the package): a manifest, a lock with the hash that the build verifies,
+# and deps/db/. The pool package that db depends on is installed from its tag, as for any user.
 # Needs `agentica` on PATH. Usage: tools/check-site-samples.sh [CONTENT_DIR]
 set -euo pipefail
 
@@ -39,31 +39,21 @@ hash="$(
   done | sha256sum | cut -d' ' -f1
 )"
 
-# The pool package is the src/pool folder, with no native library, so its manifest is not part of the hash.
-mkdir -p "$work/deps/pool"
-cp "$root/src/pool/agentica.toml" "$root"/src/pool/*.agc "$work/deps/pool/"
-pool_hash="$(
-  cd "$work/deps/pool"
-  find . -name '*.agc' | sed 's|^\./||' | LC_ALL=C sort | while read -r file; do
-    printf '%s\0%s\0' "$file" "$(wc -c < "$file")"
-    cat "$file"
-  done | sha256sum | cut -d' ' -f1
-)"
+# The pool is the package `pool` of agentica-lang/packages, which the db package declares at a tag
+# (src/db/agentica.toml): the project names the same dependency and the lock entry that src/db/agentica.lock has for
+# it (its commit and hash), and it is installed from git below. One name stands for one source in a build.
 commit="0000000000000000000000000000000000000000"
-# The db package declares the pool at a tag or a commit (src/db/agentica.toml), and one name stands for one source in
-# a build: the project and the lock must name that same pin for it.
-pool_pin="$(sed -n 's/^pool = .*\(tag = "[^"]*"\|ref = "[^"]*"\).*/\1/p' "$db_root/agentica.toml")"
-[ -n "$pool_pin" ] || { echo "check-site-samples: no pool tag or ref in $db_root/agentica.toml" >&2; exit 2; }
-pool_commit="$commit"
-case "$pool_pin" in
-  ref*) pool_commit="$(echo "$pool_pin" | sed 's/^ref = "\(.*\)"$/\1/')" ;;
-esac
+pool_dependency="$(sed -n 's/^pool = //p' "$db_root/agentica.toml")"
+[ -n "$pool_dependency" ] || { echo "check-site-samples: no pool dependency in $db_root/agentica.toml" >&2; exit 2; }
+pool_lock="$(awk '/^\[\[package\]\]/ { keep = 0 } /^name = "pool"$/ { keep = 1; print "[[package]]" } keep { print }' \
+  "$db_root/agentica.lock")"
+[ -n "$pool_lock" ] || { echo "check-site-samples: no pool entry in $db_root/agentica.lock" >&2; exit 2; }
 cat > "$work/agentica.toml" <<TOML
 name = "site_samples"
 
 [dependencies]
 db = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit", subdir = "src/db" }
-pool = { git = "https://github.com/agentica-lang/agentica-db", $pool_pin, subdir = "src/pool" }
+pool = $pool_dependency
 TOML
 cat > "$work/agentica.lock" <<LOCK
 version = 1
@@ -76,14 +66,15 @@ ref = "$commit"
 commit = "$commit"
 hash = "sha256:$hash"
 
-[[package]]
-name = "pool"
-git = "https://github.com/agentica-lang/agentica-db"
-subdir = "src/pool"
-$pool_pin
-commit = "$pool_commit"
-hash = "sha256:$pool_hash"
+$pool_lock
 LOCK
+# The install of a project that has only the pool, since the commit of db above is not in any repository. The packages
+# are written to deps/ of that project and copied next to deps/db/.
+mkdir -p "$work/pool_project"
+printf 'name = "pool_project"\n\n[dependencies]\npool = %s\n' "$pool_dependency" > "$work/pool_project/agentica.toml"
+printf 'version = 1\n\n%s\n' "$pool_lock" > "$work/pool_project/agentica.lock"
+(cd "$work/pool_project" && agentica install >/dev/null)
+cp -r "$work/pool_project/deps/pool" "$work/deps/pool"
 
 count=0
 failed=0

@@ -9,12 +9,14 @@
 ## the pool when the block ends, whatever the block does:
 ##
 ## - A transaction the block left open is rolled back, so the next caller starts clean.
-## - A block that crashes, or runs past `lease_ms`, costs its connection: the pool closes it and opens another.
+## - A block that crashes, or runs past `lease_ms`, costs its connection: the pool closes it and opens another. So does
+##   a caller that is cancelled while it holds the connection: the block is cancelled with it, the connection is
+##   interrupted (SQLite), closed and replaced.
 ## - A connection the block closed or lost, one that fails its rollback, and one that fails the health check are closed
 ##   and replaced the same way.
 ##
-## The connections are opened in the task that started the pool, which owns them: start the pool in a task that lives
-## as long as it does, such as `main`.
+## Each connection is opened in a task of the pool of its own, which owns it: start the pool in a task that lives as
+## long as the pool does, such as `main`.
 ##
 ## The size follows poolboy: `size` connections, and up to `max_overflow` more in a spike, ended after
 ## `overflow_idle_ms` of idleness. They are opened at the start (`lazy: false`), so a wrong url or a down server fails
@@ -50,11 +52,13 @@ type Pool = P.Pool[Config, Db.Connection]
 ## How to open a pool. `url` is anything `Db.open` takes. `size` 0 takes the size of the database: 4 for SQLite (1 for
 ## a private in-memory database), 10 for PostgreSQL and MySQL. The other fields are the ones of the generic pool (see
 ## the Connection pool guide): `checkout_ms` is how long a caller waits for a connection and `lease_ms` how long a
-## block may run, both in milliseconds; `max_age_ms` closes a connection that old and `idle_ms` one unused that long
-## (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check that pings the idle connections
-## and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0); `max_waiting` is how
-## many callers may wait in line for a connection at once (0 or more; 0 lets nobody wait, so a caller that finds every
-## connection busy is refused at once).
+## block may run, both in milliseconds (`lease_ms` 0 runs the block in the caller with no limit: a crash in it is the
+## caller's own, the check-in after it is not bounded, and a block still running when the drain of `close` ends finds
+## its connection closed: on SQLite its next call crashes the caller); `max_age_ms` closes a connection that old and `idle_ms` one
+## unused that long (it needs `lazy`), 0 turns each off; `health_ms` is the interval of the health check that pings the
+## idle connections and applies those two (0 turns the check off, and then `max_age_ms` and `idle_ms` must be 0);
+## `max_waiting` is how many callers may wait in line for a connection at once (0 or more; 0 lets nobody wait, so a
+## caller that finds every connection busy is refused at once).
 ##
 ## The last three are the checkpoints of a SQLite file in WAL mode (see the top of this file): a commit that leaves
 ## `checkpoint_frames` frames (pages) in the WAL that no checkpoint has copied wakes the checkpointer, which also runs
@@ -124,16 +128,21 @@ def start(options: Options) -> Result[Pool]
 end
 
 ## Runs the block with a connection of the pool and gives its result. The block runs in a task of the pool: a crash in
-## it is an `error` here. A caller that finds no free connection waits up to `checkout_ms`, then gets `pool error:
-## checkout timed out after N ms`; a block that runs past `lease_ms` gets `pool error: lease timed out after N ms`;
-## more than `max_waiting` callers in line get `pool error: queue full (max_waiting N)`; a closed pool gives `pool
-## error: closed`. The connection is checked in after the block (see the top of this file). Cancelling the caller does
-## not cancel the block; `lease_ms` bounds it.
+## it is an `error` here (with `lease_ms` 0 it runs in the caller, and a crash is the caller's own). A caller that
+## finds no free connection waits up to `checkout_ms`, then gets `pool error: checkout timed out after N ms`; a block
+## that runs past `lease_ms` gets `pool error: lease timed out after N ms`; more than `max_waiting` callers in line
+## get `pool error: queue full (max_waiting N)`; a closed pool gives `pool error: closed`. The errors have kinds
+## (`pool.timeout.checkout`, `pool.timeout.lease`, `pool.full`, `pool.closed`). The connection is checked in after the
+## block (see the top of this file). Cancelling the caller cancels the block, and its connection is interrupted,
+## closed and replaced; `lease_ms` bounds the block too.
 def with[R](pool: Pool, body: Fn[Db.Connection, Result[R]]) -> Result[R] = P.with(pool, body)
 
 ## Refuses new callers, lets the blocks that run and the callers in line finish for up to `drain_ms`, fails the rest
 ## with `pool error: closed`, closes every connection and stops the pool, then its checkpointer, which ends its
-## checkpoint, if one runs, and closes its connection before `close` returns.
+## checkpoint, if one runs, and closes its connection before `close` returns. A block that runs in a task of the pool
+## (`lease_ms` above 0) and outlasts the drain is cancelled, and its caller gets `pool error: closed`; one that runs in
+## its caller (`lease_ms` 0) is not: it finds its connection closed (on SQLite its next call crashes the caller), so
+## drain for longer than your blocks run.
 def close(pool: Pool, drain_ms: Int) -> Void
   P.close(pool, drain_ms)
   stop_checkpointer(pool.spec.config.checkpointer)

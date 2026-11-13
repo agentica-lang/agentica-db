@@ -83,6 +83,21 @@ def main() -> Void
     BDD.step("I keep a connection of the pool for {int} ms") do |ctx, args|
       send(ctx, Request(op: "pool_hold", number: args[0].to_i!))
     end,
+    BDD.step("I cancel a task that keeps a connection of the pool for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_cancel_holder", number: args[0].to_i!))
+    end,
+    BDD.step("I cancel a task that holds a transaction with {string} for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_cancel_holder", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("I execute {string} in the pool within {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_write_within", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("a block of the pool runs in the task of its caller") do |ctx, _args|
+      send(ctx, Request(op: "pool_runs_in", text: "caller"))
+    end,
+    BDD.step("a block of the pool runs in a task of its own") do |ctx, _args|
+      send(ctx, Request(op: "pool_runs_in", text: "pool"))
+    end,
     BDD.step(
       "another task keeps a connection of the pool for {int} ms while I query {string} in the pool",
     ) do |ctx, args| send(ctx, Request(op: "pool_query_while_held", text: args[1], number: args[0].to_i!)) end,

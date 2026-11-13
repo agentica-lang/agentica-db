@@ -80,6 +80,58 @@ Feature: Pooling
       | postgres | postgres error 42P01:          |
       | mysql    | mysql error 1146:              |
 
+  # The caller is cancelled while it holds the connection: its block is cancelled with it (it does not run on for the
+  # 10 s it asked), and the connection is closed and replaced, so the next caller gets a new one at once.
+  Scenario Outline: A caller cancelled while it holds a connection gives it up on <adapter>
+    Given a "<adapter>" database
+    When I start a pool on "[URL]" with:
+      | option      | value |
+      | size        | 1     |
+      | checkout_ms | 3000  |
+    And I execute "create temporary table t (x integer)" in the pool
+    And I cancel a task that keeps a connection of the pool for 10000 ms
+    And I query "select x from t" in the pool
+    Then it fails with "<missing table>"
+
+    Examples:
+      | adapter  | missing table                  |
+      | sqlite   | sqlite error 1: no such table  |
+      | postgres | postgres error 42P01:          |
+      | mysql    | mysql error 1146:              |
+
+  # The caller is cancelled inside a transaction that has written: the connection is interrupted, closed and replaced,
+  # never lent back in the middle of the transaction. The row does not stay, and the next write does not wait for the
+  # lock of the cancelled one (it would wait busy_timeout).
+  Scenario: A caller cancelled inside a transaction leaves no row and no lock on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite:[SCRATCH]/pool.db" with:
+      | option | value |
+      | size   | 2     |
+    And I execute "create table notes (writer integer not null)" in the pool
+    And I cancel a task that holds a transaction with "insert into notes (writer) values (1)" for 10000 ms
+    And I execute "insert into notes (writer) values (2)" in the pool within 1000 ms
+    Then the changed row count is 1
+    When I query "select writer from notes" in the pool
+    Then the result is:
+      | writer |
+      | Int 2  |
+
+  # lease_ms 0 runs the block in the task of its caller; above 0 it runs in a task of the pool.
+  Scenario Outline: A block runs <where> with lease_ms <lease_ms> on <adapter>
+    Given a "<adapter>" database
+    When I start a pool on "[URL]" with:
+      | option   | value      |
+      | size     | 1          |
+      | lease_ms | <lease_ms> |
+    Then a block of the pool runs <where>
+
+    Examples:
+      | adapter  | lease_ms | where                       |
+      | sqlite   | 0        | in the task of its caller   |
+      | postgres | 0        | in the task of its caller   |
+      | mysql    | 0        | in the task of its caller   |
+      | sqlite   | 30000    | in a task of its own        |
+
   # The block closes its connection and ends with ok: the pool must not lend the closed connection to the next caller.
   Scenario Outline: A connection that the block closed is replaced on <adapter>
     Given a "<adapter>" database
@@ -182,11 +234,12 @@ Feature: Pooling
   # The writers of one pool wait in line at Db.transaction and get their turn in the order they came: a channel serves
   # the tasks that wait for it first come, first served. Each writer comes 50 ms after the one before and holds its
   # transaction 150 ms; without the line they would try BEGIN again in any order.
-  Scenario: The writers of a pool take turns at their transactions in the order they came on sqlite
+  Scenario Outline: The writers of a pool take turns in the order they came, lease_ms <lease_ms>, on sqlite
     Given a "sqlite" database
     When I start a pool on "sqlite:[SCRATCH]/pool.db" with:
-      | option | value |
-      | size   | 4     |
+      | option   | value      |
+      | size     | 4          |
+      | lease_ms | <lease_ms> |
     And I execute "create table notes (id integer primary key, writer integer not null)" in the pool
     And 4 writers of the pool come in turn, each holding its transaction
     Then it succeeds
@@ -197,6 +250,11 @@ Feature: Pooling
       | Int 2  |
       | Int 3  |
       | Int 4  |
+
+    Examples:
+      | lease_ms |
+      | 30000    |
+      | 0        |
 
   # A block that crashes or runs past lease_ms inside its transaction holds the turn, which the pool gives back when it
   # checks the connection in. A turn left taken would hold the next writer for its whole wait: busy_timeout, at most

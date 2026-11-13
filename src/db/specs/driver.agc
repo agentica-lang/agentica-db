@@ -77,6 +77,7 @@ CACHE_READS = 200
 QUEUE_START_MS = 20
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
+HOLDER_WAIT_MS = 5_000
 # `pool_writers_in_turn`: the time between two writers that come to the line, and how long each holds its transaction.
 ARRIVAL_MS = 50
 TURN_HOLD_MS = 150
@@ -162,6 +163,15 @@ end
 struct Handled
   state: State
   reply: String
+end
+
+# A task that keeps a connection of the pool for `ms` milliseconds, in a transaction that has run `sql` when there is
+# one, and tells on `got` that it holds the connection.
+struct Holder
+  pool: DbPool.Pool
+  ms: Int
+  sql: String
+  got: Channel[Int]
 end
 
 # A task that keeps a connection of the pool for `ms` milliseconds.
@@ -284,6 +294,9 @@ def act(state: State, req: Request) -> Handled
     "pool_close_connection" -> reply_ok(pool_close_connection(state))
     "pool_crash" -> reply_ok(pool_crash(state))
     "pool_hold" -> reply_ok(pool_hold(state, req.number))
+    "pool_cancel_holder" -> reply_ok(pool_cancel_holder(state, req))
+    "pool_write_within" -> reply_ok(pool_write_within(state, req))
+    "pool_runs_in" -> reply_ok(pool_runs_in(state, req.text))
     "pool_query_while_held" -> reply_ok(pool_query_while_held(state, req))
     "pool_transaction" -> reply_ok(pool_transaction(state, req))
     "pool_commits" -> reply_ok(pool_commits(state, req))
@@ -547,6 +560,65 @@ def pool_hold(state: State, ms: Int) -> State
     case hold(Held(pool: pool, ms: ms))
       error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
+    end
+  end
+end
+
+# A task takes a connection, runs `req.text` in a transaction when it is not empty, keeps the connection for
+# `req.number` milliseconds and is cancelled once it has the connection (it says so on a channel), and this one waits
+# until the task has ended. The outcome is Done: what the pool does with the connection shows in the next steps.
+def pool_cancel_holder(state: State, req: Request) -> State
+  with_pool(state) do |pool|
+    got: Channel[Int] = Channel.new(1)
+    holder = Task.spawn(&hold_signalling, Holder(pool: pool, ms: req.number, sql: sql_of(state, req.text), got: got))
+    return failed(state, "the task never held a connection") if not got.recv(HOLDER_WAIT_MS).ok?
+
+    Task.cancel(holder)
+    _ = Task.await(holder)
+    return recorded(state, Outcome.Done)
+  end
+end
+
+def hold_signalling(job: Holder) -> Result[Void]
+  DbPool.with(job.pool) do |conn|
+    if job.sql.empty?
+      _ = job.got.send(1, 0)
+      Task.sleep(job.ms)
+      return ok()
+    end
+
+    Db.transaction(conn) do |tx|
+      try Db.execute(tx, job.sql, [])
+      _ = job.got.send(1, 0)
+      Task.sleep(job.ms)
+      ok()
+    end
+  end
+end
+
+# One write in a block of the pool, which fails when it took `req.number` ms or more: a connection left in a
+# transaction would hold SQLite's lock for the wait of `busy_timeout`.
+def pool_write_within(state: State, req: Request) -> State
+  with_pool(state) do |pool|
+    started = Time.monotonic_ms()
+    done = DbPool.with(pool) do |conn| Db.execute(conn, sql_of(state, req.text), []) end
+    took = Time.monotonic_ms() - started
+    return failed(state, "the write took #{took} ms") if took >= req.number
+
+    return counted(state, done)
+  end
+end
+
+# Whether a block of the pool runs in the task of its caller (`lease_ms` 0) or in a task of the pool, as `req.text`
+# says: `caller` or `pool`.
+def pool_runs_in(state: State, expected: String) -> State
+  with_pool(state) do |pool|
+    caller = Task.current().id
+    inside = DbPool.with(pool) do |_conn| ok(Task.current().id) end
+    case inside
+      error(message) -> return failed(state, message.message)
+      ok(id) if (id == caller) == (expected == "caller") -> return recorded(state, Outcome.Done)
+      ok(_) -> return failed(state, "the block did not run in the task of the #{expected}")
     end
   end
 end

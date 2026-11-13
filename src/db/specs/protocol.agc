@@ -38,7 +38,10 @@ OK = "ok"
 ## `checkout_ms`, `lease_ms`, `max_waiting`, `health_ms` and the `checkpoint_` ones), `pool_query` and `pool_execute`
 ## (text: sql, number: the `timeout_ms` of the call; each runs in one block of the pool), `pool_script` (table: header
 ## and statements, run in one block), `pool_close_connection` (a block that closes its connection), `pool_crash` (a
-## block that crashes), `pool_hold` (number: the milliseconds a block keeps its connection), `pool_query_while_held`
+## block that crashes), `pool_hold` (number: the milliseconds a block keeps its connection), `pool_cancel_holder`
+## (text: sql the task runs in a transaction, or empty; number: the milliseconds it keeps the connection before it is
+## cancelled), `pool_write_within` (text: sql, number: the milliseconds the write must take less than),
+## `pool_runs_in` (text: `caller` or `pool`, where a block must run), `pool_query_while_held`
 ## (text: sql, number: the milliseconds a task keeps a connection of the pool while this one queries), `pool_repeat`
 ## (text: sql, number: how many times one transaction of the pool runs it), `pool_fallbacks` (the short calls of a
 ## connection of the pool that left their statement to the compute pool), `pool_transaction` (table: statements run in

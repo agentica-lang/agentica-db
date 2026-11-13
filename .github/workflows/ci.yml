@@ -71,7 +71,6 @@ jobs:
           agentica --version
           make check
           (cd src/db && agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test)
-          (cd src/pool && agentica fmt --check *.agc specs test)
           (cd src/properties && agentica fmt --check *.agc test)
           make site-samples
 
@@ -110,7 +109,6 @@ jobs:
             (cd src/properties && agentica test --jobs 4 "${paths[@]}")
             echo "::endgroup::"
           done
-          (cd src/pool && agentica test --jobs 4)
 
   # The SQLite scenarios on macOS and Windows, on the native and the FFI driver. A service container runs on Linux only,
   # so the PostgreSQL and MySQL scenarios stay in the job above; here `--only "on sqlite"` keeps the SQLite ones (every
@@ -144,11 +142,9 @@ jobs:
         run: |
           agentica --version
           cd src/db
+          agentica install
           agentica check *.agc sqlite postgres mysql support orm examples specs test
           agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test
-          cd ../pool
-          agentica check *.agc specs test
-          agentica fmt --check *.agc specs test
           cd ../properties
           agentica install
           agentica check *.agc test
@@ -156,7 +152,7 @@ jobs:
 
       # The SQLite scenarios and the users example (a scenario of examples.feature) on each driver, named outright as
       # in the job above (see there for what the variable and the tags do); then the unit tests of src/db/test/, which
-      # need no connection, and the features of the pool package, which use a fake resource.
+      # need no connection.
       - name: Test (native and FFI drivers)
         shell: bash
         run: |
@@ -171,8 +167,6 @@ jobs:
             echo "::endgroup::"
           done
           agentica test --jobs 4 test
-          cd ../pool
-          agentica test --jobs 4
           # The properties named "on sqlite" (the round trip of a row, and the scanners of the native driver), on each
           # driver; the scanners read the statement cache, which only the native driver has.
           cd ../properties

@@ -191,10 +191,11 @@ end
 
 ## The connection in the line of writers `turn`, a channel that holds one token, which a pool gives to its connections.
 ## A writer waits for its turn up to `busy_timeout`, the time it would wait for SQLite's lock, and at most half of
-## `lease_ms`: the lease counts from the start of the block, and must not end a writer that waits.
+## `lease_ms`: the lease counts from the start of the block, and must not end a writer that waits. A `lease_ms` of 0
+## has no limit, so the wait is the whole `busy_timeout`.
 def with_gate(conn: Connection, turn: Channel[Int], lease_ms: Int) -> Connection
   wait_ms = conn.busy_timeout
-  if wait_ms > lease_ms / 2
+  if lease_ms > 0 and wait_ms > lease_ms / 2
     wait_ms = lease_ms / 2
   end
 

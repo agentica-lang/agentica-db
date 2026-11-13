@@ -1,7 +1,7 @@
 # The root of the repository only names the workspace; the packages are in src/. A package that is installed from
-# this repository declares its folder with `subdir` (`subdir = "src/db"`, `subdir = "src/pool"`), and the members below
+# this repository declares its folder with `subdir` (`subdir = "src/db"`), and the members below
 # are read from their folders by the packages of this repository, so an edit there is seen by the next build.
-# src/properties holds the property tests; it is a member only to read the other two from their folders.
+# src/properties holds the property tests; it is a member only to read db from its folder.
 [workspace]
 repository = "https://github.com/agentica-lang/agentica-db"
-members = ["src/db", "src/pool", "src/properties"]
+members = ["src/db", "src/properties"]
