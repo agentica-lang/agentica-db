@@ -69,6 +69,7 @@ PAUSE_TICK_MS = 5
 # `cancel_beside_long` cancels the write this soon after the long statement starts: the write sleeps between its tries
 # (25 ms), and only a cancel in its sleep frees its cursor at once; once it tries again it waits in its own call.
 CANCEL_AFTER_MS = 5
+WRITER_END_MS = 10_000
 # The `number` of an `on_other` request that queries; any other executes.
 OTHER_QUERY = 1
 # `cache_beside_big` reads the statement cache this many times, a millisecond apart, while the big query runs.
@@ -1747,6 +1748,8 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   write = Cells.expand(req.cells[0])
   _ = Db.execute(other, "begin immediate", [])
   writer = Task.spawn(&run_job, Job(conn: conn, sql: write))
+  writer_down: Channel[TaskDown] = Channel.new(1)
+  Task.monitor(writer, writer_down) do |down| down end
   Task.sleep(LONG_START_MS)
   ticker = Task.spawn(&longest_pause, TICKER_MS)
   Task.sleep(TICKER_START_MS)
@@ -1755,8 +1758,12 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   Task.cancel(writer)
   pause = Task.await(ticker)
   _ = Task.await(long)
+  # A cancel does not stop a try already on the compute pool: the lock is let go only once the writer has ended.
+  ended = writer_down.recv(WRITER_END_MS)
   _ = Db.execute(other, "rollback", [])
   Db.close(other)
+  return failed(state, "the cancelled write did not end") if not ended.ok?
+
   case pause
     error(message) -> failed(state, message.message)
     ok(ms) if ms >= req.number -> failed(state, "the scheduler stopped for #{ms} ms")
