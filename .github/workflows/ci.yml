@@ -142,6 +142,7 @@ jobs:
         run: |
           agentica --version
           cd src/db
+          agentica install
           agentica check *.agc sqlite postgres mysql support orm examples specs test
           agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test
           cd ../properties
