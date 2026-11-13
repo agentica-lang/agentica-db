@@ -3,12 +3,13 @@
 One database API for Agentica and one adapter per database, through the C FFI, and for SQLite and PostgreSQL also a
 native module of ours (`src/db/native/`, the only C code of the repository, which Agentica builds at the first run; the
 FFI driver stays for a run without the built library). The repository
-is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with three packages in `src/`:
+is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
 
 ```text
 src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the dependency on pool; agentica.lock)
   db.agc       Db: the one API, dispatches on Connection
-  db_pool.agc  DbPool, a pool of Db connections on the generic pool (pkg/pool/pool, in [dependencies]);
+  db_pool.agc  DbPool, a pool of Db connections on the generic pool (the `pool` package of agentica-lang/packages,
+               `pkg/pool/pool`, in [dependencies]);
                specs/pooling.feature drives it through the pool_* ops of specs/driver.agc
   orm.agc      a typed layer over Db (plain structs in and out, always bound ? parameters); it takes a
                Db.Connection and never touches an adapter
@@ -34,10 +35,8 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                and migrations/ (one file per migration), the layout of the Migrations guide;
                specs/examples.feature runs both
   specs/ test/ the features and the unit tests of the package
-src/pool/      package "pool": a generic pool of resources (pool.agc, import Pool from "pkg/pool/pool"), no
-               native library, no import of db, its own agentica.toml, specs/ and test/
-src/properties/ package "properties": the property-based tests (prop), not published. It depends on db and pool as
-               workspace members, so what users of `pkg/db/db` or `pkg/pool/pool` download does not include prop.
+src/properties/ package "properties": the property-based tests (prop), not published. It depends on db as a
+               workspace member, so what users of `pkg/db/db` download does not include prop.
                value_gens.agc (generators of the typed cells), store.agc (a row through SQLite, PostgreSQL or MySQL
                against what the database holds), pool_model.agc (random sequences on a pool of fake resources),
                sqlite_scanners.agc (the statement scanners of the native SQLite driver); test/ has the properties
@@ -45,11 +44,11 @@ site/ tools/   the documentation site (Hugo) and the check of its samples
 ```
 
 A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `src/db/db.agc`: the
-dependency says `subdir = "src/db"` (`subdir = "src/pool"` for the pool). Moving a file other than the modules at the
-root of `src/db` (`db`, `db_pool`, `orm`, `migrate`) does not change the documented imports of users; moving one of
-those four does. The package of this repository that uses the pool declares `subdir = "src/pool"` like any user, and
-the workspace reads it from its folder. Its `tag` is a release that holds the pool at `src/pool` (0.4.0 and later): after
-the pull request that moves a folder, move the `tag` (and the lock, `agentica update pool`) to a release that has it.
+dependency says `subdir = "src/db"`. Moving a file other than the modules at the root of `src/db` (`db`, `db_pool`,
+`orm`, `migrate`) does not change the documented imports of users; moving one of those four does. The pool is not in
+this repository: `src/db` and `src/properties` depend on the `pool` package of agentica-lang/packages at a tag
+(`pool-X.Y.Z`, `subdir = "pool"`), and both name the same tag (one name stands for one source in a build). To move to a
+new release of it, change the tag in both manifests and run `agentica update pool` in both folders.
 
 ## Commands
 
@@ -75,9 +74,6 @@ the pull request that moves a folder, move the `tag` (and the lock, `agentica up
   (four scenarios at once, also of one file), so a scenario must not share a path, a port or a table with another:
   `[SCRATCH]` is a folder of its own for each scenario, and a scenario on a server names its own tables or makes them
   temporary.
-- The pool package has the same three commands in `src/pool` (`agentica check *.agc specs test`,
-  `agentica fmt --check *.agc specs test`, `agentica test`); `make check` runs the check. Its features use a fake
-  resource (`src/pool/specs/driver.agc`), so they need no server.
 - The properties package has the same commands in `src/properties` (`agentica install` first, which fetches prop into
   `deps/`; then `agentica check *.agc test`, `agentica fmt --check *.agc test` and `agentica test`). A property is a
   `test_` function of `test/*_test.agc` that calls `Prop.check` or one of its laws (`Prop.oracle`, ...) with 100 runs

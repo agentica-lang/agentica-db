@@ -2,7 +2,8 @@ version = 1
 
 [[package]]
 name = "pool"
-git = "https://github.com/agentica-lang/agentica-db"
-subdir = "src/pool"
-ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf"
-workspace = true
+git = "https://github.com/agentica-lang/packages"
+subdir = "pool"
+tag = "pool-0.1.0"
+commit = "78b279118b0ab37a598a577e4b78d44db4f67b5a"
+hash = "sha256:064784fb049ccc96798ec12537c76a6c94ce144b76811cc8eed8ce27d1c9cdff"

@@ -38,7 +38,7 @@ end
 ok(some(User(id: 1, name: "Ana")))
 ```
 
-Start the pool once, in a task that lives as long as it does, such as `main`: it opens the connections in that task, which owns them, and they close when it ends. Hand the `pool` value to the tasks that serve requests. In a web handler, one `DbPool.with` is one request: `with` waits in line for a connection, runs the block, and gives the connection back.
+Start the pool once, in a task that lives as long as it does, such as `main`: each connection is opened in a task of the pool of its own, which owns it, and the pool ends with the task that started it. Hand the `pool` value to the tasks that serve requests. In a web handler, one `DbPool.with` is one request: `with` waits in line for a connection, runs the block, and gives the connection back.
 
 ## Options
 
@@ -48,7 +48,7 @@ Start the pool once, in a task that lives as long as it does, such as `main`: it
 - `max_overflow` (0): in a spike, up to this many connections more are opened, so `size + max_overflow` is the most there are.
 - `overflow_idle_ms` (1000): an overflow connection that nobody needs is closed after this long.
 - `checkout_ms` (5000): how long a caller waits for a connection.
-- `lease_ms` (30000): how long a block may run.
+- `lease_ms` (30000): how long a block may run. 0 runs the block in the caller with no limit: a crash in it is the caller's own, and the check-in of the connection after it is not bounded.
 - `max_age_ms` (0): a connection this old is closed and replaced when it is idle. 0 turns it off.
 - `idle_ms` (0): a connection unused this long is closed. It needs `lazy: true`, which opens connections only when callers need them (default `false`: always connected).
 - `max_waiting` (1000): how many callers may wait in line for a connection at once, 0 or more. One more is refused with `pool error: queue full (max_waiting 1000)`. 0 lets nobody wait: a caller that finds every connection busy is refused at once. Raise it for a burst of many callers (thousands of WebSockets that connect together), or lower it to refuse load early.
@@ -62,10 +62,11 @@ The url is anything `Db.open` takes, `timeout_ms` included: every statement of t
 The connection goes back to the pool, whatever the block did:
 
 - A transaction the block left open is rolled back (`Db.in_transaction?` tells, without a round trip), so the next caller starts clean. Use `Db.transaction(conn)` in the block to commit.
-- A connection the block closed or lost (`Db.connected?` is false) is closed and replaced, so the next caller does not get a dead one. The database client only learns that the server ended a connection when a call on it fails, so the call that fails does so in the block that made it, and the pool replaces the connection after it.
+- A connection the block closed or lost (`Db.connected?` is false) is closed and replaced, so the next caller does not get a dead one. A connection that was lost while it was idle is not lent either: the pool checks `Db.connected?` before each block, with no round trip, and gives the caller the next one. The database client only learns that the server ended a connection when a call on it fails, so the call that fails does so in the block that made it, and the pool replaces the connection after it.
 - On PostgreSQL too, a connection that the server ended quietly while it was idle fails the first caller that gets it, up to `size` callers, until the health check (`health_ms`) pings it and replaces it.
 - A block that crashes ends its connection: the pool rolls it back, closes it and opens another. The caller gets `error("task crashed: ...")`.
 - A block that runs past `lease_ms` ends its connection too, and its caller gets `pool error: lease timed out after N ms`.
+- A caller that is cancelled while it holds a connection cancels its block, and the connection is interrupted (SQLite), closed and replaced, as after a crash.
 - A connection whose rollback fails is closed and replaced.
 - Idle connections are pinged with `Db.healthy?` every 5 seconds, and one that does not answer is replaced.
 
@@ -93,7 +94,7 @@ Since its `COMMIT` no longer checkpoints, the `COMMIT` of a transaction of short
 - `pool error: closed`: the pool is closed.
 - `sqlite error 9: interrupted`, `postgres error 57014: ...` and the like: a statement ran over its `timeout_ms`.
 
-`DbPool.timeout?(e.message)` is true for the first two and for a statement that ran over its `timeout_ms` (the same as `Db.timeout?`), so a handler can answer "busy, try later" to all of them. The other errors are those of the block. Cancelling a caller does not cancel its block: `lease_ms` bounds it.
+`DbPool.timeout?(e.message)` is true for the first two and for a statement that ran over its `timeout_ms` (the same as `Db.timeout?`), so a handler can answer "busy, try later" to all of them. The other errors are those of the block. The errors of the pool have kinds (`pool.timeout.checkout`, `pool.timeout.lease`, `pool.full` and `pool.closed`), which `e.kind` gives; their texts are the ones above.
 
 ## A block that runs past `lease_ms`
 

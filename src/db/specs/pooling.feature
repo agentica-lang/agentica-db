@@ -80,6 +80,45 @@ Feature: Pooling
       | postgres | postgres error 42P01:          |
       | mysql    | mysql error 1146:              |
 
+  # The caller is cancelled while it holds the connection: its block is cancelled with it (it does not run on for the
+  # 10 s it asked), and the connection is closed and replaced, so the next caller gets a new one at once.
+  Scenario Outline: A caller cancelled while it holds a connection gives it up on <adapter>
+    Given a "<adapter>" database
+    When I start a pool on "[URL]" with:
+      | option      | value |
+      | size        | 1     |
+      | checkout_ms | 3000  |
+    And I execute "create temporary table t (x integer)" in the pool
+    And I cancel a task that keeps a connection of the pool for 10000 ms
+    And I query "select x from t" in the pool
+    Then it fails with "<missing table>"
+
+    Examples:
+      | adapter  | missing table                  |
+      | sqlite   | sqlite error 1: no such table  |
+      | postgres | postgres error 42P01:          |
+      | mysql    | mysql error 1146:              |
+
+  # With lease_ms 0 the block runs in the caller and has no time limit.
+  Scenario Outline: A block runs in the caller with no limit when lease_ms is 0 on <adapter>
+    Given a "<adapter>" database
+    When I start a pool on "[URL]" with:
+      | option   | value |
+      | size     | 1     |
+      | lease_ms | 0     |
+    And I execute "create temporary table t (x integer)" in the pool
+    And I keep a connection of the pool for 400 ms
+    And I query "select count(*) as n from t" in the pool
+    Then the result is:
+      | n     |
+      | Int 0 |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
   # The block closes its connection and ends with ok: the pool must not lend the closed connection to the next caller.
   Scenario Outline: A connection that the block closed is replaced on <adapter>
     Given a "<adapter>" database

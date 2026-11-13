@@ -284,6 +284,7 @@ def act(state: State, req: Request) -> Handled
     "pool_close_connection" -> reply_ok(pool_close_connection(state))
     "pool_crash" -> reply_ok(pool_crash(state))
     "pool_hold" -> reply_ok(pool_hold(state, req.number))
+    "pool_cancel_holder" -> reply_ok(pool_cancel_holder(state, req.number))
     "pool_query_while_held" -> reply_ok(pool_query_while_held(state, req))
     "pool_transaction" -> reply_ok(pool_transaction(state, req))
     "pool_commits" -> reply_ok(pool_commits(state, req))
@@ -548,6 +549,19 @@ def pool_hold(state: State, ms: Int) -> State
       error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
+  end
+end
+
+# A task takes a connection for `ms` milliseconds and is cancelled once it has it, and this one waits until the
+# task has
+# ended. The outcome is Done: what the pool does with the connection shows in the next step.
+def pool_cancel_holder(state: State, ms: Int) -> State
+  with_pool(state) do |pool|
+    holder = Task.spawn(&hold, Held(pool: pool, ms: ms))
+    Task.sleep(HOLD_START_MS)
+    Task.cancel(holder)
+    _ = Task.await(holder)
+    return recorded(state, Outcome.Done)
   end
 end
 
