@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- SQLite: a statement on a table that another connection made waits for a lock held at its prepare, instead of failing at once with `no such table`.
+
 ## [0.10.0] - 2026-11-13
 
 Needs Agentica 0.31.0 or later.
