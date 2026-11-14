@@ -152,18 +152,25 @@ Feature: SQLite statement cache and batches
       | 0     |
 
   # Big bound data can make one SQLite instruction long (a JSON function reads it whole), so a short call takes at
-  # most 256 KiB of it; this list is 40 MB.
+  # most 256 KiB of it and leaves the statement to the compute pool before it runs; this list is 400 KB.
   Scenario: A cached read with big bound data runs on the compute pool on sqlite
-    Given the environment variable "AGENTICA_SCHEDULERS" is "1"
-    And a "sqlite" database
+    Given a "sqlite" database
     When I open "sqlite::memory:"
     And I query "select json_array_length(?) as n" with:
       | value   |
       | Text [] |
-    And I query "select json_array_length(?) as n" with a JSON list of 20000000 numbers, and no scheduler stops for 150 ms
+    And I query "select json_array_length(?) as n" with a JSON list of 200000 numbers
     Then the result is:
-      | n            |
-      | Int 20000000 |
+      | n          |
+      | Int 200000 |
+    When I read how many short calls left their statement to the compute pool
+    Then the result is:
+      | fallbacks |
+      | Int 1     |
+    When I read how many statements ran in a short call
+    Then the result is:
+      | shorts |
+      | Int 0  |
 
   # A write with RETURNING has run by its first row; when its result repeats a name after the table changed, it runs
   # to its end and the error says that it ran.
