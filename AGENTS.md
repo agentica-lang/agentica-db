@@ -69,12 +69,12 @@ new release of it, change the tag in both manifests and run `agentica update poo
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
   itself). `agentica install` first (it writes the pool package of the lock into `deps/`, gitignored). `make check`
   (from the root) runs it and `agentica check *.agc sqlite postgres mysql support orm examples specs test` there, which
-  is every `.agc` file of the package. `agentica fmt --check` on the same paths (CI runs it;
-  `agentica fmt` fixes it), then `agentica test`: the features of `specs/` and the unit tests of `test/`. SQLite needs
-  no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`. CI runs `agentica test --jobs 4`
-  (four scenarios at once, also of one file), so a scenario must not share a path, a port or a table with another:
-  `[SCRATCH]` is a folder of its own for each scenario, and a scenario on a server names its own tables or makes them
-  temporary.
+  is every `.agc` file of the package. `make fmt-check` (from the root, as CI) runs `agentica fmt --check` on the same
+  paths (`agentica fmt` fixes them), then `agentica test`: the features of `specs/` and the unit tests of `test/`.
+  SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`. CI runs
+  `agentica test --jobs 4` (four scenarios at once, also of one file), so a scenario must not share a path, a port or a
+  table with another: `[SCRATCH]` is a folder of its own for each scenario, and a scenario on a server names its own
+  tables or makes them temporary.
 - The properties package has the same commands in `src/properties` (`agentica install` first, which fetches prop and
   pool into `deps/`; then `agentica check *.agc test`, `agentica fmt --check *.agc test` and `agentica test`). A
   property is a `test_` function of `test/*_test.agc` that calls `Prop.check` or one of its laws (`Prop.oracle`, ...)
