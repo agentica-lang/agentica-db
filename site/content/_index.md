@@ -48,4 +48,4 @@ end
 
 Not yet: preloading of related rows.
 
-agentica-db 0.11.0 needs Agentica 0.31.0 or later and a C compiler, and is under the Apache License 2.0.
+agentica-db 0.11.0 needs Agentica 0.31.0 or later (a C compiler gives the faster native drivers), and is under the Apache License 2.0.

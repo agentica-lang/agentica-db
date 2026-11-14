@@ -35,7 +35,7 @@ db error: unsupported database url scheme oracle: expected sqlite:
 
 ## Drivers
 
-Import only the drivers the program uses. A program builds the native module of each driver it imports with the C compiler at its first run: SQLite and PostgreSQL have one, so an app that imports only `Sqlite` never builds the PostgreSQL one. An app that picks its database from its url at run time passes every driver it may need:
+Import only the drivers the program uses. A program builds the native module of each driver it imports with the C compiler at its first run (without one it warns and runs the FFI drivers): SQLite and PostgreSQL have one, so an app that imports only `Sqlite` never builds the PostgreSQL one. An app that picks its database from its url at run time passes every driver it may need:
 
 ```ruby
 conn = try Db.open(url, [Sqlite.driver(), Postgres.driver()])

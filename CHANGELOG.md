@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The native SQLite and PostgreSQL modules are optional: without a C compiler a program prints Agentica's warning and runs the FFI drivers, instead of failing with `PKG-NATIVE-BUILD` (this lifts the compiler requirement of 0.6.0).
+
 ### Fixed
 
 - `DbPool`: a block that runs past `lease_ms`, or whose caller is cancelled, stops its statement on PostgreSQL (a cancel request) and on MySQL and MariaDB (`KILL QUERY` from a connection of its own), as on SQLite; it no longer runs on the server until its end.

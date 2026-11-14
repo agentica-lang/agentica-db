@@ -69,6 +69,11 @@ Feature: Opening and closing a database
     Then the build makes the native module "db_sqlite"
     And the build never makes the native module "db_postgres"
 
+  Scenario: A program built with no C compiler warns and leaves out the native module (on sqlite, no server)
+    When I compile "fixtures/sqlite_only.agc" with an empty package cache and no C compiler
+    Then the build warns that the native module "db_sqlite" is not built
+    And the build never makes the native module "db_sqlite"
+
   Scenario Outline: Using a closed connection is an error on <adapter>
     Given a "<adapter>" database
     When I close the database

@@ -23,7 +23,8 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                native module), ffi.agc (the driver over extern calls), wait.agc (the wait for a lock, shared),
                url.agc (the parameters of the url), lock.agc (the lock rule)
   native/      db_sqlite.c and db_postgres.c, the native modules ([native.db_sqlite] and [native.db_postgres]
-               build): each opens the system library itself (dlopen), so a build needs only a C compiler;
+               build, both `optional`: without a C compiler Agentica warns and the adapters run the FFI drivers):
+               each opens the system library itself (dlopen), so a build needs only a C compiler;
                specs/statement_cache.feature, specs/sqlite_writes.feature (short writes, the checkpointer of a
                pool) and specs/postgres_native.feature (tag @native)
   postgres/    postgres.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module),
