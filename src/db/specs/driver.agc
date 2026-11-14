@@ -307,6 +307,7 @@ def act(state: State, req: Request) -> Handled
     "pool_repeat" -> reply_ok(pool_repeat(state, req))
     "pool_close" -> reply_ok(pool_close(state))
     "short_calls" -> reply_ok(short_calls(state))
+    "fallbacks" -> reply_ok(fallbacks(state))
     "file_size" -> file_size(state, req)
     "pool_short_calls_at_most" -> short_calls_at_most(pool_short_calls(state), req.number)
     "transaction_while_locked" -> transaction_while_locked(state, req)
@@ -345,6 +346,7 @@ def act(state: State, req: Request) -> Handled
     "cancel_beside_long" -> reply_ok(cancel_beside_long(state, req))
     "on_other" -> reply_ok(on_other(state, req))
     "query_big_json" -> reply_ok(query_big_json(state, req))
+    "query_json_list" -> reply_ok(query_json_list(state, req))
     "statement_cache" -> reply_ok(statement_cache(state))
     "driver_named" -> reply_ok(driver_named(state, req.text))
     "cancel_task" -> reply_ok(cancel_task(state, req))
@@ -785,6 +787,10 @@ end
 
 def short_calls(state: State) -> State
   with_conn(state) do |conn| stat_row(state, "shorts", stat_of(conn, "shorts")) end
+end
+
+def fallbacks(state: State) -> State
+  with_conn(state) do |conn| stat_row(state, "fallbacks", stat_of(conn, "fallbacks")) end
 end
 
 def stat_of(conn: Db.Connection, name: String) -> Optional[Int]
@@ -1799,6 +1805,13 @@ def query_big_json(state: State, req: Request) -> State
     rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text(list)])
     pause = Task.await(ticker)
     return beside_rows(state, rows, pause, req.cells[0].to_i!)
+  end
+end
+
+def query_json_list(state: State, req: Request) -> State
+  with_conn(state) do |conn|
+    list = "[#{"1," * (req.number - 1)}1]"
+    return recorded_rows(state, Db.query(conn, Cells.expand(req.text), [Db.Value.Text(list)]))
   end
 end
 

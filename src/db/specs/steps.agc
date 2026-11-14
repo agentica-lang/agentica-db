@@ -181,6 +181,10 @@ def main() -> Void
     BDD.step("I query {string} with a JSON list of {int} numbers, and no scheduler stops for {int} ms") do |ctx, args|
       send(ctx, Request(op: "query_big_json", text: args[0], number: args[1].to_i!, cells: [args[2]]))
     end,
+    BDD.step("I query {string} with a JSON list of {int} numbers") do |ctx, args|
+      send(ctx, Request(op: "query_json_list", text: args[0], number: args[1].to_i!))
+    end,
+    plain_step("I read how many short calls left their statement to the compute pool", "fallbacks"),
     plain_step("I read the statement cache", "statement_cache"),
     text_step("I check that the connection runs the driver that {string} names", "driver_named"),
     BDD.step("a task that runs {string} is cancelled after {int} ms") do |ctx, args|
