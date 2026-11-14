@@ -1431,8 +1431,9 @@ static void cancel_polled(PGconn *pg) {
   pq_cancel.finish(cc);
 }
 
-/* cancel(conn): asks the server to stop the statement that runs on the connection (a new connection to the server,
-   so on the compute pool). It fails silently: the drain then waits for the statement to end. Before libpq 17 it is
+/* cancel(conn): asks the server to stop the query that a cancelled task left on the connection (a new connection to
+   the server, so on the compute pool). It does nothing when no query was left or another call holds the connection
+   (a compute call of a cancelled task), and fails silently: the drain then waits for the statement to end. Before libpq 17 it is
    PQcancel, whose connect has no time limit of its own (the system's, about two minutes for a host that does not
    answer); the server is one that this connection reached, so that is rare. */
 static an_term fn_cancel(an_env *env, int argc, const an_term *argv) {
@@ -1440,7 +1441,11 @@ static an_term fn_cancel(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   conn *c = conn_of(env, argv[0]);
   if (!c) return an_badarg(env, 0);
-  if (!enter(env, c)) return an_void(env);
+  if (!lock_try(&c->lock)) return an_void(env);
+  if (!c->inflight) {
+    lock_drop(&c->lock);
+    return an_void(env);
+  }
   if (pq_cancel.create) {
     cancel_polled(c->pg);
   } else {

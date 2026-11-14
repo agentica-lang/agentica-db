@@ -280,6 +280,9 @@ def main() -> Void
     text_step("it fails mentioning {string}", "expect_mentions"),
     text_step("the failure never shows {string}", "expect_hides"),
     BDD.step("a task leaves a connection open, and the server drops its session within {int} ms", &left_open),
+    BDD.step("no other session runs a statement with {string} within {int} ms") do |ctx, args|
+      send(ctx, Request(op: "none_running", text: args[0], number: args[1].to_i!))
+    end,
     BDD.step("another task keeps running during {string}, with gaps under {int} milliseconds") do |ctx, args|
       send(ctx, Request(op: "keep_running", text: args[0], number: args[1].to_i!))
     end,

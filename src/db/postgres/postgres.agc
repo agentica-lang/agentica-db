@@ -63,7 +63,20 @@ end
 def close(conn: Connection) -> Void
   case conn.link
     Link.Native(session) -> Native.close(session.conn)
-    Link.Ffi(handle) -> Native.close(handle)
+    Link.Ffi(handle, canceller) ->
+      Native.close(canceller)
+      Native.close(handle)
+  end
+end
+
+## Asks the server to stop the statement that runs on the connection, if any: a cancel request on a connection of its
+## own, which does not touch this one. The pool sends it when a block runs past `lease_ms`. Not for `Db`.
+def interrupt(conn: Connection) -> Void
+  return if closed?(conn.link)
+
+  case conn.link
+    Link.Native(session) -> PostgresNative.interrupt(session)
+    Link.Ffi(_, canceller) -> PostgresFfi.cancel(canceller)
   end
 end
 
@@ -116,7 +129,7 @@ end
 def statement_cache(conn: Connection) -> Optional[PostgresNative.CacheStats]
   case conn.link
     Link.Native(session) -> PostgresNative.stats(session)
-    Link.Ffi(_) -> none
+    Link.Ffi(_, _) -> none
   end
 end
 
@@ -136,7 +149,7 @@ DRIVER_VARIABLE = "AGENTICA_DB_POSTGRES_DRIVER"
 # The connection of the driver that runs it.
 enum Link
   Native(PostgresNative.Session)
-  Ffi(PostgresFfi.Handle)
+  Ffi(PostgresFfi.Handle, PostgresFfi.Canceller)
 end
 
 # libpq's PQstatus and PQtransactionStatus of a connection.
@@ -150,7 +163,7 @@ def connect(target: PostgresUrl.Target) -> Result[Link]
   choice = System.env(DRIVER_VARIABLE).unwrap_or("")
   if choice == "ffi" or (choice == "" and not PostgresNative.available?())
     handle = try PostgresFfi.open(target.conninfo)
-    return ok(Link.Ffi(handle))
+    return ok(Link.Ffi(handle, try PostgresFfi.canceller(handle)))
   end
 
   if choice != "" and choice != "native"
@@ -169,7 +182,7 @@ end
 def closed?(link: Link) -> Bool
   case link
     Link.Native(session) -> PostgresNative.closed?(session)
-    Link.Ffi(handle) -> Native.closed?(handle)
+    Link.Ffi(handle, _) -> Native.closed?(handle)
   end
 end
 
@@ -177,7 +190,7 @@ def status_of(link: Link) -> Status
   both = 0
   case link
     Link.Native(session) -> both = PostgresNative.link_status(session)
-    Link.Ffi(handle) -> both = PostgresFfi.status(handle)
+    Link.Ffi(handle, _) -> both = PostgresFfi.status(handle)
   end
 
   Status(connection: both / 16, transaction: both % 16)
@@ -187,7 +200,7 @@ def run_query(link: Link, sql: String, params: List[Value]) -> Result[List[Row]]
   try check_open(link)
   case link
     Link.Native(session) -> PostgresNative.query(session, sql, params)
-    Link.Ffi(handle) -> PostgresFfi.query(handle, sql, params)
+    Link.Ffi(handle, _) -> PostgresFfi.query(handle, sql, params)
   end
 end
 
@@ -195,7 +208,7 @@ def run_execute(link: Link, sql: String, params: List[Value]) -> Result[Int]
   try check_open(link)
   case link
     Link.Native(session) -> PostgresNative.execute(session, sql, params)
-    Link.Ffi(handle) -> PostgresFfi.execute(handle, sql, params)
+    Link.Ffi(handle, _) -> PostgresFfi.execute(handle, sql, params)
   end
 end
 

@@ -11,12 +11,12 @@ def driver() -> C.Driver = C.Driver(schemes: ["mysql://", "mariadb://"], open: &
 ## `timeout_ms` is a parameter of the url (see `mysql/mysql.agc`).
 def open(url: String) -> Result[C.Connection]
   conn = try MysqlAdapter.open(url)
-  ok(connection(conn))
+  ok(connection(conn, url))
 end
 
 private
 
-def connection(conn: MysqlAdapter.Connection) -> C.Connection
+def connection(conn: MysqlAdapter.Connection, url: String) -> C.Connection
   C.Connection(
     adapter: C.Adapter.Mysql,
     begin_sql: MysqlAdapter.BEGIN_SQL,
@@ -26,8 +26,8 @@ def connection(conn: MysqlAdapter.Connection) -> C.Connection
     in_transaction: -> { MysqlAdapter.in_transaction?(conn) },
     connected: -> { MysqlAdapter.connected?(conn) },
     healthy: -> { MysqlAdapter.healthy?(conn) },
-    interrupt: -> { return },
-    enter_gate: -> { connection(conn) },
+    interrupt: -> { MysqlAdapter.interrupt(conn, url) },
+    enter_gate: -> { connection(conn, url) },
     leave_gate: -> { return },
     statement_cache: -> { none },
   )

@@ -67,7 +67,7 @@ The connection goes back to the pool, whatever the block did:
 - On PostgreSQL too, a connection that the server ended quietly while it was idle fails the first caller that gets it, up to `size` callers, until the health check (`health_ms`) pings it and replaces it.
 - A block that crashes ends its connection: the pool rolls it back, closes it and opens another. The caller gets `error("task crashed: ...")`.
 - A block that runs past `lease_ms` ends its connection too, and its caller gets `pool error: lease timed out after N ms`.
-- A caller that is cancelled while it holds a connection cancels its block, and the connection is interrupted (SQLite), closed and replaced, as after a crash.
+- A caller that is cancelled while it holds a connection cancels its block, and the connection is interrupted, closed and replaced, as after a crash.
 - A connection whose rollback fails is closed and replaced.
 - Idle connections are pinged with `Db.healthy?` every 5 seconds, and one that does not answer is replaced.
 
@@ -102,8 +102,8 @@ Since its `COMMIT` no longer checkpoints, the `COMMIT` of a transaction of short
 The caller gets `pool error: lease timed out after N ms` when the time is over, and the pool cancels the block, but a block that is inside a native call cannot be stopped from outside, so it can keep running for a while. What the pool does with its connection depends on the database:
 
 - SQLite: the statement is interrupted, so the connection closes at once and the next caller gets a new one.
-- PostgreSQL: the connection is closed while the statement may still run on the server until it ends.
-- MySQL and MariaDB: the statement runs until the server stops it, and closing the connection under it is not safe: the process can crash when it exits. Set `timeout_ms` in the url below `lease_ms`, so that the server ends a statement before the lease does.
+- PostgreSQL: the pool sends a cancel request for the statement, so the server stops it, and closes the connection.
+- MySQL and MariaDB: the pool runs `KILL QUERY` for the statement on a new connection to the same url (its connect waits at most 5 s), so the server stops it, and closes the connection. The kill is skipped when that connection reaches another server, as behind a load balancer, or the server restarted since. Still set `timeout_ms` in the url below `lease_ms`, so that the server ends a statement before the lease does.
 
 In all cases a `timeout_ms` below `lease_ms` makes the statement fail by itself (`Db.timeout?`), as an ordinary error of the block, and the connection is kept.
 

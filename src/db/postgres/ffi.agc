@@ -8,6 +8,10 @@ import {Row, Value} from "../support/value"
 ## An open connection.
 type Handle = RawHandle
 
+## The cancel key of a connection (PQgetCancel), made at `open`: a cancel request sent with it does not touch the
+## connection, which a compute call of a cancelled task may still be using.
+type Canceller = RawCancel
+
 ## Connects with what libpq takes (a url or a conninfo string) and sets the client encoding to UTF8.
 def open(conninfo: String) -> Result[Handle]
   try load_library()
@@ -17,6 +21,23 @@ def open(conninfo: String) -> Result[Handle]
       try check_connection(handle)
       ok(handle)
   end
+end
+
+## The cancel key of the connection; an error frees the connection.
+def canceller(handle: Handle) -> Result[Canceller]
+  case pq_get_cancel(handle)
+    ok(made) -> ok(made)
+    error(_) ->
+      Native.close(handle)
+      error("postgres error: out of memory")
+  end
+end
+
+## Asks the server to stop the statement that runs on the connection of the key (PQcancel, a connection of its own to
+## the server, so on the compute pool). A failure is dropped: the statement then runs to its end. Its connect has no
+## time limit of its own (the system's), unlike the libpq 17 cancel of the native driver, which gives up after 5 s.
+def cancel(canceller: Canceller) -> Void
+  _ = Native.memory_pointer(CANCEL_ERROR_SIZE) do |why| pq_cancel(canceller, why, CANCEL_ERROR_SIZE) end
 end
 
 ## PQstatus and PQtransactionStatus of the connection, as `status * 16 + transaction status`.
@@ -73,12 +94,15 @@ HEX_BASE = 16
 # The statements whose command tag counts rows changed; a SELECT counts rows too, but execute does not report them.
 COUNTING_TAGS = Set.new(["INSERT", "UPDATE", "DELETE", "MERGE"])
 HEX_DIGITS = "0123456789abcdef"
+# The buffer of the error text of PQcancel, which libpq asks to be 256 bytes.
+CANCEL_ERROR_SIZE = 256
 # Far past the range of a double: a decimal string this long reads as infinity or zero.
 EXPONENT_LIMIT = 400
 
 # The libpq names start with a capital letter, which a def name cannot, so each def says its C name.
 extern "pq"
   resource RawHandle, free: PQfinish
+  resource RawCancel, free: PQfreeCancel
   compute def pq_connectdb(conninfo: C.String) -> RawHandle = "PQconnectdb"
   def pq_status(conn: RawHandle) -> C.Int32 = "PQstatus"
   def pq_transaction_status(conn: RawHandle) -> C.Int32 = "PQtransactionStatus"
@@ -89,6 +113,8 @@ extern "pq"
                              values: C.Pointer, lengths: C.Pointer, formats: C.Pointer,
                              format: C.Int32) -> C.Pointer = "PQexecParams"
   def pq_clear(res: C.Pointer) -> Void = "PQclear"
+  def pq_get_cancel(conn: RawHandle) -> RawCancel = "PQgetCancel"
+  compute def pq_cancel(cancel: RawCancel, errbuf: C.Pointer, size: C.Int32) -> C.Int32 = "PQcancel"
   def pq_result_status(res: C.Pointer) -> C.Int32 = "PQresultStatus"
   def pq_result_error_field(res: C.Pointer, field: C.Int32) -> C.String = "PQresultErrorField"
   def pq_cmd_status(res: C.Pointer) -> C.String = "PQcmdStatus"

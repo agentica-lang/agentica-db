@@ -11,7 +11,8 @@
 ## - A transaction the block left open is rolled back, so the next caller starts clean.
 ## - A block that crashes, or runs past `lease_ms`, costs its connection: the pool closes it and opens another. So does
 ##   a caller that is cancelled while it holds the connection: the block is cancelled with it, the connection is
-##   interrupted (SQLite), closed and replaced.
+##   interrupted (SQLite stops its statement, PostgreSQL gets a cancel request, MySQL and MariaDB a `KILL QUERY` from a
+##   connection of its own), closed and replaced.
 ## - A connection the block closed or lost, one that fails its rollback, and one that fails the health check are closed
 ##   and replaced the same way.
 ##
@@ -207,9 +208,8 @@ end
 # trip). A transaction the block left open is rolled back (`Db.in_transaction?` reads the state of the connection, no
 # round trip), and a connection that is still in one after that is not reused. A crashed block ends its connection
 # after a rollback that may fail, since the connection is closed anyway. A block that timed out may still be running
-# its statement: on SQLite it is interrupted, so that closing the connection does not wait for it, and nobody touches
-# the connection but the pool, which closes it. The other databases keep running the statement until their own limit
-# (`timeout_ms` of the url): set it under `lease_ms`.
+# its statement: it is interrupted (see the top of this file), so that the server does not run it on after the pool
+# closes the connection, and nobody touches the connection but the pool.
 def check_in(conn: Db.Connection, outcome: P.Outcome) -> Result[Void]
   case outcome
     P.Outcome.TimedOut ->
