@@ -135,13 +135,10 @@ def sqlite_held(cell: String) -> String
 end
 
 # The row as the database gives it back, for `Prop.oracle`, which compares the lists as JSON: a failure of the database
-# is a one item list that says so. `as_fn` makes a function value of the block, which closes over the connection (the
-# fast function of the law cannot be a block, the last one is).
+# is a one item list that says so. The function closes over the connection.
 def through(conn: Db.Connection, columns: List[Column]) -> Fn[List[String], List[String]]
-  as_fn do |cells| stored(conn, columns, cells) end
+  ->(cells) { stored(conn, columns, cells) }
 end
-
-def as_fn[A, B](f: Fn[A, B]) -> Fn[A, B] = f
 
 def stored(conn: Db.Connection, columns: List[Column], cells: List[String]) -> List[String]
   case read_back(conn, columns, write_row(conn, columns, cells))
