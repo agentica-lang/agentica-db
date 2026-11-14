@@ -121,9 +121,10 @@ Feature: SQLite statement cache and batches
 
   # Cancelling a task frees its cursor at once, under a lock of the VM. A free never waits for SQLite's mutex, which
   # the long statement holds: the write's statement goes back unreset (cached) or is left for the next fetch to
-  # finalize (no cache). That statement stopped at the lock in its first step and still counts as a write for SQLite,
-  # which would commit nothing else on the connection until it is reset: the next statement, another write, settles it
-  # first, so its row is there for every connection and after a reopen, and the database is not left locked.
+  # finalize (no cache). The fetch that the lock stopped reset the write already, so the next statement, another
+  # write, commits: its row is there for every connection and after a reopen, and the database is not left locked. A
+  # cancel that comes while the write's try waits for the mutex on the compute pool does not stop that try, which may
+  # run once the lock is let go, so the check counts only the row of the other connection in t.
   Scenario Outline: A cancelled write that waits for a lock never stops the schedulers, statement_cache=<cache> on sqlite
     Given the environment variable "AGENTICA_SCHEDULERS" is "4"
     And a "sqlite" database
@@ -142,7 +143,7 @@ Feature: SQLite statement cache and batches
     Then the changed row count is 1
     When I close the database
     And I open "sqlite:[SCRATCH]/cancel.db"
-    Then the query "select (select count(*) from u) as u, (select count(*) from t) as t" returns:
+    Then the query "select (select count(*) from u) as u, (select count(*) from t where a = 3) as t" returns:
       | u     | t     |
       | Int 1 | Int 1 |
 
@@ -150,6 +151,20 @@ Feature: SQLite statement cache and batches
       | cache |
       | 100   |
       | 0     |
+
+  # A write that a lock stopped is reset at once, so a statement that runs on the connection before its next try
+  # commits, and the error of that try does not roll it back.
+  Scenario: A write between two tries of a write that waits for a lock commits on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/between.db"
+    And I execute "create table t (a integer check (a > 5))"
+    And I execute "create table u (a integer)"
+    And the write "insert into t values (1)" waits for "sqlite:[SCRATCH]/between.db", and I execute "insert into u values (2)" once it is free
+    Then the changed row count is 1
+    When a connection of its own to "sqlite:[SCRATCH]/between.db" queries "select count(*) as n from u"
+    Then the result is:
+      | n     |
+      | Int 1 |
 
   # Big bound data can make one SQLite instruction long (a JSON function reads it whole), so a short call takes at
   # most 256 KiB of it and leaves the statement to the compute pool before it runs; this list is 400 KB.

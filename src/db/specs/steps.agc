@@ -190,6 +190,9 @@ def main() -> Void
     BDD.step("the write {string} that waits for {string} is cancelled beside {string} within {int} ms") do |ctx, args|
       send(ctx, Request(op: "cancel_beside_long", text: args[1], cells: [args[0], args[2]], number: args[3].to_i!))
     end,
+    BDD.step("the write {string} waits for {string}, and I execute {string} once it is free") do |ctx, args|
+      send(ctx, Request(op: "execute_beside_waiting", text: args[1], cells: [args[0], args[2]]))
+    end,
     BDD.step("a connection of its own to {string} queries {string}") do |ctx, args|
       send(ctx, Request(op: "on_other", text: args[0], cells: [args[1]], number: 1))
     end,
