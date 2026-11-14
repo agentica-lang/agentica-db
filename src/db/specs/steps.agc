@@ -16,6 +16,7 @@ SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"
 IO_TIMEOUT_MS = 5_000
 # A cold build of a native module runs the C compiler.
 BUILD_TIMEOUT_MS = 25_000
+MISSING_COMPILER = "agentica-db-no-such-cc"
 # The `timeout_ms` of a call that takes the one of the connection (`Db.CONNECTION_DEFAULT`).
 CONNECTION_DEFAULT = -1
 
@@ -150,7 +151,13 @@ def main() -> Void
       BDD.given_program(without_driver_choice(ctx), "fixtures/sqlite_only.agc")
     end,
     BDD.step("the program opens {string}") do |ctx, args| BDD.when_line(ctx, args[0]) end,
-    BDD.step("I compile {string} with an empty package cache", &compile_cold),
+    BDD.step("I compile {string} with an empty package cache") do |ctx, args| compile_cold(ctx, args[0], false) end,
+    BDD.step("I compile {string} with an empty package cache and no C compiler") do |ctx, args|
+      compile_cold(ctx, args[0], true)
+    end,
+    BDD.step("the build warns that the native module {string} is not built") do |ctx, args|
+      printed(ctx, "warning: native module #{args[0]} not built")
+    end,
     BDD.step("the build makes the native module {string}") do |ctx, args| built(ctx, args[0], true) end,
     BDD.step("the build never makes the native module {string}") do |ctx, args| built(ctx, args[0], false) end,
     BDD.step("the program answers a line starting with {string}", &answers_with),
@@ -312,17 +319,25 @@ def answers_with(ctx: BDD.Context, args: List[String]) -> BDD.Context
   BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
 end
 
-# Compiles the program `args[0]` (a path from specs/) with a package cache of its own, empty, so that every native
-# module it reaches is built, and keeps what agentica printed.
-def compile_cold(ctx: BDD.Context, args: List[String]) -> BDD.Context
+# Compiles the program `program` (a path from specs/) with a package cache of its own, empty, so that every native
+# module it reaches is built (with a C compiler that does not exist when `no_compiler`), and keeps what
+# agentica printed.
+def compile_cold(ctx: BDD.Context, program: String, no_compiler: Bool) -> BDD.Context
   cache = "#{Path.cwd().unwrap!}/tmp/cache-#{OpenSSL.Random.hex(8)}"
   cleaned = BDD.after(ctx) do |_|
     _ = Path.remove(cache, IO_TIMEOUT_MS)
     ok()
   end
 
-  options = Process.Options(timeout_ms: BUILD_TIMEOUT_MS, env: {"XDG_CACHE_HOME": cache, "LOCALAPPDATA": cache})
-  compile = ["compile", "specs/#{args[0]}", "-o", "#{cache}/program.agcb"]
+  return BDD.assert(cleaned, false, "cannot make #{cache}") if not Dir.mkdir(cache, IO_TIMEOUT_MS).ok?
+
+  env = {"XDG_CACHE_HOME": cache, "LOCALAPPDATA": cache}
+  if no_compiler
+    env = env.put("CC", MISSING_COMPILER)
+  end
+
+  options = Process.Options(timeout_ms: BUILD_TIMEOUT_MS, env: env)
+  compile = ["compile", "specs/#{program}", "-o", "#{cache}/program.agcb"]
   started = Process.spawn_captured("agentica", compile, options)
   case started
     error(message) -> BDD.assert(cleaned, false, "agentica did not start: #{message.message}")
@@ -341,14 +356,21 @@ end
 
 # Whether the build that `compile_cold` ran made the native module `name` (`built native NAME:`), as `wanted` says.
 def built(ctx: BDD.Context, name: String, wanted: Bool) -> BDD.Context
-  text = ""
-  case BDD.get(ctx, "build")
-    ok(value) -> text = JSON.string(value).unwrap_or("")
-    error(_) -> text = ""
-  end
-
+  text = build_output(ctx)
   made = text.include?("built native #{name}:")
   BDD.assert(ctx, made == wanted, "the build printed #{text.inspect}")
+end
+
+def printed(ctx: BDD.Context, wanted: String) -> BDD.Context
+  text = build_output(ctx)
+  BDD.assert(ctx, text.include?(wanted), "the build printed #{text.inspect}")
+end
+
+def build_output(ctx: BDD.Context) -> String
+  case BDD.get(ctx, "build")
+    ok(value) -> JSON.string(value).unwrap_or("")
+    error(_) -> ""
+  end
 end
 
 def left_open(ctx: BDD.Context, args: List[String]) -> BDD.Context
