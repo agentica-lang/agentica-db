@@ -7,8 +7,11 @@ import SqliteLock from "lock"
 import SqliteWait from "wait"
 import {Row, Value} from "../support/value"
 
-## An open database; `Native.close` closes it.
-type Handle = RawHandle
+## An open database (`close` closes it), with the lock that its writes step under (`step`).
+struct Handle
+  raw: RawHandle
+  writes: Native.Mutex
+end
 
 ## Opens a database with `flags` (of `sqlite3_open_v2`).
 def open(path: String, flags: Int) -> Result[Handle]
@@ -20,26 +23,32 @@ def open(path: String, flags: Int) -> Result[Handle]
     return error("sqlite error #{opened.result}: #{sqlite3_errstr(opened.result)}")
   end
 
-  ok(opened.db)
+  ok(Handle(raw: opened.db, writes: Native.mutex()))
 end
+
+def close(handle: Handle) -> Void
+  Native.close(handle.raw)
+end
+
+def closed?(handle: Handle) -> Bool = Native.closed?(handle.raw)
 
 ## Runs one statement and gives its rows.
 def query(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[List[Row]]
-  run_query(Conn(handle: handle, wait: wait), sql, params)
+  run_query(Conn(handle: handle.raw, writes: handle.writes, wait: wait), sql, params)
 end
 
 ## Runs one statement for its effect and gives the number of rows it inserted, updated or deleted.
 def execute(handle: Handle, wait: SqliteWait.Wait, sql: String, params: List[Value]) -> Result[Int]
-  run_execute(Conn(handle: handle, wait: wait), sql, params)
+  run_execute(Conn(handle: handle.raw, writes: handle.writes, wait: wait), sql, params)
 end
 
 ## Stops the statement that runs on the connection, which then fails with `sqlite error 9: interrupted`.
 def sqlite3_interrupt(db: Handle) -> Void
-  raw_interrupt(db)
+  raw_interrupt(db.raw)
 end
 
 ## 0 while a transaction is open.
-def sqlite3_get_autocommit(db: Handle) -> Int = raw_get_autocommit(db)
+def sqlite3_get_autocommit(db: Handle) -> Int = raw_get_autocommit(db.raw)
 
 private
 
@@ -62,9 +71,10 @@ NUL_TERMINATED = -1
 TRANSIENT_DESTRUCTOR = -1
 SCHEMA_SQL = "SELECT 1 FROM main.sqlite_master LIMIT 1"
 
-# A connection and the wait of the call that runs on it.
+# A connection, the lock of its writes and the wait of the call that runs on it.
 struct Conn
-  handle: Handle
+  handle: RawHandle
+  writes: Native.Mutex
   wait: SqliteWait.Wait
 end
 
@@ -92,6 +102,7 @@ extern "sqlite3"
   compute def sqlite3_probe(db: RawHandle, sql: C.Pointer, bytes: C.Int32, out stmt: C.Pointer,
                             out tail: C.Pointer) -> C.Int32 = "sqlite3_prepare_v2"
   compute def sqlite3_step(stmt: Stmt) -> C.Int32
+  compute def sqlite3_reset(stmt: Stmt) -> C.Int32
   def sqlite3_stmt_readonly(stmt: Stmt) -> C.Int32
   def sqlite3_libversion_number() -> C.Int32
   def sqlite3_txn_state(db: RawHandle, schema: C.Pointer) -> C.Int32
@@ -236,7 +247,7 @@ end
 
 # Whether SQLite checked the schema under no lock of this connection: outside any transaction.
 def unchecked_schema?(conn: Conn) -> Bool
-  return false if sqlite3_get_autocommit(conn.handle) == 0
+  return false if raw_get_autocommit(conn.handle) == 0
 
   (
     sqlite3_libversion_number() < TXN_STATE_VERSION or
@@ -334,16 +345,17 @@ def collect(conn: Conn, stmt: Stmt, names: List[String], keep: Bool) -> Result[L
   return error(SqliteWait.INTERRUPTED) if SqliteWait.expired?(conn.wait)
 
   rows: List[Row] = []
+  writes = sqlite3_stmt_readonly(stmt) == 0
   while true
-    code = sqlite3_step(stmt)
+    code = step(conn, stmt, writes)
     # Written out here, not as a call: the check runs once per row, and a row fails its first comparison. Keep it in
     # sync with `SqliteWait.lock_code?`.
     if code != SQLITE_ROW and (code == SqliteLock.SQLITE_BUSY or code == SqliteWait.SQLITE_LOCKED)
-      stepped = step_after_lock(conn, stmt, code)
+      stepped = step_after_lock(conn, stmt, code, writes)
       code = stepped.code
       # SQLite rolls a write back and runs it again after a wait (a commit refused in a rollback journal), so the
       # rows of the first run are dropped; a read goes on from where it stopped.
-      if stepped.waited and sqlite3_stmt_readonly(stmt) == 0
+      if stepped.waited and writes
         rows = []
       end
     end
@@ -366,17 +378,34 @@ end
 # retry for a COMMIT, which stays open after SQLITE_BUSY, and for a statement outside a transaction. A write that a
 # read transaction of this connection asks for is not tried again (`upgrade?`). The wait is counted from here, after
 # the first refusal, which SQLite gives at once (its own busy timeout is 0), so the clock is read only on this path.
-def step_after_lock(conn: Conn, stmt: Stmt, code: Int) -> Stepped
+def step_after_lock(conn: Conn, stmt: Stmt, code: Int, writes: Bool) -> Stepped
   started = Time.monotonic_ms()
   current = code
   waited = false
   while lock_wait?(conn, current, started) and not upgrade?(conn, stmt)
     SqliteWait.pause(conn.wait, started)
     waited = true
-    current = sqlite3_step(stmt)
+    current = step(conn, stmt, writes)
   end
 
   Stepped(code: current, waited: waited)
+end
+
+# One step. A write that a lock stopped still counts as running for SQLite: no other statement of the connection
+# commits until its reset, and the error of a later step would roll them back. So it is reset at once, and the writes
+# step under the lock of the connection, so that none of them runs between the step and the reset. Its next step
+# runs it again from its start.
+def step(conn: Conn, stmt: Stmt, writes: Bool) -> Int
+  return sqlite3_step(stmt) if not writes
+
+  conn.writes.synchronize do
+    code = sqlite3_step(stmt)
+    if SqliteWait.lock_code?(code)
+      _ = sqlite3_reset(stmt)
+    end
+
+    code
+  end
 end
 
 # A statement that writes, in a connection that holds a read lock: SQLite does not wait for the lock of the writer

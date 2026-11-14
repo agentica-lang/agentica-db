@@ -139,7 +139,7 @@ end
 def close(conn: Connection) -> Void
   case conn.link
     Link.Native(native, _) -> Native.close(native)
-    Link.Ffi(handle) -> Native.close(handle)
+    Link.Ffi(handle) -> SqliteFfi.close(handle)
   end
 end
 
@@ -312,7 +312,7 @@ end
 def closed?(link: Link) -> Bool
   case link
     Link.Native(native, _) -> Native.closed?(native)
-    Link.Ffi(handle) -> Native.closed?(handle)
+    Link.Ffi(handle) -> SqliteFfi.closed?(handle)
   end
 end
 
