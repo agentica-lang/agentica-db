@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `Db.open` and `DbPool.Options` take the drivers of the program, and a program builds the native modules of the drivers it imports only (an app on SQLite no longer builds the PostgreSQL one, about 1 s of its first run): `Db.open("sqlite:app.db", [Sqlite.driver()])` with `import Sqlite from "pkg/db/sqlite"` (also `pkg/db/postgres` and `pkg/db/mysql`), and `DbPool.Options(url: ..., drivers: [...])`. A url whose driver was not passed is `db error: no driver for the url scheme ...`. `Db.Connection` is now a record of the functions of a connection, not an enum with a case per database: `Db.open_sqlite`, `Db.open_postgres` and `Db.open_mysql` are `Sqlite.open`, `Postgres.open` and `Mysql.open`, a match on `Db.Connection.Sqlite(...)` reads `conn.adapter`, `Db.statement_cache(conn)` gives the counters of the native drivers, and `Task.spawn_owning` can no longer hand a connection to another task (open it in the task that keeps it, or use a pool).
+
 ### Fixed
 
 - SQLite: a statement on a table that another connection made waits for a lock held at its prepare, instead of failing at once with `no such table`.

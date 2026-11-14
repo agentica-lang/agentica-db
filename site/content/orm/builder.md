@@ -26,6 +26,7 @@ aliases:
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -35,7 +36,7 @@ struct User
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer, admin integer not null)", [])
   try Db.execute(conn, "insert into users (name, age, admin) values ('Ana', 31, 1), ('Bob', 27, 0), ('Cy', 40, 1), ('Dee', null, 1)", [])
   users = Orm.schema("users", User.codec)

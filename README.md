@@ -5,8 +5,8 @@ MariaDB, and a small typed ORM on top. Each database goes through its system cli
 PostgreSQL also have a native driver (a statement cache, many rows per call), the default.
 
 agentica-db 0.10.0 needs Agentica 0.31.0 or later (0.9.0 needs 0.30.0), and a C compiler (`cc`, or
-`CC`; on Debian `gcc` and `libc6-dev`) where a program that imports it first runs or is compiled: Agentica then builds the
-native SQLite and PostgreSQL drivers into its package cache. Documentation: https://agentica-lang.github.io/agentica-db/
+`CC`; on Debian `gcc` and `libc6-dev`) where a program that imports its SQLite or PostgreSQL driver first runs or is
+compiled: Agentica then builds the native module of each driver the program imports into its package cache. Documentation: https://agentica-lang.github.io/agentica-db/
 
 ## Install
 
@@ -28,9 +28,10 @@ repository, so with those tags leave `subdir` out. The imports (`pkg/db/db`, `pk
 
 ```ruby
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (name text not null, age integer)", [])
   try Db.transaction(conn) do |tx|
     try Db.execute(tx, "insert into users (name, age) values (?, ?)", [Db.Value.Text("Ana"), Db.Value.Int(31)])

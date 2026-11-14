@@ -25,9 +25,10 @@ description: Limit the time of a statement with timeout_ms, as a url parameter o
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:?timeout_ms=2000")
+  conn = try Db.open("sqlite::memory:?timeout_ms=2000", [Sqlite.driver()])
   try Db.query(conn, "select 1", [])
   try Db.query(conn, "select 1", [], 500)
   try Db.query(conn, "select 1", [], Db.NO_TIMEOUT)

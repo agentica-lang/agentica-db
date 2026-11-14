@@ -21,9 +21,10 @@ aliases:
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def main() -> Void
-  conn = Db.open("sqlite::memory:").unwrap!
+  conn = Db.open("sqlite::memory:", [Sqlite.driver()]).unwrap!
   Db.execute(conn, "create table t (a integer, b real, c text, d blob, e integer)", []).unwrap!
   Db.execute(conn, "insert into t values (?, ?, ?, ?, ?)",
              [Db.Value.Int(7), Db.Value.Float(-0.25), Db.Value.Text("hé"), Db.Value.Blob(Bytes.from_list([0, 1, 255]).unwrap!), Db.Value.Null]).unwrap!

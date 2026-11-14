@@ -22,9 +22,10 @@ A first program, on a private in-memory SQLite database:
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def main() -> Void
-  conn = Db.open("sqlite::memory:").unwrap!
+  conn = Db.open("sqlite::memory:", [Sqlite.driver()]).unwrap!
   Db.execute(conn, "create table users (name text not null, age integer)", []).unwrap!
   Db.execute(conn, "insert into users (name, age) values (?, ?)", [Db.Value.Text("Ana"), Db.Value.Int(31)]).unwrap!
   rows = Db.query(conn, "select name, age from users where age > ?", [Db.Value.Int(28)]).unwrap!

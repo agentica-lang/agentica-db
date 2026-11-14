@@ -12,6 +12,7 @@ Write a function that takes a `Db.Connection` instead of opening one. A test the
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def adults(conn: Db.Connection, min_age: Int) -> Result[Int]
   rows = try Db.query(conn, "select name from users where age >= ?", [Db.Value.Int(min_age)])
@@ -19,7 +20,7 @@ def adults(conn: Db.Connection, min_age: Int) -> Result[Int]
 end
 
 def main() -> Void
-  conn = Db.open("sqlite::memory:").unwrap!
+  conn = Db.open("sqlite::memory:", [Sqlite.driver()]).unwrap!
   Db.execute(conn, "create table users (name text not null, age integer)", []).unwrap!
   Db.execute(conn, "insert into users (name, age) values ('Ana', 31), ('Bob', 17)", []).unwrap!
   puts(adults(conn, 18).unwrap!)

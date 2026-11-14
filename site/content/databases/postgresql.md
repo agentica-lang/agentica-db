@@ -10,9 +10,10 @@ The PostgreSQL adapter uses the system `libpq` (PostgreSQL 12 or later). `open` 
 
 ```agentica
 import Db from "pkg/db/db"
+import Postgres from "pkg/db/postgres"
 
 def run() -> Result[Void]
-  conn = try Db.open("postgres://user:pass@localhost:5432/app?sslmode=disable&connect_timeout=5")
+  conn = try Db.open("postgres://user:pass@localhost:5432/app?sslmode=disable&connect_timeout=5", [Postgres.driver()])
   rows = try Db.query(conn, "select id, name from users where age > ?::int", [Db.Value.Int(28)])
   puts(rows.size)
   Db.close(conn)
@@ -29,7 +30,7 @@ end
 
 ## The url
 
-The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`, `options`). A conninfo string such as `host=localhost dbname=app` works with `Db.open_postgres`. Set `connect_timeout` (in seconds): without it, an unreachable host waits as long as the operating system does. The client encoding is always UTF8.
+The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`, `options`). A conninfo string such as `host=localhost dbname=app` works with `Postgres.open`. Set `connect_timeout` (in seconds): without it, an unreachable host waits as long as the operating system does. The client encoding is always UTF8.
 
 This package reads four parameters itself, which libpq never sees, in a url or in a conninfo string:
 

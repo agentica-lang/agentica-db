@@ -23,25 +23,21 @@ end
 def quote(conn: Db.Connection, name: String) -> Result[String]
   return error("the name #{name.inspect} is not a plain identifier") if not valid_name?(name)
 
-  case conn
-    Db.Connection.Postgres(_) -> ok("\"#{name}\"")
-    _ -> ok("`#{name}`")
-  end
+  return ok("\"#{name}\"") if conn.adapter == "postgres"
+
+  ok("`#{name}`")
 end
 
 ## Runs an insert whose key the database generates and gives that key. PostgreSQL says it with `returning`; SQLite and
 ## MySQL keep the key of the last insert of the connection, which the next statement reads. `key` is the quoted
 ## name of the key column. The errors are the ones of `Db`.
 def insert_generated(conn: Db.Connection, sql: String, params: List[Db.Value], key: String) -> Result[Int]
-  case conn
-    Db.Connection.Postgres(_) -> generated(try Db.query(conn, "#{sql} returning #{key}", params))
-    Db.Connection.Sqlite(_) ->
-      try Db.execute(conn, sql, params)
-      generated(try Db.query(conn, "select last_insert_rowid() as id", []))
-    Db.Connection.Mysql(_) ->
-      try Db.execute(conn, sql, params)
-      generated(try Db.query(conn, "select last_insert_id() as id", []))
-  end
+  return generated(try Db.query(conn, "#{sql} returning #{key}", params)) if conn.adapter == "postgres"
+
+  try Db.execute(conn, sql, params)
+  return generated(try Db.query(conn, "select last_insert_rowid() as id", [])) if conn.adapter == "sqlite"
+
+  generated(try Db.query(conn, "select last_insert_id() as id", []))
 end
 
 private

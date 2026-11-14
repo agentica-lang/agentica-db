@@ -10,9 +10,10 @@ The MySQL adapter uses MariaDB Connector/C (`libmariadb.so.3`), which talks to M
 
 ```agentica
 import Db from "pkg/db/db"
+import Mysql from "pkg/db/mysql"
 
 def run() -> Result[Void]
-  conn = try Db.open("mysql://user:pass@127.0.0.1:3306/app?connect_timeout=5")
+  conn = try Db.open("mysql://user:pass@127.0.0.1:3306/app?connect_timeout=5", [Mysql.driver()])
   rows = try Db.query(conn, "select id, name from users where age > ?", [Db.Value.Int(28)])
   puts(rows.size)
   Db.close(conn)

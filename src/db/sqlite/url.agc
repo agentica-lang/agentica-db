@@ -61,8 +61,30 @@ def parse(text: String) -> Result[Target]
   ok(Target(path: halves[0], settings: settings))
 end
 
+## Whether a url names a SQLite database that lives in its connection: `sqlite::memory:`, or a `file:` name that is
+## `:memory:` or has `mode=memory`, unless `cache=shared` makes it one database for every connection of the process.
+## Every connection of such a database is a database of its own.
+def private_memory?(url: String) -> Bool
+  return true if url.start_with?(MEMORY_URL)
+
+  return false if not url.start_with?(URI_URL) or url.include?("cache=shared")
+
+  url.include?(":memory:") or url.include?("mode=memory")
+end
+
+## Whether a url names a SQLite database in a file: not an in-memory one, private or shared (`mode=memory`,
+## `:memory:`).
+def file?(url: String) -> Bool
+  return false if not url.start_with?(URL_PREFIX) or private_memory?(url)
+
+  not url.include?(":memory:") and not url.include?("mode=memory")
+end
+
 private
 
+URL_PREFIX = "sqlite:"
+URI_URL = "sqlite:file:"
+MEMORY_URL = "sqlite::memory:"
 JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
 SYNCHRONOUS_MODES = ["off", "normal", "full", "extra"]
 NAMES = [
