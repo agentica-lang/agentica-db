@@ -14,7 +14,110 @@
 
 import Db from "pkg/db/db"
 import Prop from "pkg/prop/prop"
-import Sqlite from "pkg/db/sqlite/sqlite"
+import Sqlite from "pkg/db/sqlite"
+
+## What a read looks like, by the words it starts with.
+enum ReadShape
+  Select
+  With
+  Values
+  UserVersion
+  DataVersion
+  Explain
+  ForeignKeys
+end
+
+## A read statement of a shape, dressed: `lead` before it, `gap` between its first word and the rest, `mode` for the
+## case of its keywords, `end_mark` after it.
+struct Read
+  shape: ReadShape
+  lead: List[Int]
+  gap: List[Int]
+  mode: Int
+  end_mark: Int
+end
+
+## The PRAGMAs that the driver tells apart, and unknown ones that must not be taken for them.
+enum PragmaName
+  JournalMode
+  Synchronous
+  LockingMode
+  WalAutocheckpoint
+  WalCheckpoint
+  UserVersion
+  CacheSize
+  ForeignKeys
+  Unknown
+  UnknownLong
+  UnknownPrefix
+end
+
+## How a PRAGMA is written: a bare read, `= value`, or `(value)`.
+enum PragmaForm
+  Read
+  Assign
+  Call
+end
+
+## A PRAGMA, dressed: in a schema or not (`schema` 0 is none), its name bare or quoted, `gap` between its words.
+struct Pragma
+  name: PragmaName
+  form: PragmaForm
+  schema: Int
+  quote: Int
+  mode: Int
+  gap: List[Int]
+end
+
+## The generator of a read statement.
+def read_gen() -> Prop.Gen[Read] = Prop.of(Read.codec, JSON.schema(Read))
+
+## The generator of a PRAGMA.
+def pragma_gen() -> Prop.Gen[Pragma] = Prop.of(Pragma.codec, JSON.schema(Pragma))
+
+## A read runs in a short call from its second run (the first prepares it) exactly when it is a SELECT, WITH, VALUES,
+## or the PRAGMA data_version or user_version, whatever surrounds it.
+def read_runs_short_as_modelled(read: Read) -> Result[Void]
+  sql = read_sql(read)
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
+  ran = run_twice(conn, sql)
+  counted = shorts_of(conn)
+  Db.close(conn)
+  try ran
+  shorts = try counted
+  expected = 0
+  if quick?(read.shape)
+    expected = 1
+  end
+
+  return error("#{sql.inspect} ran #{shorts} statements in a short call, expected #{expected}") if shorts != expected
+
+  ok()
+end
+
+## A PRAGMA run between two transactions of cheap writes ends their short calls exactly when it sets journal_mode,
+## synchronous, locking_mode or wal_autocheckpoint, or is a wal_checkpoint, whatever surrounds it.
+def pragma_ends_short_writes_as_modelled(pragma: Pragma) -> Result[Void]
+  dir = try scratch_dir()
+  outcome = pragma_outcome(dir, pragma)
+  _ = Path.remove(dir)
+  shorts = try outcome
+  expected = SHORTS_PER_TXN
+  if ends_short_writes?(pragma)
+    expected = 0
+  end
+
+  if shorts != expected
+    return error(
+      "#{pragma_sql(pragma).inspect}: a transaction after it ran #{shorts} statements in a short call, " +
+      "expected #{expected}",
+    )
+  end
+
+  ok()
+end
+
+private
 
 # What SQLite skips between two words. Some hold the words the scanners look for, a `;` or a `*`, which must not
 # end or start anything.
@@ -41,122 +144,15 @@ QUOTES = 4
 TXN_SQL = "insert into t (n) values (1)"
 SHORTS_PER_TXN = 2
 
-## What a read looks like, by the words it starts with.
-export enum ReadShape
-  Select
-  With
-  Values
-  UserVersion
-  DataVersion
-  Explain
-  ForeignKeys
-end
-
-## A read statement of a shape, dressed: `lead` before it, `gap` between its first word and the rest, `mode` for the
-## case of its keywords, `end_mark` after it.
-export struct Read
-  shape: ReadShape
-  lead: List[Int]
-  gap: List[Int]
-  mode: Int
-  end_mark: Int
-end
-
-## The PRAGMAs that the driver tells apart, and unknown ones that must not be taken for them.
-export enum PragmaName
-  JournalMode
-  Synchronous
-  LockingMode
-  WalAutocheckpoint
-  WalCheckpoint
-  UserVersion
-  CacheSize
-  ForeignKeys
-  Unknown
-  UnknownLong
-  UnknownPrefix
-end
-
-## How a PRAGMA is written: a bare read, `= value`, or `(value)`.
-export enum PragmaForm
-  Read
-  Assign
-  Call
-end
-
-## A PRAGMA, dressed: in a schema or not (`schema` 0 is none), its name bare or quoted, `gap` between its words.
-export struct Pragma
-  name: PragmaName
-  form: PragmaForm
-  schema: Int
-  quote: Int
-  mode: Int
-  gap: List[Int]
-end
-
-## The generator of a read statement.
-export def read_gen() -> Prop.Gen[Read]
-  return Prop.of(Read.codec, JSON.schema(Read))
-end
-
-## The generator of a PRAGMA.
-export def pragma_gen() -> Prop.Gen[Pragma]
-  return Prop.of(Pragma.codec, JSON.schema(Pragma))
-end
-
-## A read runs in a short call from its second run (the first prepares it) exactly when it is a SELECT, WITH, VALUES,
-## or the PRAGMA data_version or user_version, whatever surrounds it.
-export def read_runs_short_as_modelled(read: Read) -> Result[Void]
-  sql = read_sql(read)
-  conn = try Db.open("sqlite::memory:")
-  ran = run_twice(conn, sql)
-  counted = shorts_of(conn)
-  Db.close(conn)
-  try ran
-  shorts = try counted
-  expected = 0
-  if quick?(read.shape)
-    expected = 1
-  end
-
-  if shorts != expected
-    return error("#{sql.inspect} ran #{shorts} statements in a short call, expected #{expected}")
-  end
-
-  return ok()
-end
-
-## A PRAGMA run between two transactions of cheap writes ends their short calls exactly when it sets journal_mode,
-## synchronous, locking_mode or wal_autocheckpoint, or is a wal_checkpoint, whatever surrounds it.
-export def pragma_ends_short_writes_as_modelled(pragma: Pragma) -> Result[Void]
-  dir = try scratch_dir()
-  outcome = pragma_outcome(dir, pragma)
-  _ = Path.remove(dir)
-  shorts = try outcome
-  expected = SHORTS_PER_TXN
-  if ends_short_writes?(pragma)
-    expected = 0
-  end
-
-  if shorts != expected
-    return error(
-      "#{pragma_sql(pragma).inspect}: a transaction after it ran #{shorts} statements in a short call, " +
-      "expected #{expected}",
-    )
-  end
-
-  return ok()
-end
-
 def quick?(shape: ReadShape) -> Bool
   case shape
-    ReadShape.Select -> return true
-    ReadShape.With -> return true
-    ReadShape.Values -> return true
-    ReadShape.UserVersion -> return true
-    ReadShape.DataVersion -> return true
-    ReadShape.Explain -> return false
-    ReadShape.ForeignKeys -> return false
+    ReadShape.Select -> true
+    ReadShape.With -> true
+    ReadShape.Values -> true
+    ReadShape.UserVersion -> true
+    ReadShape.DataVersion -> true
+    ReadShape.Explain -> false
+    ReadShape.ForeignKeys -> false
   end
 end
 
@@ -166,17 +162,17 @@ end
 def ends_short_writes?(pragma: Pragma) -> Bool
   sets = pragma.form != PragmaForm.Read
   case pragma.name
-    PragmaName.JournalMode -> return sets
-    PragmaName.Synchronous -> return sets
-    PragmaName.LockingMode -> return sets
-    PragmaName.WalAutocheckpoint -> return sets
-    PragmaName.WalCheckpoint -> return true
-    PragmaName.UserVersion -> return false
-    PragmaName.CacheSize -> return false
-    PragmaName.ForeignKeys -> return false
-    PragmaName.Unknown -> return false
-    PragmaName.UnknownLong -> return false
-    PragmaName.UnknownPrefix -> return false
+    PragmaName.JournalMode -> sets
+    PragmaName.Synchronous -> sets
+    PragmaName.LockingMode -> sets
+    PragmaName.WalAutocheckpoint -> sets
+    PragmaName.WalCheckpoint -> true
+    PragmaName.UserVersion -> false
+    PragmaName.CacheSize -> false
+    PragmaName.ForeignKeys -> false
+    PragmaName.Unknown -> false
+    PragmaName.UnknownLong -> false
+    PragmaName.UnknownPrefix -> false
   end
 end
 
@@ -209,7 +205,7 @@ def read_sql(read: Read) -> String
       rest = cased("foreign_keys", mode)
   end
 
-  return "#{gaps_of(read.lead)}#{cased(head, mode)}#{gap}#{rest}#{END_MARKS[read.end_mark.abs % END_MARKS.length]}"
+  "#{gaps_of(read.lead)}#{cased(head, mode)}#{gap}#{rest}#{END_MARKS[read.end_mark.abs % END_MARKS.length]}"
 end
 
 def pragma_sql(pragma: Pragma) -> String
@@ -228,121 +224,112 @@ def pragma_sql(pragma: Pragma) -> String
     PragmaForm.Call -> tail = "#{gap}(#{value_of(pragma.name)})"
   end
 
-  return "#{cased("pragma", mode)}#{gap}#{target}#{tail}"
+  "#{cased("pragma", mode)}#{gap}#{target}#{tail}"
 end
 
 def name_of(name: PragmaName) -> String
   case name
-    PragmaName.JournalMode -> return "journal_mode"
-    PragmaName.Synchronous -> return "synchronous"
-    PragmaName.LockingMode -> return "locking_mode"
-    PragmaName.WalAutocheckpoint -> return "wal_autocheckpoint"
-    PragmaName.WalCheckpoint -> return "wal_checkpoint"
-    PragmaName.UserVersion -> return "user_version"
-    PragmaName.CacheSize -> return "cache_size"
-    PragmaName.ForeignKeys -> return "foreign_keys"
-    PragmaName.Unknown -> return "no_such_pragma"
-    PragmaName.UnknownLong -> return LONG_NAME
-    PragmaName.UnknownPrefix -> return "synchronous_of_nothing"
+    PragmaName.JournalMode -> "journal_mode"
+    PragmaName.Synchronous -> "synchronous"
+    PragmaName.LockingMode -> "locking_mode"
+    PragmaName.WalAutocheckpoint -> "wal_autocheckpoint"
+    PragmaName.WalCheckpoint -> "wal_checkpoint"
+    PragmaName.UserVersion -> "user_version"
+    PragmaName.CacheSize -> "cache_size"
+    PragmaName.ForeignKeys -> "foreign_keys"
+    PragmaName.Unknown -> "no_such_pragma"
+    PragmaName.UnknownLong -> LONG_NAME
+    PragmaName.UnknownPrefix -> "synchronous_of_nothing"
   end
 end
 
 # A value that keeps the database as it is (WAL, the same level), so that only the scanner decides what follows.
 def value_of(name: PragmaName) -> String
   case name
-    PragmaName.JournalMode -> return "wal"
-    PragmaName.Synchronous -> return "normal"
-    PragmaName.LockingMode -> return "normal"
-    PragmaName.WalAutocheckpoint -> return "1000"
-    PragmaName.WalCheckpoint -> return "passive"
-    PragmaName.UserVersion -> return "0"
-    PragmaName.CacheSize -> return "2000"
-    PragmaName.ForeignKeys -> return "on"
-    PragmaName.Unknown -> return "1"
-    PragmaName.UnknownLong -> return "1"
-    PragmaName.UnknownPrefix -> return "1"
+    PragmaName.JournalMode -> "wal"
+    PragmaName.Synchronous -> "normal"
+    PragmaName.LockingMode -> "normal"
+    PragmaName.WalAutocheckpoint -> "1000"
+    PragmaName.WalCheckpoint -> "passive"
+    PragmaName.UserVersion -> "0"
+    PragmaName.CacheSize -> "2000"
+    PragmaName.ForeignKeys -> "on"
+    PragmaName.Unknown -> "1"
+    PragmaName.UnknownLong -> "1"
+    PragmaName.UnknownPrefix -> "1"
   end
 end
 
 # A word with the case of its letters changed (ASCII only: SQLite folds no other): all lower, all upper,
 # or alternating.
 def cased(word: String, mode: Int) -> String
-  if mode == 0
-    return word
-  end
+  return word if mode == 0
 
   letters = word.split("")
   upper = mode == 1
-  return letters.map do |letter| letter_cased(letter, upper) end.join("")
+  changed = letters.map do |letter| letter_cased(letter, upper) end
+  changed.join("")
 end
 
 def letter_cased(letter: String, upper: Bool) -> String
   code = letter.code
-  if code < 97 or code > 122
-    return letter
-  end
+  return letter if code < 97 or code > 122
 
-  if upper or code % 2 == 0
-    return letter.upcase
-  end
+  return letter.upcase if upper or code % 2 == 0
 
-  return letter
+  letter
 end
 
 def quoted(name: String, style: Int) -> String
   case style
-    1 -> return "\"#{name}\""
-    2 -> return "[#{name}]"
-    3 -> return "`#{name}`"
-    _ -> return name
+    1 -> "\"#{name}\""
+    2 -> "[#{name}]"
+    3 -> "`#{name}`"
+    _ -> name
   end
 end
 
 def gap_of(picks: List[Int]) -> String
-  if picks.empty?
-    return " "
-  end
+  return " " if picks.empty?
 
-  return gaps_of(picks)
+  gaps_of(picks)
 end
 
 def gaps_of(picks: List[Int]) -> String
-  return picks.map do |pick| GAPS[pick.abs % GAPS.length] end.join("")
+  gaps = picks.map do |pick| GAPS[pick.abs % GAPS.length] end
+  gaps.join("")
 end
 
 def run_twice(conn: Db.Connection, sql: String) -> Result[Void]
   try Db.query(conn, sql, [])
   try Db.query(conn, sql, [])
-  return ok()
+  ok()
 end
 
 # The statements that ran whole in a short call. Only the native driver counts them: a run on the FFI driver, which
 # CI makes with AGENTICA_DB_SQLITE_DRIVER=ffi, has nothing to check.
 def shorts_of(conn: Db.Connection) -> Result[Int]
-  case conn
-    Db.Connection.Sqlite(sqlite) ->
-      case Sqlite.statement_cache(sqlite)
-        some(stats) -> return ok(stats.shorts)
-        none -> return error("the connection runs the FFI driver, which has no short calls")
-      end
+  return error("not a SQLite connection") if conn.adapter != Db.Adapter.Sqlite
 
-    _ -> return error("not a SQLite connection")
+  case Db.statement_cache(conn)
+    some(stats) -> ok(stats.shorts)
+    none -> error("the connection runs the FFI driver, which has no short calls")
   end
 end
 
 def scratch_dir() -> Result[String]
   dir = try Path.join(["..", "tmp", "properties", "#{System.pid}-#{Time.monotonic_ns()}"])
   try Dir.mkdir(dir)
-  return ok(dir)
+  ok(dir)
 end
 
 # Opens a WAL database in the folder, runs two cheap transactions (the second runs whole in short calls), then the
 # PRAGMA, then a third, and gives the statements the third ran in a short call.
 def pragma_outcome(dir: String, pragma: Pragma) -> Result[Int]
-  conn = try Db.open("sqlite:#{try Path.join([dir, "p.db"])}")
+  conn = try Db.open("sqlite:#{try Path.join([dir, "p.db"])}", [Sqlite.driver()])
   counted = counted_after(conn, pragma)
   Db.close(conn)
-  return counted
+  counted
 end
 
 def counted_after(conn: Db.Connection, pragma: Pragma) -> Result[Int]
@@ -360,10 +347,10 @@ def counted_after(conn: Db.Connection, pragma: Pragma) -> Result[Int]
 
   try Db.query(conn, pragma_sql(pragma), [])
   try transaction(conn)
-  return ok(try shorts_of(conn) - warm)
+  ok(try shorts_of(conn) - warm)
 end
 
 def transaction(conn: Db.Connection) -> Result[Void]
   try Db.transaction(conn) do |inner| Db.execute(inner, TXN_SQL, []) end
-  return ok()
+  ok()
 end

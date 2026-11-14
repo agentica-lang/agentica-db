@@ -13,6 +13,76 @@
 
 import Milliseconds from "../support/milliseconds"
 
+## The TLS mode of a connection: what the client library does by default, TLS with any certificate, or TLS with a
+## certificate that the system authorities vouch for.
+enum Tls
+  Default
+  Required
+  Verify
+end
+
+## Where and how to connect. An empty `user` is the user of the process, and an empty `database` selects none. The
+## native driver keeps `statement_cache` prepared statements per connection and gives at most `batch_rows` rows or
+## about `batch_bytes` bytes of values per call; the FFI driver has no cache and reads a result at once.
+struct Target
+  host: String
+  port: Int
+  user: String
+  password: String
+  database: String
+  timeout: Int = 0
+  timeout_ms: Int = 0
+  tls: Tls = Tls.Default
+  ca: String = ""
+  statement_cache: Int = 100
+  batch_rows: Int = 100
+  batch_bytes: Int = 262_144
+end
+
+## Reads the url. An error is `mysql error: <message>`.
+def parse(url: String) -> Result[Target]
+  return error("mysql error: the url contains a NUL character") if url.include?(String.from_code(0))
+
+  found = SCHEMES.find do |prefix| url.start_with?(prefix) end
+  scheme = found.unwrap_or("")
+  rest = url.slice(scheme.length, url.length - scheme.length)
+  halves = split_once(rest, "?")
+  options = try read_query(halves[1])
+  parts = split_once(halves[0], "/")
+  database = try decode(parts[1])
+  return error("mysql error: the url path has more than one part") if database.include?("/")
+
+  # The password may hold an `@` that was not encoded: the host starts after the last one.
+  at = last_index(parts[0], "@")
+  userinfo = parts[0].slice(0, max_zero(at))
+  login = split_once(userinfo, ":")
+  user = try decode(login[0])
+  password = try decode(login[1])
+  address = try read_address(parts[0].slice(at + 1, parts[0].length - at - 1))
+  if [user, password, database].any? do |part| part.include?(String.from_code(0)) end
+    return error("mysql error: the url contains a NUL character")
+  end
+
+  ok(
+    Target(
+      host: address.host,
+      port: address.port,
+      user: user,
+      password: password,
+      database: database,
+      timeout: options.timeout,
+      timeout_ms: options.timeout_ms,
+      tls: options.tls,
+      ca: options.ca,
+      statement_cache: options.statement_cache,
+      batch_rows: options.batch_rows,
+      batch_bytes: options.batch_bytes,
+    ),
+  )
+end
+
+private
+
 SCHEMES = ["mysql://", "mariadb://"]
 DEFAULT_PORT = 3306
 MAX_PORT = 65535
@@ -33,32 +103,6 @@ MAX_BATCH_BYTES = 262_144
 # At most nine digits, far from the limit of an Int.
 MAX_DIGITS = 9
 
-## The TLS mode of a connection: what the client library does by default, TLS with any certificate, or TLS with a
-## certificate that the system authorities vouch for.
-export enum Tls
-  Default
-  Required
-  Verify
-end
-
-## Where and how to connect. An empty `user` is the user of the process, and an empty `database` selects none. The
-## native driver keeps `statement_cache` prepared statements per connection and gives at most `batch_rows` rows or
-## about `batch_bytes` bytes of values per call; the FFI driver has no cache and reads a result at once.
-export struct Target
-  host: String
-  port: Int
-  user: String
-  password: String
-  database: String
-  timeout: Int = 0
-  timeout_ms: Int = 0
-  tls: Tls = Tls.Default
-  ca: String = ""
-  statement_cache: Int = 100
-  batch_rows: Int = 100
-  batch_bytes: Int = 262_144
-end
-
 struct Address
   host: String
   port: Int
@@ -74,57 +118,12 @@ struct Options
   batch_bytes: Int = 262_144
 end
 
-## Reads the url. An error is `mysql error: <message>`.
-export def parse(url: String) -> Result[Target]
-  if url.include?(String.from_code(0))
-    return error("mysql error: the url contains a NUL character")
-  end
-
-  scheme = SCHEMES.find do |prefix| url.start_with?(prefix) end.unwrap_or("")
-  rest = url.slice(scheme.length, url.length - scheme.length)
-  halves = split_once(rest, "?")
-  options = try read_query(halves[1])
-  parts = split_once(halves[0], "/")
-  database = try decode(parts[1])
-  if database.include?("/")
-    return error("mysql error: the url path has more than one part")
-  end
-
-  # The password may hold an `@` that was not encoded: the host starts after the last one.
-  at = last_index(parts[0], "@")
-  userinfo = parts[0].slice(0, max_zero(at))
-  login = split_once(userinfo, ":")
-  user = try decode(login[0])
-  password = try decode(login[1])
-  address = try read_address(parts[0].slice(at + 1, parts[0].length - at - 1))
-  if [user, password, database].any? do |part| part.include?(String.from_code(0)) end
-    return error("mysql error: the url contains a NUL character")
-  end
-
-  return ok(
-    Target(
-      host: address.host,
-      port: address.port,
-      user: user,
-      password: password,
-      database: database,
-      timeout: options.timeout,
-      timeout_ms: options.timeout_ms,
-      tls: options.tls,
-      ca: options.ca,
-      statement_cache: options.statement_cache,
-      batch_rows: options.batch_rows,
-      batch_bytes: options.batch_bytes,
-    ),
-  )
-end
-
 # The text before the first `separator` and the text after it (empty when there is none).
 def split_once(text: String, separator: String) -> List[String]
   found = text.index_of(separator)
   case found
-    some(at) -> return [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
-    none -> return [text, ""]
+    some(at) -> [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
+    none -> [text, ""]
   end
 end
 
@@ -136,81 +135,63 @@ def last_index(text: String, separator: String) -> Int
     last = text.length - parts[parts.size - 1].length - separator.length
   end
 
-  return last
+  last
 end
 
 def max_zero(n: Int) -> Int
-  if n < 0
-    return 0
-  end
+  return 0 if n < 0
 
-  return n
+  n
 end
 
 def read_address(text: String) -> Result[Address]
-  if text.empty?
-    return error("mysql error: the url has no host")
-  end
+  return error("mysql error: the url has no host") if text.empty?
 
-  if text.start_with?("[")
-    return read_ipv6(text)
-  end
+  return read_ipv6(text) if text.start_with?("[")
 
   halves = split_once(text, ":")
-  if halves[0].empty?
-    return error("mysql error: the url has no host")
-  end
+  return error("mysql error: the url has no host") if halves[0].empty?
 
   port = try read_port(halves[1], text.include?(":"))
-  return ok(Address(host: halves[0], port: port))
+  ok(Address(host: halves[0], port: port))
 end
 
 # `[::1]` or `[::1]:3306`.
 def read_ipv6(text: String) -> Result[Address]
   closing = text.index_of("]")
   case closing
-    none -> return error("mysql error: the url has an IPv6 host without a closing bracket")
+    none -> error("mysql error: the url has an IPv6 host without a closing bracket")
     some(at) ->
       after = text.slice(at + 1, text.length - at - 1)
       host = text.slice(1, at - 1)
-      if host.empty?
-        return error("mysql error: the url has no host")
-      end
+      return error("mysql error: the url has no host") if host.empty?
 
-      if after.empty?
-        return ok(Address(host: host, port: DEFAULT_PORT))
-      end
+      return ok(Address(host: host, port: DEFAULT_PORT)) if after.empty?
 
-      if not after.start_with?(":")
-        return error("mysql error: the url port is not a number from 1 to #{MAX_PORT}")
-      end
+      return error("mysql error: the url port is not a number from 1 to #{MAX_PORT}") if not after.start_with?(":")
 
       port = try read_port(after.slice(1, after.length - 1), true)
-      return ok(Address(host: host, port: port))
+      ok(Address(host: host, port: port))
   end
 end
 
 def read_port(text: String, given: Bool) -> Result[Int]
-  if not given
-    return ok(DEFAULT_PORT)
-  end
+  return ok(DEFAULT_PORT) if not given
 
   number = digits(text)
   if not number.ok? or text.length > 5 or number.unwrap_or(0) < 1 or number.unwrap_or(0) > MAX_PORT
     return error("mysql error: the url port is not a number from 1 to #{MAX_PORT}")
   end
 
-  return number
+  number
 end
 
 # A non-empty run of ASCII digits as an Int.
 def digits(text: String) -> Result[Int]
   bytes = text.bytes.to_a
-  if bytes.empty? or bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end
-    return error("not a number")
-  end
+  return error("not a number") if bytes.empty? or bytes.any? do |byte| byte < DIGIT_ZERO or byte > DIGIT_NINE end
 
-  return text.to_i
+  text.to_i
 end
 
 # The parameters of the url: the connect timeout in seconds and the limit of a statement in milliseconds (0 when the
@@ -219,9 +200,7 @@ def read_query(query: String) -> Result[Options]
   options = Options(timeout: 0, timeout_ms: 0, tls: Tls.Default, ca: "")
   verify = false
   mode_seen = false
-  if query.empty?
-    return ok(options)
-  end
+  return ok(options) if query.empty?
 
   for pair in query.split("&")
     halves = split_once(pair, "=")
@@ -265,41 +244,29 @@ def read_query(query: String) -> Result[Options]
     end
   end
 
-  if verify and options.ca.empty?
-    return error("mysql error: the url ssl_mode=verify needs ssl_ca=PATH")
-  end
+  return error("mysql error: the url ssl_mode=verify needs ssl_ca=PATH") if verify and options.ca.empty?
 
-  if not verify and not options.ca.empty?
-    return error("mysql error: the url ssl_ca works only with ssl_mode=verify")
-  end
+  return error("mysql error: the url ssl_ca works only with ssl_mode=verify") if not verify and not options.ca.empty?
 
-  return ok(options)
+  ok(options)
 end
 
 # A whole number of up to MAX_DIGITS digits from `low` to `high`.
 def read_bounded(text: String, name: String, low: Int, high: Int) -> Result[Int]
   number = digits(text)
-  if not number.ok? or text.length > MAX_DIGITS
-    return error("mysql error: the url #{name} is not a whole number")
-  end
+  return error("mysql error: the url #{name} is not a whole number") if not number.ok? or text.length > MAX_DIGITS
 
   n = number.unwrap_or(0)
-  if n < low
-    return error("mysql error: the url #{name} is below #{low}: #{n}")
-  end
+  return error("mysql error: the url #{name} is below #{low}: #{n}") if n < low
 
-  if n > high
-    return error("mysql error: the url #{name} is over #{high}: #{n}")
-  end
+  return error("mysql error: the url #{name} is over #{high}: #{n}") if n > high
 
-  return ok(n)
+  ok(n)
 end
 
 # Decodes `%XX` escapes into bytes, which must make UTF-8.
 def decode(text: String) -> Result[String]
-  if not text.include?("%")
-    return ok(text)
-  end
+  return ok(text) if not text.include?("%")
 
   bytes = text.bytes
   out: List[Int] = []
@@ -308,9 +275,7 @@ def decode(text: String) -> Result[String]
     if bytes[at] == PERCENT
       high = hex_value(bytes, at + 1)
       low = hex_value(bytes, at + 2)
-      if high < 0 or low < 0
-        return error("mysql error: the url has a bad percent escape")
-      end
+      return error("mysql error: the url has a bad percent escape") if high < 0 or low < 0
 
       out = out.push(high * HEX_BASE + low)
       at += 3
@@ -322,18 +287,14 @@ def decode(text: String) -> Result[String]
 
   # Every item is a byte (0..255), so the list always makes Bytes.
   decoded = String.from_bytes(try Bytes.from_list(out))
-  if not decoded.ok?
-    return error("mysql error: the url has a percent escape that is not UTF-8")
-  end
+  return error("mysql error: the url has a percent escape that is not UTF-8") if not decoded.ok?
 
-  return decoded
+  decoded
 end
 
 # The value of the hex digit at `at`, or -1 when there is none.
 def hex_value(bytes: Bytes, at: Int) -> Int
-  if at >= bytes.size
-    return -1
-  end
+  return -1 if at >= bytes.size
 
   byte = bytes[at]
   if byte >= DIGIT_ZERO and byte <= DIGIT_NINE
@@ -344,5 +305,5 @@ def hex_value(bytes: Bytes, at: Int) -> Int
     return byte - LOWER_A + LETTER_OFFSET
   end
 
-  return -1
+  -1
 end

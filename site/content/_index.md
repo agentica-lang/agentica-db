@@ -7,24 +7,25 @@ aliases:
 
 agentica-db is a database package for [Agentica](https://agentica-lang.github.io/agentica/). One API, `Db`, opens SQLite, PostgreSQL and MySQL or MariaDB, runs queries with bound parameters, and runs transactions. A small layer on top, `Orm`, reads rows into plain structs.
 
-Each database is reached through its system client library, by the C FFI. SQLite and PostgreSQL also have a native driver, a small C module of the package that caches prepared statements and reads many rows per call (see [SQLite](/databases/sqlite/#drivers) and [PostgreSQL](/databases/postgresql/#drivers)); MySQL's is built but [off for now](/databases/mysql/#drivers).
+Each database is reached through its system client library, by the C FFI. SQLite and PostgreSQL also have a native driver, a small C module of the package that caches prepared statements and reads many rows per call (see [SQLite](/databases/sqlite/#drivers) and [PostgreSQL](/databases/postgresql/#drivers)); MySQL's runs on Linux (see [MySQL](/databases/mysql/#drivers)).
 
 Add it to the `agentica.toml` of your project:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.8.0", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.11.0", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.8.0 --subdir src/db`. [Getting started](/getting-started/) has the details.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.11.0 --subdir src/db`. [Getting started](/getting-started/) has the details.
 
 A first program, on a private in-memory SQLite database:
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def main() -> Void
-  conn = Db.open("sqlite::memory:").unwrap!
+  conn = Db.open("sqlite::memory:", [Sqlite.driver()]).unwrap!
   Db.execute(conn, "create table users (name text not null, age integer)", []).unwrap!
   Db.execute(conn, "insert into users (name, age) values (?, ?)", [Db.Value.Text("Ana"), Db.Value.Int(31)]).unwrap!
   rows = Db.query(conn, "select name, age from users where age > ?", [Db.Value.Int(28)]).unwrap!
@@ -47,4 +48,4 @@ end
 
 Not yet: preloading of related rows.
 
-agentica-db needs Agentica 0.27.0 or later and a C compiler, and is under the Apache License 2.0.
+agentica-db 0.11.0 needs Agentica 0.31.0 or later (a C compiler gives the faster native drivers), and is under the Apache License 2.0.

@@ -223,11 +223,3 @@ Feature: MySQL and MariaDB
     And a "sqlite" database
     When I open "mysql://u@127.0.0.1:1/d"
     Then it fails with exactly "mysql error: AGENTICA_DB_MYSQL_DRIVER is fast, expected native or ffi"
-
-  # The native driver is off until Agentica ships `an_blocking` (agentica-lang/agentica#1193): asking for it is an
-  # error that says so.
-  Scenario: AGENTICA_DB_MYSQL_DRIVER=native is an error while the native driver is off on mysql
-    Given the environment variable "AGENTICA_DB_MYSQL_DRIVER" is "native"
-    And a "sqlite" database
-    When I open "mysql://u@127.0.0.1:1/d"
-    Then it fails with exactly "mysql error: the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"

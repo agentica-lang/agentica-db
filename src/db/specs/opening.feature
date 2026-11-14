@@ -1,6 +1,7 @@
 Feature: Opening and closing a database
-  Db.open takes a url and gives a connection. Db.close ends it, and closing twice is safe. A connection belongs to the
-  task that opened it. A url that cannot be opened is an error that never shows the password.
+  Db.open takes a url and the drivers of the program and gives a connection. Db.close ends it, and closing twice is
+  safe. A connection belongs to the task that opened it. A url that cannot be opened is an error that never shows the
+  password. A program builds the native modules of the drivers it imports, and no others.
   In a step text, [NUL] stands for a character a url cannot hold.
 
   Scenario Outline: Closing twice is safe on <adapter>
@@ -54,6 +55,24 @@ Feature: Opening and closing a database
       | sqlite   | sqlite::memory:          | sqlite error: cannot load the SQLite    |
       | postgres | postgres://u@127.0.0.1/d | postgres error: cannot load the libpq   |
       | mysql    | mysql://u@127.0.0.1/d    | mysql error: cannot load the client lib |
+
+  Scenario: A url whose driver the program did not pass is a db error that names the driver (on sqlite, no server)
+    Given a program that has only the SQLite driver
+    When the program opens "postgres://u:hunter2@127.0.0.1/d"
+    Then the program answers a line starting with "db error: no driver for the url scheme postgres: pass Postgres.driver()"
+    When the program opens "sqlite::memory:"
+    Then the program answers a line starting with "opened"
+
+  @native
+  Scenario: A program that imports only the SQLite driver builds only its native module (on sqlite, no server)
+    When I compile "fixtures/sqlite_only.agc" with an empty package cache
+    Then the build makes the native module "db_sqlite"
+    And the build never makes the native module "db_postgres"
+
+  Scenario: A program built with no C compiler warns and leaves out the native module (on sqlite, no server)
+    When I compile "fixtures/sqlite_only.agc" with an empty package cache and no C compiler
+    Then the build warns that the native module "db_sqlite" is not built
+    And the build never makes the native module "db_sqlite"
 
   Scenario Outline: Using a closed connection is an error on <adapter>
     Given a "<adapter>" database

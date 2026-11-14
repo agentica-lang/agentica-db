@@ -19,11 +19,9 @@
  * The non-blocking calls of the library run on a stack of their own (a coroutine). The collector of the VM stops a
  * thread with a signal and scans its stack from where the thread is, which on that stack is the wrong memory; blocking
  * the signals instead can hang every thread (the library may wait on a lock, of malloc say, that a thread the
- * collector already stopped holds). The safe way is to run each such call as blocked for the collector
- * (GC_do_blocking), which the native API gives from version 1.3 as an_blocking (agentica-lang/agentica#1193). Every
- * `_start` and `_cont` goes through `on_library_stack`, and until it runs them under an_blocking, `connect` refuses
- * (STACK_SWITCH_SAFE) and the adapter runs the FFI driver. The driver opens libmariadb.so.3, a Linux name: elsewhere
- * `connect` fails the same way.
+ * collector already stopped holds). So every `_start` and `_cont` goes through `on_library_stack`, which runs it under
+ * an_blocking of the native API 1.3 (GC_do_blocking): the collector neither signals nor scans the thread meanwhile.
+ * The driver opens libmariadb.so.3, a Linux name: elsewhere `connect` fails and the adapter runs the FFI driver.
  *
  * Calls on one connection are made one at a time: the adapter holds a Native.Mutex of the connection for the whole
  * query, and `enter` below only refuses a call that would break that rule. A task cancelled in the middle of a query
@@ -503,9 +501,6 @@ typedef struct {
 #define CLOSE_SPARE 8
 /* The seconds that the connection of `cancel` may take to connect, and to send its KILL QUERY and read the reply. */
 #define CANCEL_WAIT_S 5
-/* Why `connect` refuses (see the top); the adapter says the same (mysql/native.agc). */
-#define NEEDS_BLOCKING \
-  "the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
 
 static uint64_t hash_text(const char *s, size_t n) {
   uint64_t h = 14695981039346656037ull;
@@ -1182,21 +1177,15 @@ static void op_run(void *arg) {
   a->wait = wait;
 }
 
-/* STACK_SWITCH_SAFE: whether `on_library_stack` keeps the collector off the library's stack. It is 0 until this
-   module runs FN under an_blocking(env, fn, arg) of the native API 1.3 (agentica-lang/agentica#1193), which marks the
-   thread as blocked for the collector while FN runs, so a stop of the world neither signals it nor scans that stack.
-   That change is this function and the constant; the rest of the module already keeps FN off terms and GC memory.
+/* FN runs under an_blocking, which marks the thread as blocked for the collector while FN runs, so a stop of the world
+   neither signals it nor scans the library's stack. FN touches no terms and no GC memory.
 
    A `_cont` may run on another thread than its `_start` (a dirty call starts it, a scheduler goes on with it, or the
    task moves to another scheduler). Connector/C keeps the state of a suspended call in its async context, with no
    thread-local data, and its socket loops (pvio_socket_read and _write) ask for errno after every recv and send,
    also after the yield, in the builds that this driver was checked with (Debian's libmariadb3), so a resumed call
    reads the errno of the thread it runs on. */
-#define STACK_SWITCH_SAFE 0
-static void on_library_stack(an_env *env, void (*fn)(void *), void *arg) {
-  (void)env;
-  fn(arg);
-}
+static void on_library_stack(an_env *env, void (*fn)(void *), void *arg) { an_blocking(env, fn, arg); }
 
 static int op_call(an_env *env, conn *c, query *q, int events) {
   op_args a = {c, q, events, 0};
@@ -1644,10 +1633,6 @@ static an_term fn_connect(an_env *env, int argc, const an_term *argv) {
       port > 65535 || timeout < 0 || timeout > 99999 || timeout_ms < 0 || timeout_ms > 999999999 || tls < 0 || tls > 2)
     return an_badarg(env, 0);
   if (!an_get_int(env, argv[1], &capacity) || capacity < 0 || capacity > MAX_CACHE) return an_badarg(env, 1);
-  if (!STACK_SWITCH_SAFE) {
-    static const char off[] = "mysql error: " NEEDS_BLOCKING;
-    return an_error(env, off, sizeof off - 1);
-  }
   const char *why = library_error();
   if (why) {
     int n = snprintf(message, sizeof message, "mysql error: cannot load the client library: %s", why);

@@ -5,13 +5,9 @@ Feature: MySQL native driver
   `batch_bytes` bytes, one call per batch, and waits on the socket instead of compute calls. Only SELECT, INSERT,
   UPDATE, DELETE, REPLACE, WITH, VALUES and TABLE are cached, and a statement that changes the schema (CREATE, ALTER,
   DROP, RENAME, TRUNCATE) lets the whole cache go. The FFI driver has none of this, so these scenarios have the
-  tag @native (the FFI run leaves them out). The native driver is off until Agentica ships `an_blocking`
-  (agentica-lang/agentica#1193), so the background skips every scenario until then. These scenarios need a server:
-  set AGENTICA_DB_MYSQL_URL. [URL] is its url (`[URL]&name=value` adds a parameter). MariaDB takes packets of 16 MB
-  at most by default, hence the sizes of the big values.
-
-  Background:
-    Given the native MySQL driver runs here
+  tag @native (the FFI run leaves them out). These scenarios need a server: set AGENTICA_DB_MYSQL_URL. [URL] is its
+  url (`[URL]&name=value` adds a parameter). MariaDB takes packets of 16 MB at most by default, hence the sizes of the
+  big values.
 
   Scenario: A statement that ran before comes from the cache on mysql
     Given a "mysql" database
@@ -59,14 +55,15 @@ Feature: MySQL native driver
     Then it fails with exactly "mysql error: the url statement_cache is over 10000: 10001"
 
   # A statement that the cache lets go is closed on the server before the next one runs (COM_STMT_CLOSE has no reply,
-  # so it costs no wait): 20 statements through a cache of 2 made 18 evictions, all closed before the SHOW ran.
+  # so it costs no wait): 20 statements through a cache of 2 made 18 evictions, all closed before the SHOW ran. The two
+  # statements that `open` runs once (the identity of the connection, for `interrupt`) are closed too.
   Scenario: The server keeps only the statements of the cache on mysql
     Given a "mysql" database
     When I open "[URL]&statement_cache=2"
     And I query "select [N] as n" for each [N] from 1 to 20
     Then the query "show session status like 'Com_stmt_close'" returns:
       | Variable_name       | Value   |
-      | Text Com_stmt_close | Text 18 |
+      | Text Com_stmt_close | Text 20 |
 
   # A result longer than a batch takes several calls, the last of which may give no row.
   Scenario Outline: A result of <count> rows reads whole across batches of <rows> rows and <bytes> bytes on mysql
@@ -194,7 +191,7 @@ Feature: MySQL native driver
     And I read the statement cache
     Then the result is:
       | size  | capacity | hits  | misses | evictions |
-      | Int 0 | Int 100  | Int 0 | Int 2  | Int 0     |
+      | Int 0 | Int 100  | Int 0 | Int 0  | Int 0     |
 
   # A statement that is not cached cannot be made to meet 2057 (the table would have to change between its prepare and
   # its run), and the driver never runs such a one again. What a test can show: a write that gives rows, after another

@@ -7,19 +7,30 @@ import Cells from "cells"
 import Db from "../db"
 import DbPool from "../db_pool"
 import Migrate from "../migrate"
-import Mysql from "../mysql/mysql"
 import Orm from "../orm"
-import Postgres from "../postgres/postgres"
+import Mysql from "../mysql"
+import Postgres from "../postgres"
 import Protocol from "protocol"
 import {Request} from "protocol"
-import Sqlite from "../sqlite/sqlite"
-import SqliteNative from "../sqlite/native"
+import Sqlite from "../sqlite"
+
+private
 
 # Per adapter: the id of the session of the connection, and the count of the sessions that have an id.
 SESSION_ID_SQL = {"postgres": "select pg_backend_pid() as n", "mysql": "select connection_id() as n"}
 SESSIONS_SQL = {
   "postgres": "select count(*) as n from pg_stat_activity where pid = ?",
   "mysql": "select count(*) as n from information_schema.processlist where id = ?",
+}
+# Per adapter: the count of the running statements of other sessions whose text has a marker (a `like` pattern).
+RUNNING_SQL = {
+  "postgres": (
+    "select count(*) as n from pg_stat_activity where state = 'active' and query like ? and pid <> pg_backend_pid()"
+  ),
+  "mysql": (
+    "select count(*) as n from information_schema.processlist " +
+    "where command = 'Query' and info like ? and id <> connection_id()"
+  ),
 }
 # What [SLOW] and [WORK] stand for, per adapter: a statement that runs for many seconds, and one that works for about
 # half a second and gives the row `n = 1`.
@@ -68,6 +79,7 @@ PAUSE_TICK_MS = 5
 # `cancel_beside_long` cancels the write this soon after the long statement starts: the write sleeps between its tries
 # (25 ms), and only a cancel in its sleep frees its cursor at once; once it tries again it waits in its own call.
 CANCEL_AFTER_MS = 5
+WRITER_END_MS = 10_000
 # The `number` of an `on_other` request that queries; any other executes.
 OTHER_QUERY = 1
 # `cache_beside_big` reads the statement cache this many times, a millisecond apart, while the big query runs.
@@ -76,6 +88,7 @@ CACHE_READS = 200
 QUEUE_START_MS = 20
 # The time a holder needs to take the connection of the pool before the step asks for one too.
 HOLD_START_MS = 150
+HOLDER_WAIT_MS = 5_000
 # `pool_writers_in_turn`: the time between two writers that come to the line, and how long each holds its transaction.
 ARRIVAL_MS = 50
 TURN_HOLD_MS = 150
@@ -97,7 +110,7 @@ end
 struct Partial
   id: Int = 0
   name: String
-  age: JsonField[Int]
+  age: JSON.Field[Int]
   admin: Bool
   score: Float
 end
@@ -118,7 +131,7 @@ end
 # A struct with nothing to write but its generated key.
 struct Marker
   id: Int = 0
-  note: JsonField[String]
+  note: JSON.Field[String]
 end
 
 # A struct whose key can be none.
@@ -161,6 +174,15 @@ end
 struct Handled
   state: State
   reply: String
+end
+
+# A task that keeps a connection of the pool for `ms` milliseconds, in a transaction that has run `sql` when there is
+# one, and tells on `got` that it holds the connection.
+struct Holder
+  pool: DbPool.Pool
+  ms: Int
+  sql: String
+  got: Channel[Int]
 end
 
 # A task that keeps a connection of the pool for `ms` milliseconds.
@@ -250,123 +272,125 @@ def main() -> Void
   clean_scratch()
 end
 
+# Every database of the scenarios.
+def drivers() -> List[Db.Driver] = [Sqlite.driver(), Postgres.driver(), Mysql.driver()]
+
 def handle(state: State, line: String) -> Handled
   case JSON.decode(line, Request)
-    error(message) -> return Handled(state: state, reply: "bad request: #{message}")
-    ok(req) -> return dispatch(state, req)
+    error(message) -> Handled(state: state, reply: "bad request: #{message}")
+    ok(req) -> dispatch(state, req)
   end
 end
 
 def dispatch(state: State, req: Request) -> Handled
-  if req.op.start_with?("expect_")
-    return expect(state, req)
-  end
+  return expect(state, req) if req.op.start_with?("expect_")
 
   case state.last
     Outcome.Failed(message) if not state.checked ->
       reply = "the previous statement failed with #{message.inspect}, and no step checked it"
-      return Handled(state: state, reply: reply)
-    _ -> return act(state, req)
+      Handled(state: state, reply: reply)
+    _ -> act(state, req)
   end
 end
 
 def act(state: State, req: Request) -> Handled
   case req.op
-    "open" -> return opened(state, req.text)
-    "open_url" -> return reply_ok(open_at(state, state.adapter, expand(state, req.text)))
-    "execute" -> return reply_ok(with_params(state, req, &execute))
-    "query" -> return reply_ok(with_params(state, req, &query))
-    "query_within" -> return reply_ok(query_within(state, sql_of(state, req.text), [], req.number))
-    "execute_within" -> return reply_ok(execute_within(state, sql_of(state, req.text), [], req.number))
-    "pool_start" -> return reply_ok(pool_start(state, req))
-    "pool_query" -> return reply_ok(pool_query(state, req))
-    "pool_execute" -> return reply_ok(pool_execute(state, req))
-    "pool_script" -> return reply_ok(pool_script(state, req.table.drop(1)))
-    "pool_close_connection" -> return reply_ok(pool_close_connection(state))
-    "pool_crash" -> return reply_ok(pool_crash(state))
-    "pool_hold" -> return reply_ok(pool_hold(state, req.number))
-    "pool_query_while_held" -> return reply_ok(pool_query_while_held(state, req))
-    "pool_transaction" -> return reply_ok(pool_transaction(state, req))
-    "pool_commits" -> return reply_ok(pool_commits(state, req))
-    "pool_writers_readers" -> return reply_ok(pool_writers_readers(state, req))
-    "pool_short_calls" -> return reply_ok(pool_short_calls(state))
-    "pool_fallbacks" -> return reply_ok(pool_fallbacks(state))
-    "pool_repeat" -> return reply_ok(pool_repeat(state, req))
-    "pool_close" -> return reply_ok(pool_close(state))
-    "short_calls" -> return reply_ok(short_calls(state))
-    "file_size" -> return file_size(state, req)
-    "pool_short_calls_at_most" -> return short_calls_at_most(pool_short_calls(state), req.number)
-    "transaction_while_locked" -> return transaction_while_locked(state, req)
-    "in_transaction" -> return check_connection(state, req.op)
-    "not_in_transaction" -> return check_connection(state, req.op)
-    "healthy" -> return check_connection(state, req.op)
-    "not_healthy" -> return check_connection(state, req.op)
-    "transaction" -> return reply_ok(transaction(state, req))
-    "orm_query" if req.partial -> return reply_ok(with_params(state, req, &partial_query))
-    "orm_query" -> return reply_ok(with_params(state, req, &orm_query))
-    "orm_query_as" -> return reply_ok(orm_query_as(state, Cells.expand(req.text)))
-    "orm_check" -> return reply_ok(orm_check(state, req.text))
-    "orm_insert" -> return reply_ok(orm_insert(state, req))
-    "orm_builder" -> return reply_ok(orm_builder(state, req.text, req.table))
-    "orm_find" -> return reply_ok(orm_find(state, req.text))
-    "orm_marker" -> return reply_ok(orm_marker(state, req.text))
-    "orm_update" -> return reply_ok(orm_update(state, req))
-    "orm_patch" -> return reply_ok(orm_patch(state, req.number, req.text))
-    "orm_delete" -> return reply_ok(orm_delete(state, req))
-    "close" -> return reply_ok(close(state))
-    "migrate" -> return reply_ok(migrate(state, req))
-    "read_only" -> return reply_ok(set_access(state, expand(state, req.text), false))
-    "writable" -> return reply_ok(set_access(state, expand(state, req.text), true))
-    "write_together" -> return reply_ok(write_together(state, req))
-    "pool_writers_in_turn" -> return reply_ok(pool_writers_in_turn(state, req))
-    "pool_turn_after" -> return reply_ok(pool_turn_after(state, req))
-    "pool_nested_transaction" -> return reply_ok(pool_nested_transaction(state, req))
-    "execute_waiting" -> return execute_waiting(state, req)
-    "query_until_commit" -> return query_until_commit(state, req)
-    "write_while_blocked" -> return write_while_blocked(state, req)
-    "query_while_locked" -> return query_while_locked(state, req)
-    "open_while_locked" -> return open_while_locked(state, req)
-    "execute_in_task" -> return reply_ok(execute_in_task(state, req.text))
-    "query_together" -> return reply_ok(query_together(state, req))
-    "query_beside_long" -> return reply_ok(query_beside_long(state, req))
-    "cancel_beside_long" -> return reply_ok(cancel_beside_long(state, req))
-    "on_other" -> return reply_ok(on_other(state, req))
-    "query_big_json" -> return reply_ok(query_big_json(state, req))
-    "statement_cache" -> return reply_ok(statement_cache(state))
-    "mysql_flavor" -> return Handled(state: state, reply: mysql_flavor(state))
-    "driver_named" -> return reply_ok(driver_named(state, req.text))
-    "cancel_task" -> return reply_ok(cancel_task(state, req))
-    "query_each" -> return reply_ok(query_each(state, req))
-    "cache_beside_big" -> return reply_ok(cache_beside_big(state, req))
-    "close_beside_queries" -> return reply_ok(close_beside_queries(state, req))
-    "query_in_new_task" -> return reply_ok(query_in_new_task(state, req.text))
-    "round_trips" -> return round_trips(state, req.table)
-    "float_oracle" -> return float_oracle(state, req.text)
-    "keep_running" -> return keep_running(state, req.text, req.number)
-    "leave_open" -> return leave_open(state, req.number)
-    _ -> return Handled(state: state, reply: "unknown op #{req.op.inspect}")
+    "open" -> opened(state, req.text)
+    "open_url" -> reply_ok(open_at(state, state.adapter, expand(state, req.text)))
+    "execute" -> reply_ok(with_params(state, req, &execute))
+    "query" -> reply_ok(with_params(state, req, &query))
+    "query_within" -> reply_ok(query_within(state, sql_of(state, req.text), [], req.number))
+    "execute_within" -> reply_ok(execute_within(state, sql_of(state, req.text), [], req.number))
+    "pool_start" -> reply_ok(pool_start(state, req))
+    "pool_query" -> reply_ok(pool_query(state, req))
+    "pool_execute" -> reply_ok(pool_execute(state, req))
+    "pool_script" -> reply_ok(pool_script(state, req.table.drop(1)))
+    "pool_close_connection" -> reply_ok(pool_close_connection(state))
+    "pool_crash" -> reply_ok(pool_crash(state))
+    "pool_hold" -> reply_ok(pool_hold(state, req.number))
+    "pool_cancel_holder" -> reply_ok(pool_cancel_holder(state, req))
+    "pool_write_within" -> reply_ok(pool_write_within(state, req))
+    "pool_runs_in" -> reply_ok(pool_runs_in(state, req.text))
+    "pool_query_while_held" -> reply_ok(pool_query_while_held(state, req))
+    "pool_transaction" -> reply_ok(pool_transaction(state, req))
+    "pool_commits" -> reply_ok(pool_commits(state, req))
+    "pool_writers_readers" -> reply_ok(pool_writers_readers(state, req))
+    "pool_short_calls" -> reply_ok(pool_short_calls(state))
+    "pool_fallbacks" -> reply_ok(pool_fallbacks(state))
+    "pool_repeat" -> reply_ok(pool_repeat(state, req))
+    "pool_close" -> reply_ok(pool_close(state))
+    "short_calls" -> reply_ok(short_calls(state))
+    "fallbacks" -> reply_ok(fallbacks(state))
+    "file_size" -> file_size(state, req)
+    "pool_short_calls_at_most" -> short_calls_at_most(pool_short_calls(state), req.number)
+    "transaction_while_locked" -> transaction_while_locked(state, req)
+    "in_transaction" -> check_connection(state, req.op)
+    "not_in_transaction" -> check_connection(state, req.op)
+    "healthy" -> check_connection(state, req.op)
+    "not_healthy" -> check_connection(state, req.op)
+    "transaction" -> reply_ok(transaction(state, req))
+    "orm_query" if req.partial -> reply_ok(with_params(state, req, &partial_query))
+    "orm_query" -> reply_ok(with_params(state, req, &orm_query))
+    "orm_query_as" -> reply_ok(orm_query_as(state, Cells.expand(req.text)))
+    "orm_check" -> reply_ok(orm_check(state, req.text))
+    "orm_insert" -> reply_ok(orm_insert(state, req))
+    "orm_builder" -> reply_ok(orm_builder(state, req.text, req.table))
+    "orm_find" -> reply_ok(orm_find(state, req.text))
+    "orm_marker" -> reply_ok(orm_marker(state, req.text))
+    "orm_update" -> reply_ok(orm_update(state, req))
+    "orm_patch" -> reply_ok(orm_patch(state, req.number, req.text))
+    "orm_delete" -> reply_ok(orm_delete(state, req))
+    "close" -> reply_ok(close(state))
+    "migrate" -> reply_ok(migrate(state, req))
+    "read_only" -> reply_ok(set_access(state, expand(state, req.text), false))
+    "writable" -> reply_ok(set_access(state, expand(state, req.text), true))
+    "write_together" -> reply_ok(write_together(state, req))
+    "pool_writers_in_turn" -> reply_ok(pool_writers_in_turn(state, req))
+    "pool_turn_after" -> reply_ok(pool_turn_after(state, req))
+    "pool_nested_transaction" -> reply_ok(pool_nested_transaction(state, req))
+    "execute_waiting" -> execute_waiting(state, req)
+    "execute_fresh" -> reply_ok(execute_fresh(state, req))
+    "query_until_commit" -> query_until_commit(state, req)
+    "write_while_blocked" -> write_while_blocked(state, req)
+    "query_while_locked" -> query_while_locked(state, req)
+    "open_while_locked" -> open_while_locked(state, req)
+    "execute_in_task" -> reply_ok(execute_in_task(state, req.text))
+    "query_together" -> reply_ok(query_together(state, req))
+    "query_beside_long" -> reply_ok(query_beside_long(state, req))
+    "cancel_beside_long" -> reply_ok(cancel_beside_long(state, req))
+    "on_other" -> reply_ok(on_other(state, req))
+    "query_big_json" -> reply_ok(query_big_json(state, req))
+    "query_json_list" -> reply_ok(query_json_list(state, req))
+    "statement_cache" -> reply_ok(statement_cache(state))
+    "mysql_flavor" -> Handled(state: state, reply: mysql_flavor(state))
+    "driver_named" -> reply_ok(driver_named(state, req.text))
+    "cancel_task" -> reply_ok(cancel_task(state, req))
+    "query_each" -> reply_ok(query_each(state, req))
+    "cache_beside_big" -> reply_ok(cache_beside_big(state, req))
+    "close_beside_queries" -> reply_ok(close_beside_queries(state, req))
+    "query_in_new_task" -> reply_ok(query_in_new_task(state, req.text))
+    "round_trips" -> round_trips(state, req.table)
+    "float_oracle" -> float_oracle(state, req.text)
+    "keep_running" -> keep_running(state, req.text, req.number)
+    "leave_open" -> leave_open(state, req.number)
+    "none_running" -> none_running(state, req.text, req.number)
+    _ -> Handled(state: state, reply: "unknown op #{req.op.inspect}")
   end
 end
 
-def reply_ok(state: State) -> Handled
-  return Handled(state: state, reply: Protocol.OK)
-end
+def reply_ok(state: State) -> Handled = Handled(state: state, reply: Protocol.OK)
 
 def recorded(state: State, outcome: Outcome) -> State
-  return State(conns: state.conns, pools: state.pools, adapter: state.adapter, last: outcome, checked: false)
+  State(conns: state.conns, pools: state.pools, adapter: state.adapter, last: outcome, checked: false)
 end
 
-def failed(state: State, message: String) -> State
-  return recorded(state, Outcome.Failed(message))
-end
+def failed(state: State, message: String) -> State = recorded(state, Outcome.Failed(message))
 
 # The server url is the variable of the adapter; the step reports a missing variable.
 def server_url(adapter: String) -> String
-  if URL_VARIABLES.key?(adapter)
-    return System.env(URL_VARIABLES[adapter]).unwrap_or("")
-  end
+  return System.env(URL_VARIABLES[adapter]).unwrap_or("") if URL_VARIABLES.key?(adapter)
 
-  return SQLITE_MEMORY
+  SQLITE_MEMORY
 end
 
 # The `open` request of the first step: the adapter by name. A database that does not open ends the scenario.
@@ -377,8 +401,8 @@ def opened(state: State, adapter: String) -> Handled
 
   opened = open_at(state, adapter, server_url(adapter))
   case opened.last
-    Outcome.Failed(message) -> return Handled(state: opened, reply: "the #{adapter} database did not open: #{message}")
-    _ -> return reply_ok(opened)
+    Outcome.Failed(message) -> Handled(state: opened, reply: "the #{adapter} database did not open: #{message}")
+    _ -> reply_ok(opened)
   end
 end
 
@@ -389,10 +413,10 @@ def open_at(state: State, adapter: String, url: String) -> State
     _ = Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
   end
 
-  case Db.open(url)
+  case Db.open(url, drivers())
     error(message) ->
-      return State(conns: [], pools: state.pools, adapter: adapter, last: Outcome.Failed(message), checked: false)
-    ok(conn) -> return State(conns: [conn], pools: state.pools, adapter: adapter, last: Outcome.Done, checked: false)
+      State(conns: [], pools: state.pools, adapter: adapter, last: Outcome.Failed(message.message), checked: false)
+    ok(conn) -> State(conns: [conn], pools: state.pools, adapter: adapter, last: Outcome.Done, checked: false)
   end
 end
 
@@ -416,24 +440,22 @@ def expand(state: State, text: String) -> String
   expanded = expanded.replace("[URL]", url)
   expanded = expanded.replace("[SERVER]", without_scheme)
   expanded = expanded.replace("[ADDRESS]", address(without_scheme))
-  return expanded.replace("[SCRATCH]", scratch_dir())
+  expanded.replace("[SCRATCH]", scratch_dir())
 end
 
 # The host and port of a url without its scheme: after the last `@`, up to the first `/` or `?`.
 def address(without_scheme: String) -> String
   host = without_scheme.split("@").last
-  return host.split("/")[0].split("?")[0]
+  host.split("/")[0].split("?")[0]
 end
 
-def scratch_dir() -> String
-  return System.env(SCRATCH_VARIABLE).unwrap_or(SCRATCH_DEFAULT)
-end
+def scratch_dir() -> String = System.env(SCRATCH_VARIABLE).unwrap_or(SCRATCH_DEFAULT)
 
 # The sql of a step: [SLOW] and [WORK] are the statements of the adapter, then the markers of a cell.
 def sql_of(state: State, text: String) -> String
   slow = SLOW_SQL.get(state.adapter, "")
   work = WORK_SQL.get(state.adapter, "")
-  return Cells.expand(text.replace("[SLOW]", slow).replace("[WORK]", work))
+  Cells.expand(text.replace("[SLOW]", slow).replace("[WORK]", work))
 end
 
 # Closes the pool of the scenario, if any, and starts the one the request names: the url (with its markers) and a table
@@ -447,74 +469,66 @@ def pool_start(state: State, req: Request) -> State
 
   stopped = State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
   case pool_options(url, req.table.drop(1))
-    error(message) -> return failed(stopped, message)
+    error(message) -> failed(stopped, message.message)
     ok(options) ->
       case DbPool.start(options)
-        error(message) -> return failed(stopped, message)
+        error(message) -> failed(stopped, message.message)
         ok(pool) ->
-          return State(
-            conns: stopped.conns,
-            pools: [pool],
-            adapter: stopped.adapter,
-            last: Outcome.Done,
-            checked: false,
-          )
+          State(conns: stopped.conns, pools: [pool], adapter: stopped.adapter, last: Outcome.Done, checked: false)
       end
   end
 end
 
 def pool_options(url: String, rows: List[List[String]]) -> Result[DbPool.Options]
-  options = DbPool.Options(url: url)
+  options = DbPool.Options(url: url, drivers: drivers())
   for row in rows
     options = try pool_setting(options, row[0], row[1])
   end
 
-  return ok(options)
+  ok(options)
 end
 
 def pool_setting(options: DbPool.Options, name: String, value: String) -> Result[DbPool.Options]
   case name
-    "size" -> return ok(options.with(size: try value.to_i))
-    "max_overflow" -> return ok(options.with(max_overflow: try value.to_i))
-    "checkout_ms" -> return ok(options.with(checkout_ms: try value.to_i))
-    "lease_ms" -> return ok(options.with(lease_ms: try value.to_i))
-    "max_waiting" -> return ok(options.with(max_waiting: try value.to_i))
-    "health_ms" -> return ok(options.with(health_ms: try value.to_i))
-    "checkpoint_frames" -> return ok(options.with(checkpoint_frames: try value.to_i))
-    "checkpoint_ms" -> return ok(options.with(checkpoint_ms: try value.to_i))
-    "checkpoint_cap" -> return ok(options.with(checkpoint_cap: try value.to_i))
-    _ -> return error("unknown pool option #{name.inspect}")
+    "size" -> ok(options.with(size: try value.to_i))
+    "max_overflow" -> ok(options.with(max_overflow: try value.to_i))
+    "checkout_ms" -> ok(options.with(checkout_ms: try value.to_i))
+    "lease_ms" -> ok(options.with(lease_ms: try value.to_i))
+    "max_waiting" -> ok(options.with(max_waiting: try value.to_i))
+    "health_ms" -> ok(options.with(health_ms: try value.to_i))
+    "checkpoint_frames" -> ok(options.with(checkpoint_frames: try value.to_i))
+    "checkpoint_ms" -> ok(options.with(checkpoint_ms: try value.to_i))
+    "checkpoint_cap" -> ok(options.with(checkpoint_cap: try value.to_i))
+    _ -> error("unknown pool option #{name.inspect}")
   end
 end
 
 # Runs `run` with the pool, or records the failure of having none.
 def with_pool(state: State, run: Fn[DbPool.Pool, State]) -> State
-  if state.pools.empty?
-    return failed(state, NO_POOL)
-  end
+  return failed(state, NO_POOL) if state.pools.empty?
 
-  return run.call(state.pools[0])
+  run.call(state.pools[0])
 end
 
 # One block of the pool runs the statement, and the pool checks the connection in after it. The `number` of the request
 # is the `timeout_ms` of the call (`CONNECTION_DEFAULT` for none).
 def pool_query(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     sql = sql_of(state, req.text)
     found = DbPool.with(pool) do |conn| Db.query(conn, sql, [], req.number) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
     end
   end
 end
 
 def pool_execute(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     sql = sql_of(state, req.text)
     found = DbPool.with(pool) do |conn| Db.execute(conn, sql, [], req.number) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
@@ -523,10 +537,10 @@ end
 # The statements of the table (the header row is skipped) run in one block, one after the other, and the first failure
 # ends the block. Nothing commits or rolls back: a BEGIN in them is left open for the pool to deal with.
 def pool_script(state: State, rows: List[List[String]]) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     found = DbPool.with(pool) do |conn| run_rows(conn, rows) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
@@ -534,14 +548,14 @@ end
 
 # A block that closes the connection it was lent and ends with ok.
 def pool_close_connection(state: State) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     found = DbPool.with(pool) do |conn|
       Db.close(conn)
       ok()
     end
 
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
@@ -549,11 +563,11 @@ end
 
 # A block that crashes (`to_i!` of a text that is not a number halts the task of the block).
 def pool_crash(state: State) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     # The crash is inside a transaction, which holds the turn of the writers of a SQLite pool.
     found = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| ok("not a number".to_i!) end end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
@@ -561,16 +575,75 @@ end
 
 # A block that keeps its connection for `ms` milliseconds.
 def pool_hold(state: State, ms: Int) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     case hold(Held(pool: pool, ms: ms))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
 end
 
+# A task takes a connection, runs `req.text` in a transaction when it is not empty, keeps the connection for
+# `req.number` milliseconds and is cancelled once it has the connection (it says so on a channel), and this one waits
+# until the task has ended. The outcome is Done: what the pool does with the connection shows in the next steps.
+def pool_cancel_holder(state: State, req: Request) -> State
+  with_pool(state) do |pool|
+    got: Channel[Int] = Channel.new(1)
+    holder = Task.spawn(&hold_signalling, Holder(pool: pool, ms: req.number, sql: sql_of(state, req.text), got: got))
+    return failed(state, "the task never held a connection") if not got.recv(HOLDER_WAIT_MS).ok?
+
+    Task.cancel(holder)
+    _ = Task.await(holder)
+    return recorded(state, Outcome.Done)
+  end
+end
+
+def hold_signalling(job: Holder) -> Result[Void]
+  DbPool.with(job.pool) do |conn|
+    if job.sql.empty?
+      _ = job.got.send(1, 0)
+      Task.sleep(job.ms)
+      return ok()
+    end
+
+    Db.transaction(conn) do |tx|
+      try Db.execute(tx, job.sql, [])
+      _ = job.got.send(1, 0)
+      Task.sleep(job.ms)
+      ok()
+    end
+  end
+end
+
+# One write in a block of the pool, which fails when it took `req.number` ms or more: a connection left in a
+# transaction would hold SQLite's lock for the wait of `busy_timeout`.
+def pool_write_within(state: State, req: Request) -> State
+  with_pool(state) do |pool|
+    started = Time.monotonic_ms()
+    done = DbPool.with(pool) do |conn| Db.execute(conn, sql_of(state, req.text), []) end
+    took = Time.monotonic_ms() - started
+    return failed(state, "the write took #{took} ms") if took >= req.number
+
+    return counted(state, done)
+  end
+end
+
+# Whether a block of the pool runs in the task of its caller (`lease_ms` 0) or in a task of the pool, as `req.text`
+# says: `caller` or `pool`.
+def pool_runs_in(state: State, expected: String) -> State
+  with_pool(state) do |pool|
+    caller = Task.current().id
+    inside = DbPool.with(pool) do |_conn| ok(Task.current().id) end
+    case inside
+      error(message) -> return failed(state, message.message)
+      ok(id) if (id == caller) == (expected == "caller") -> return recorded(state, Outcome.Done)
+      ok(_) -> return failed(state, "the block did not run in the task of the #{expected}")
+    end
+  end
+end
+
 def hold(job: Held) -> Result[Void]
-  return DbPool.with(job.pool) do |_conn|
+  DbPool.with(job.pool) do |_conn|
     Task.sleep(job.ms)
     ok()
   end
@@ -579,7 +652,7 @@ end
 # A task takes a connection and keeps it for `req.number` milliseconds while this one asks for a connection too. The
 # outcome is the one of this query; the task is awaited, so nothing runs on after the step.
 def pool_query_while_held(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     holder = Task.spawn(&hold, Held(pool: pool, ms: req.number))
     Task.sleep(HOLD_START_MS)
     asked = pool_query(state, req.with(number: Db.CONNECTION_DEFAULT))
@@ -592,7 +665,7 @@ end
 # `number` above 0, a ticker task runs meanwhile, and the outcome is a failure when the scheduler stopped for that many
 # milliseconds or more: a write that runs long must not run in a short call.
 def pool_transaction(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     rows = req.table.drop(1)
     if req.number <= 0
       return checked(state, DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, rows) end end)
@@ -602,7 +675,7 @@ def pool_transaction(state: State, req: Request) -> State
     Task.sleep(TICKER_START_MS)
     done = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, rows) end end
     case Task.await(ticker)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
       ok(_) -> return checked(state, done)
     end
@@ -611,13 +684,11 @@ end
 
 # `req.number` transactions, one after the other, each in a block of the pool, each running the statement `req.text`.
 def pool_commits(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     sql = sql_of(state, req.text)
     for _ in 0...req.number
       done = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| Db.execute(tx, sql, []) end end
-      if not done.ok?
-        return failed(state, done.message)
-      end
+      return failed(state, done.message) if not done.ok?
     end
 
     return recorded(state, Outcome.Done)
@@ -628,7 +699,7 @@ end
 # while READERS readers count its rows in other blocks of the pool: a reader that sees an odd count saw half of a
 # transaction. The outcome is the first failure, if any.
 def pool_writers_readers(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     count = req.cells[0].to_i!
     done: Channel[Int] = Channel.new(1)
     readers: List[Task[Result[Int]]] = []
@@ -658,9 +729,7 @@ def pool_writers_readers(state: State, req: Request) -> State
       end
     end
 
-    if not failures.empty?
-      return failed(state, failures[0])
-    end
+    return failed(state, failures[0]) if not failures.empty?
 
     return recorded(state, Outcome.Done)
   end
@@ -677,7 +746,7 @@ def write_rows(job: PoolWriter) -> Result[Void]
     end
   end
 
-  return ok()
+  ok()
 end
 
 # The counts it read, each even, until the writers are done.
@@ -687,38 +756,32 @@ def count_rows(job: PoolReader) -> Result[Int]
   while not job.done.closed?
     found = try DbPool.with(job.pool) do |conn| Db.query(conn, sql, []) end
     n = try int_of(found)
-    if n % 2 != 0
-      return error("a reader saw #{n} rows, half of a transaction")
-    end
+    return error("a reader saw #{n} rows, half of a transaction") if n % 2 != 0
 
     reads += 1
     Task.sleep(1)
   end
 
-  return ok(reads)
+  ok(reads)
 end
 
 def pool_close(state: State) -> State
   state.pools.each do |pool| DbPool.close(pool, POOL_DRAIN_MS) end
-  return State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
+  State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
 end
 
 # How many statements ran whole in a short call on the connection of a block of the pool, as one row.
-def pool_short_calls(state: State) -> State
-  return pool_stat(state, "shorts")
-end
+def pool_short_calls(state: State) -> State = pool_stat(state, "shorts")
 
 # How many short calls ran a statement and then left it to the compute pool (a value too long, rows past the caps, a
 # lock), on the connection of a block of the pool, as one row.
-def pool_fallbacks(state: State) -> State
-  return pool_stat(state, "fallbacks")
-end
+def pool_fallbacks(state: State) -> State = pool_stat(state, "fallbacks")
 
 def pool_stat(state: State, name: String) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     found = DbPool.with(pool) do |conn| ok(stat_of(conn, name)) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(row) -> return stat_row(state, name, row)
     end
   end
@@ -727,47 +790,48 @@ end
 # Checks the count that `pool_short_calls` just recorded against its most, `most`.
 def short_calls_at_most(state: State, most: Int) -> Handled
   case state.last
-    Outcome.Failed(message) -> return Handled(state: state, reply: message)
+    Outcome.Failed(message) -> Handled(state: state, reply: message)
     Outcome.Rows(rows) ->
       case rows.first.get("shorts")
-        some(Db.Value.Int(n)) if n > most -> return Handled(state: state, reply: "#{n} statements ran in a short call")
-        _ -> return reply_ok(state)
+        some(Db.Value.Int(n)) if n > most -> Handled(state: state, reply: "#{n} statements ran in a short call")
+        _ -> reply_ok(state)
       end
 
-    _ -> return Handled(state: state, reply: "no count of short calls")
+    _ -> Handled(state: state, reply: "no count of short calls")
   end
 end
 
 def short_calls(state: State) -> State
-  return with_conn(state) do |conn| stat_row(state, "shorts", stat_of(conn, "shorts")) end
+  with_conn(state) do |conn| stat_row(state, "shorts", stat_of(conn, "shorts")) end
+end
+
+def fallbacks(state: State) -> State
+  with_conn(state) do |conn| stat_row(state, "fallbacks", stat_of(conn, "fallbacks")) end
 end
 
 def stat_of(conn: Db.Connection, name: String) -> Optional[Int]
-  case conn
-    Db.Connection.Sqlite(sqlite) -> return Sqlite.statement_cache(sqlite).map do |c| pick_stat(c, name) end
-    _ -> return none
-  end
+  return none if conn.adapter != Db.Adapter.Sqlite
+
+  Db.statement_cache(conn).map do |c| pick_stat(c, name) end
 end
 
-def pick_stat(stats: SqliteNative.CacheStats, name: String) -> Int
-  if name == "fallbacks"
-    return stats.fallbacks
-  end
+def pick_stat(stats: Db.CacheStats, name: String) -> Int
+  return stats.fallbacks if name == "fallbacks"
 
-  return stats.shorts
+  stats.shorts
 end
 
 def stat_row(state: State, name: String, found: Optional[Int]) -> State
   case found
-    none -> return failed(state, "only the native SQLite driver runs short calls")
-    some(n) if name == "fallbacks" -> return recorded(state, Outcome.Rows([{"fallbacks": Db.Value.Int(n)}]))
-    some(n) -> return recorded(state, Outcome.Rows([{"shorts": Db.Value.Int(n)}]))
+    none -> failed(state, "only the native SQLite driver runs short calls")
+    some(n) if name == "fallbacks" -> recorded(state, Outcome.Rows([{"fallbacks": Db.Value.Int(n)}]))
+    some(n) -> recorded(state, Outcome.Rows([{"shorts": Db.Value.Int(n)}]))
   end
 end
 
 # One transaction in a block of the pool that runs the statement `req.text` `req.number` times.
 def pool_repeat(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     sql = sql_of(state, req.text)
     done = DbPool.with(pool) do |conn|
       Db.transaction(conn) do |tx|
@@ -787,12 +851,10 @@ end
 # the statements of the table run in a transaction on the connection of the scenario: its BEGIN must wait for the lock,
 # for at least half of that time, and then work.
 def transaction_while_locked(state: State, req: Request) -> Handled
-  if state.conns.empty?
-    return reply_ok(failed(state, NO_DATABASE))
-  end
+  return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
-  case Db.open(expand(state, req.text))
-    error(message) -> return Handled(state: state, reply: message)
+  case Db.open(expand(state, req.text), drivers())
+    error(message) -> Handled(state: state, reply: message.message)
     ok(other) ->
       taken = Db.execute(other, "BEGIN IMMEDIATE", [])
       if not taken.ok?
@@ -810,23 +872,22 @@ def transaction_while_locked(state: State, req: Request) -> Handled
         return Handled(state: state, reply: "the transaction took #{waited} ms, it did not wait for the lock")
       end
 
-      return reply_ok(checked(state, done))
+      reply_ok(checked(state, done))
   end
 end
 
 def unlock_after(job: Locked) -> Result[Int]
   Task.sleep(job.ms)
-  return Db.execute(job.conn, "COMMIT", [])
+  Db.execute(job.conn, "COMMIT", [])
 end
 
 # An expectation: the file `req.text` (with its markers) exists and holds at most `req.number` bytes.
 def file_size(state: State, req: Request) -> Handled
   path = expand(state, req.text)
   case File.stat(path, IO_TIMEOUT_MS)
-    error(message) -> return Handled(state: state, reply: message)
-    ok(info) if info.size_bytes > req.number ->
-      return Handled(state: state, reply: "it holds #{info.size_bytes} bytes")
-    ok(_) -> return reply_ok(state)
+    error(message) -> Handled(state: state, reply: message.message)
+    ok(info) if info.size_bytes > req.number -> Handled(state: state, reply: "it holds #{info.size_bytes} bytes")
+    ok(_) -> reply_ok(state)
   end
 end
 
@@ -835,22 +896,20 @@ end
 # runs. The outcome is the versions applied, one row each, so a re-run shows no row. `text` is the history table, or
 # empty for the default.
 def migrate(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     list = req.table.drop(1).map do |row| migration_of(row) end
     done = migrate_run(conn, list, req.text)
     case done
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(versions) -> return recorded(state, Outcome.Rows(versions.map do |v| {"version": Db.Value.Int(v)} end))
     end
   end
 end
 
 def migrate_run(conn: Db.Connection, list: List[Migrate.Migration], table: String) -> Result[List[Int]]
-  if table.empty?
-    return Migrate.up(conn, list)
-  end
+  return Migrate.up(conn, list) if table.empty?
 
-  return Migrate.up(conn, list, table)
+  Migrate.up(conn, list, table)
 end
 
 def migration_of(row: List[String]) -> Migrate.Migration
@@ -866,7 +925,7 @@ def migration_of(row: List[String]) -> Migrate.Migration
     end
   end
 
-  return Migrate.sql(version, row[1], sql.split(";").map do |part| part.strip end)
+  Migrate.sql(version, row[1], sql.split(";").map do |part| part.strip end)
 end
 
 # Removes the folder of the scenario. A scenario that failed between `read_only` and `writable` leaves a read-only
@@ -899,56 +958,52 @@ def set_access(state: State, path: String, writable: Bool) -> State
     args = [flag, path.replace("/", "\\")]
   end
 
-  started = Process.spawn(command, args, IO_TIMEOUT_MS)
+  started = Process.spawn(command, args, Process.Options(timeout_ms: IO_TIMEOUT_MS))
   case started
-    error(message) -> return failed(state, message)
+    error(message) -> failed(state, message.message)
     ok(process) ->
       code = Process.wait(process, IO_TIMEOUT_MS).unwrap_or(-1)
-      if code != 0
-        return failed(state, "#{command} failed with #{code}")
-      end
+      return failed(state, "#{command} failed with #{code}") if code != 0
 
-      return recorded(state, Outcome.Done)
+      recorded(state, Outcome.Done)
   end
 end
 
 # Runs `run` with the connection, or records the failure of having none.
 def with_conn(state: State, run: Fn[Db.Connection, State]) -> State
-  if state.conns.empty?
-    return failed(state, NO_DATABASE)
-  end
+  return failed(state, NO_DATABASE) if state.conns.empty?
 
-  return run.call(state.conns[0])
+  run.call(state.conns[0])
 end
 
 def with_params(state: State, req: Request, run: Fn[State, String, List[Db.Value], State]) -> State
   case Cells.parse_all(req.cells)
-    error(message) -> return failed(state, message)
-    ok(params) -> return run.call(state, sql_of(state, req.text), params)
+    error(message) -> failed(state, message.message)
+    ok(params) -> run.call(state, sql_of(state, req.text), params)
   end
 end
 
 def execute(state: State, sql: String, params: List[Db.Value]) -> State
-  return execute_within(state, sql, params, Db.CONNECTION_DEFAULT)
+  execute_within(state, sql, params, Db.CONNECTION_DEFAULT)
 end
 
 def query(state: State, sql: String, params: List[Db.Value]) -> State
-  return query_within(state, sql, params, Db.CONNECTION_DEFAULT)
+  query_within(state, sql, params, Db.CONNECTION_DEFAULT)
 end
 
 def execute_within(state: State, sql: String, params: List[Db.Value], timeout_ms: Int) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case Db.execute(conn, sql, params, timeout_ms)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
 end
 
 def query_within(state: State, sql: String, params: List[Db.Value], timeout_ms: Int) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case Db.query(conn, sql, params, timeout_ms)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
     end
   end
@@ -957,32 +1012,28 @@ end
 # The answer of `Db.in_transaction?` or `Db.healthy?` is the one the op names. A closed connection is still the
 # connection of the state, which is how a step asks about it.
 def check_connection(state: State, op: String) -> Handled
-  if state.conns.empty?
-    return Handled(state: state, reply: NO_DATABASE)
-  end
+  return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
 
-  if connection_answer(state.conns[0], op)
-    return reply_ok(state)
-  end
+  return reply_ok(state) if connection_answer(state.conns[0], op)
 
-  return Handled(state: state, reply: "the connection did not answer for #{op}")
+  Handled(state: state, reply: "the connection did not answer for #{op}")
 end
 
 def connection_answer(conn: Db.Connection, op: String) -> Bool
   case op
-    "in_transaction" -> return Db.in_transaction?(conn)
-    "not_in_transaction" -> return not Db.in_transaction?(conn)
-    "healthy" -> return Db.healthy?(conn)
-    _ -> return not Db.healthy?(conn)
+    "in_transaction" -> Db.in_transaction?(conn)
+    "not_in_transaction" -> not Db.in_transaction?(conn)
+    "healthy" -> Db.healthy?(conn)
+    _ -> not Db.healthy?(conn)
   end
 end
 
 # The query of the table of steps (the header row is skipped), then its end: the rows of the persons read, or the
 # count of the rows `count`, `update_all` and `delete_all` gave.
 def orm_builder(state: State, ending: String, table: List[List[String]]) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case build(table.drop(1))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(query) -> return finished(state, conn, ending, query, changes_of(table.drop(1)))
     end
   end
@@ -990,26 +1041,24 @@ end
 
 def finished(state: State, conn: Db.Connection, ending: String, query: Orm.Query[Person], changes: String) -> State
   case ending
-    "all" -> return persons(state, Orm.all(query, conn))
-    "one" -> return persons(state, optional(Orm.one(query, conn)))
-    "count" -> return counted(state, Orm.count(query, conn))
-    "delete_all" -> return counted(state, Orm.delete_all(query, conn))
-    _ -> return counted(state, update_all(query, conn, changes))
+    "all" -> persons(state, Orm.all(query, conn))
+    "one" -> persons(state, optional(Orm.one(query, conn)))
+    "count" -> counted(state, Orm.count(query, conn))
+    "delete_all" -> counted(state, Orm.delete_all(query, conn))
+    _ -> counted(state, update_all(query, conn, changes))
   end
 end
 
 def update_all(query: Orm.Query[Person], conn: Db.Connection, changes: String) -> Result[Int]
-  return Orm.update_all(query, conn, try JSON.parse(changes))
+  Orm.update_all(query, conn, try JSON.parse(changes))
 end
 
 # The `changes` row of the table, or an empty object.
 def changes_of(rows: List[List[String]]) -> String
   found = rows.select do |row| row[0] == "changes" end
-  if found.empty?
-    return "{}"
-  end
+  return "{}" if found.empty?
 
-  return found[0][1]
+  found[0][1]
 end
 
 def build(rows: List[List[String]]) -> Result[Orm.Query[Person]]
@@ -1018,77 +1067,71 @@ def build(rows: List[List[String]]) -> Result[Orm.Query[Person]]
     query = try step(query, row[0], row[1], row[2])
   end
 
-  return ok(query)
+  ok(query)
 end
 
 def step(query: Orm.Query[Person], name: String, argument: String, cells: String) -> Result[Orm.Query[Person]]
   case name
-    "where_eq" -> return ok(Orm.where_eq(query, argument, try Cells.parse(cells)))
-    "where_in" -> return ok(Orm.where_in(query, argument, try Cells.parse_all(listed(cells))))
-    "where" -> return ok(Orm.where(query, argument, try Cells.parse_all(listed(cells))))
-    "order_by" -> return ok(Orm.order_by(query, argument))
-    "order_by_desc" -> return ok(Orm.order_by_desc(query, argument))
-    "limit" -> return ok(Orm.limit(query, try argument.to_i))
-    "offset" -> return ok(Orm.offset(query, try argument.to_i))
-    "changes" -> return ok(query)
-    _ -> return error("unknown builder step #{name.inspect}")
+    "where_eq" -> ok(Orm.where_eq(query, argument, try Cells.parse(cells)))
+    "where_in" -> ok(Orm.where_in(query, argument, try Cells.parse_all(listed(cells))))
+    "where" -> ok(Orm.where(query, argument, try Cells.parse_all(listed(cells))))
+    "order_by" -> ok(Orm.order_by(query, argument))
+    "order_by_desc" -> ok(Orm.order_by_desc(query, argument))
+    "limit" -> ok(Orm.limit(query, try argument.to_i))
+    "offset" -> ok(Orm.offset(query, try argument.to_i))
+    "changes" -> ok(query)
+    _ -> error("unknown builder step #{name.inspect}")
   end
 end
 
 # The typed cells of a table cell, apart by `; `.
 def listed(cells: String) -> List[String]
-  if cells.empty?
-    return []
-  end
+  return [] if cells.empty?
 
-  return cells.split("; ")
+  cells.split("; ")
 end
 
 def persons(state: State, found: Result[List[Person]]) -> State
   case found
-    error(message) -> return failed(state, message)
-    ok(list) -> return recorded(state, Outcome.Rows(list.map do |person| person_row(person) end))
+    error(message) -> failed(state, message.message)
+    ok(list) -> recorded(state, Outcome.Rows(list.map do |person| person_row(person) end))
   end
 end
 
 def optional(found: Result[Optional[Person]]) -> Result[List[Person]]
   case try found
-    some(person) -> return ok([person])
-    none -> return ok([])
+    some(person) -> ok([person])
+    none -> ok([])
   end
 end
 
 def orm_find(state: State, key: String) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case Cells.parse(key)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(id) -> return persons(state, optional(Orm.find(conn, people(), id)))
     end
   end
 end
 
-def people() -> Orm.Schema[Person]
-  return Orm.schema("people", Person.codec)
-end
+def people() -> Orm.Schema[Person] = Orm.schema("people", Person.codec)
 
-def partials() -> Orm.Schema[Partial]
-  return Orm.schema("people", Partial.codec)
-end
+def partials() -> Orm.Schema[Partial] = Orm.schema("people", Partial.codec)
 
 # The persons read, shown as rows: an age shows its value or Null.
 def orm_query(state: State, sql: String, params: List[Db.Value]) -> State
-  return read_rows(state, people(), sql, params, &person_row)
+  read_rows(state, people(), sql, params, &person_row)
 end
 
 # The partial persons read: an age shows its value, Null, or `Text absent` for a column left out.
 def partial_query(state: State, sql: String, params: List[Db.Value]) -> State
-  return read_rows(state, partials(), sql, params, &partial_row)
+  read_rows(state, partials(), sql, params, &partial_row)
 end
 
 def read_rows[T](state: State, schema: Orm.Schema[T], sql: String, params: List[Db.Value], row: Fn[T, Db.Row]) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case Orm.query(conn, schema, sql, params)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(found) -> return recorded(state, Outcome.Rows(found.map do |value| row.call(value) end))
     end
   end
@@ -1096,7 +1139,7 @@ end
 
 def person_row(person: Person) -> Db.Row
   age = person.age.map do |years| Db.Value.Int(years) end
-  return {
+  {
     "id": Db.Value.Int(person.id),
     "name": Db.Value.Text(person.name),
     "age": age.unwrap_or(Db.Value.Null),
@@ -1107,23 +1150,23 @@ end
 
 def partial_row(partial: Partial) -> Db.Row
   person = Person(id: partial.id, name: partial.name, admin: partial.admin, score: partial.score)
-  return person_row(person).put("age", age_value(partial.age))
+  person_row(person).put("age", age_value(partial.age))
 end
 
-def age_value(age: JsonField[Int]) -> Db.Value
+def age_value(age: JSON.Field[Int]) -> Db.Value
   case age
-    JsonField.Value(years) -> return Db.Value.Int(years)
-    JsonField.Null -> return Db.Value.Null
-    JsonField.Absent -> return Db.Value.Text("absent")
+    JSON.Field.Value(years) -> Db.Value.Int(years)
+    JSON.Field.Null -> Db.Value.Null
+    JSON.Field.Absent -> Db.Value.Text("absent")
   end
 end
 
 # Decodes by hand: the name of each row.
 def orm_query_as(state: State, sql: String) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     found = Orm.query_as(conn, sql, []) do |row| name_of(row) end
     case found
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(names) -> return recorded(state, Outcome.Rows(names.map do |name| {"name": Db.Value.Text(name)} end))
     end
   end
@@ -1131,8 +1174,8 @@ end
 
 def name_of(row: Db.Row) -> Result[String]
   case row.get("name", Db.Value.Null)
-    Db.Value.Text(name) -> return ok(name)
-    _ -> return error("no name in the row")
+    Db.Value.Text(name) -> ok(name)
+    _ -> error("no name in the row")
   end
 end
 
@@ -1140,7 +1183,7 @@ end
 # `injection` (a table name that is sql), `textkey` (a generated key that is not an Int), `nullkey` (a key that is not
 # generated and can be none), `nested` (an `Optional[Optional[Int]]` field) and `list` (a field no column holds).
 def orm_check(state: State, which: String) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case which
       "people" -> return checked(state, Orm.check(conn, people()))
       "ghost" -> return checked(state, Orm.check(conn, Orm.schema("people", Ghost.codec)))
@@ -1154,16 +1197,12 @@ def orm_check(state: State, which: String) -> State
   end
 end
 
-def nullable_key() -> Orm.Schema[MaybeKeyed]
-  return Orm.schema("people", MaybeKeyed.codec).with(generated: false)
-end
+def nullable_key() -> Orm.Schema[MaybeKeyed] = Orm.schema("people", MaybeKeyed.codec).with(generated: false)
 
-def injected() -> Orm.Schema[Person]
-  return people().with(table: "a; drop table x")
-end
+def injected() -> Orm.Schema[Person] = people().with(table: "a; drop table x")
 
 # The Partial of a table of one row: the header names the fields, each cell is a typed cell. The id is 0 unless
-# given, and a cell `Absent` is a JsonField with no value.
+# given, and a cell `Absent` is a JSON.Field with no value.
 def partial_of(table: List[List[String]]) -> Result[Partial]
   cells: Map[String, String] = {}
   for i in 0...table[0].size
@@ -1175,7 +1214,7 @@ def partial_of(table: List[List[String]]) -> Result[Partial]
   age = try age_cell(cells["age"])
   admin = try bool_cell(cells["admin"])
   score = try float_cell(cells["score"])
-  return ok(Partial(id: id, name: name, age: age, admin: admin, score: score))
+  ok(Partial(id: id, name: name, age: age, admin: admin, score: score))
 end
 
 # The Person of a table of one row, as `partial_of` reads it; an age is an Int or Null.
@@ -1183,69 +1222,65 @@ def person_of(table: List[List[String]]) -> Result[Person]
   partial = try partial_of(table)
   person = Person(id: partial.id, name: partial.name, admin: partial.admin, score: partial.score)
   case partial.age
-    JsonField.Value(years) -> return ok(person.with(age: some(years)))
-    JsonField.Null -> return ok(person)
-    JsonField.Absent -> return error("an Absent age needs a partial person")
+    JSON.Field.Value(years) -> ok(person.with(age: some(years)))
+    JSON.Field.Null -> ok(person)
+    JSON.Field.Absent -> error("an Absent age needs a partial person")
   end
 end
 
 def int_cell(cell: String) -> Result[Int]
   case try Cells.parse(cell)
-    Db.Value.Int(n) -> return ok(n)
-    _ -> return error("expected an Int cell, got #{cell}")
+    Db.Value.Int(n) -> ok(n)
+    _ -> error("expected an Int cell, got #{cell}")
   end
 end
 
 def text_cell(cell: String) -> Result[String]
   case try Cells.parse(cell)
-    Db.Value.Text(text) -> return ok(text)
-    _ -> return error("expected a Text cell, got #{cell}")
+    Db.Value.Text(text) -> ok(text)
+    _ -> error("expected a Text cell, got #{cell}")
   end
 end
 
 def bool_cell(cell: String) -> Result[Bool]
   case try Cells.parse(cell)
-    Db.Value.Bool(flag) -> return ok(flag)
-    _ -> return error("expected a Bool cell, got #{cell}")
+    Db.Value.Bool(flag) -> ok(flag)
+    _ -> error("expected a Bool cell, got #{cell}")
   end
 end
 
 def float_cell(cell: String) -> Result[Float]
   case try Cells.parse(cell)
-    Db.Value.Float(x) -> return ok(x)
-    _ -> return error("expected a Float cell, got #{cell}")
+    Db.Value.Float(x) -> ok(x)
+    _ -> error("expected a Float cell, got #{cell}")
   end
 end
 
-def age_cell(cell: String) -> Result[JsonField[Int]]
-  if cell == "Absent"
-    return ok(JsonField.Absent)
-  end
+def age_cell(cell: String) -> Result[JSON.Field[Int]]
+  return ok(JSON.Field.Absent) if cell == "Absent"
 
   case try Cells.parse(cell)
-    Db.Value.Null -> return ok(JsonField.Null)
-    Db.Value.Int(n) -> return ok(JsonField.Value(n))
-    _ -> return error("expected an Int, Null or Absent cell, got #{cell}")
+    Db.Value.Null -> ok(JSON.Field.Null)
+    Db.Value.Int(n) -> ok(JSON.Field.Value(n))
+    _ -> error("expected an Int, Null or Absent cell, got #{cell}")
   end
 end
 
 # The schema `manual` is `people` with a key the value gives.
 def orm_insert(state: State, req: Request) -> State
   generated = req.text != "manual"
-  if req.partial
-    return inserted(state, partials().with(generated: generated), partial_of(req.table), &partial_row)
-  end
+  return inserted(state, partials().with(generated: generated), partial_of(req.table), &partial_row) if req.partial
 
-  return inserted(state, people().with(generated: generated), person_of(req.table), &person_row)
+  inserted(state, people().with(generated: generated), person_of(req.table), &person_row)
 end
 
 def inserted[T](state: State, schema: Orm.Schema[T], value: Result[T], row: Fn[T, Db.Row]) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case value
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(item) ->
         case Orm.insert(conn, schema, item)
-          error(message) -> return failed(state, message)
+          error(message) -> return failed(state, message.message)
           ok(stored) -> return recorded(state, Outcome.Rows([row.call(stored)]))
         end
     end
@@ -1253,26 +1288,24 @@ def inserted[T](state: State, schema: Orm.Schema[T], value: Result[T], row: Fn[T
 end
 
 def orm_update(state: State, req: Request) -> State
-  if req.partial
-    return updated(state, partials(), partial_of(req.table))
-  end
+  return updated(state, partials(), partial_of(req.table)) if req.partial
 
-  return updated(state, people(), person_of(req.table))
+  updated(state, people(), person_of(req.table))
 end
 
 def updated[T](state: State, schema: Orm.Schema[T], value: Result[T]) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case value
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(item) -> return counted(state, Orm.update(conn, schema, item))
     end
   end
 end
 
 def orm_patch(state: State, id: Int, changes: String) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case JSON.parse(Cells.expand(changes))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(json) -> return counted(state, Orm.patch(conn, people(), Db.Value.Int(id), json))
     end
   end
@@ -1280,18 +1313,16 @@ end
 
 # The key is the number, or the one typed cell when there is one.
 def orm_delete(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     id = Db.Value.Int(req.number)
     if not req.cells.empty?
       case Cells.parse(req.cells[0])
-        error(message) -> return failed(state, message)
+        error(message) -> return failed(state, message.message)
         ok(value) -> id = value
       end
     end
 
-    if req.text == "injection"
-      return counted(state, Orm.delete(conn, injected(), id))
-    end
+    return counted(state, Orm.delete(conn, injected(), id)) if req.text == "injection"
 
     return counted(state, Orm.delete(conn, people(), id))
   end
@@ -1299,12 +1330,12 @@ end
 
 # A marker has no field to write but its key, so an insert and an update have no column.
 def orm_marker(state: State, which: String) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     markers = Orm.schema("markers", Marker.codec)
-    marker = Marker(note: JsonField.Absent)
+    marker = Marker(note: JSON.Field.Absent)
     if which == "insert"
       case Orm.insert(conn, markers, marker)
-        error(message) -> return failed(state, message)
+        error(message) -> return failed(state, message.message)
         ok(_) -> return recorded(state, Outcome.Done)
       end
     end
@@ -1315,21 +1346,21 @@ end
 
 def counted(state: State, done: Result[Int]) -> State
   case done
-    error(message) -> return failed(state, message)
-    ok(count) -> return recorded(state, Outcome.Counted(count))
+    error(message) -> failed(state, message.message)
+    ok(count) -> recorded(state, Outcome.Counted(count))
   end
 end
 
 def checked(state: State, done: Result[Void]) -> State
   case done
-    error(message) -> return failed(state, message)
-    ok(_) -> return recorded(state, Outcome.Done)
+    error(message) -> failed(state, message.message)
+    ok(_) -> recorded(state, Outcome.Done)
   end
 end
 
 def close(state: State) -> State
   state.conns.each do |conn| Db.close(conn) end
-  return recorded(state, Outcome.Done)
+  recorded(state, Outcome.Done)
 end
 
 # Each row of the table is a statement (the header row is skipped); a failed statement stops the body with its error
@@ -1339,27 +1370,35 @@ end
 # worked.
 def transaction(state: State, req: Request) -> State
   rows = req.table.drop(1)
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     if req.gives
       counted = Db.transaction(conn) do |tx| run_body(tx, rows, req) end
       case counted
-        error(message) -> return failed(state, message)
+        error(e) -> return failed(state, described(e, req))
         ok(count) -> return recorded(state, Outcome.Counted(count))
       end
     end
 
     done = Db.transaction(conn) do |tx| run_void(tx, rows, req) end
     case done
-      error(message) -> return failed(state, message)
+      error(e) -> return failed(state, described(e, req))
       ok(_) -> return recorded(state, Outcome.Done)
     end
   end
 end
 
+# The text of a failed transaction: its message, or, for a block that fails with a kind and a code, `kind code:
+# message`, so a scenario sees what the call gave back, not only the text.
+def described(e: Error, req: Request) -> String
+  return e.message if req.kind.empty?
+
+  "#{e.kind} #{e.code.unwrap_or(-1)}: #{e.message}"
+end
+
 # The same body for a transaction whose value is Void, so both forms of `Db.transaction` run in CI.
 def run_void(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Void]
   try run_body(tx, rows, req)
-  return ok()
+  ok()
 end
 
 def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Int]
@@ -1368,10 +1407,7 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
     done = Db.execute(tx, Cells.expand(row[0]), [])
     case done
       ok(count) -> last = count
-      error(message) ->
-        if not (row.size > 1 and row[1] == CARRY_ON)
-          return error(message)
-        end
+      error(message) -> return error(message) if not (row.size > 1 and row[1] == CARRY_ON)
     end
   end
 
@@ -1379,24 +1415,24 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
     try Db.transaction(tx) do |_inner| ok() end
   end
 
-  if not req.text.empty?
-    return error(req.text)
-  end
+  return error(req.text, kind: req.kind, code: req.number) if not req.text.empty? and not req.kind.empty?
 
-  return ok(last)
+  return error(req.text) if not req.text.empty?
+
+  ok(last)
 end
 
 def write_in_task(job: Writer) -> Result[Void]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   done = Db.transaction(conn) do |tx| run_rows(tx, job.rows) end
   Db.close(conn)
-  return done
+  done
 end
 
 # `req.number` writers come to the line of the pool one after another, ARRIVAL_MS apart; each writes its number into
 # `notes` and holds its transaction TURN_HOLD_MS.
 def pool_writers_in_turn(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     tasks: List[Task[Result[Void]]] = []
     for writer in 1..req.number
       tasks = tasks.push(Task.spawn(&write_in_turn, TurnWriter(pool: pool, writer: writer)))
@@ -1405,9 +1441,7 @@ def pool_writers_in_turn(state: State, req: Request) -> State
 
     for task in tasks
       done = Task.await(task)
-      if not done.ok?
-        return failed(state, done.message)
-      end
+      return failed(state, done.message) if not done.ok?
     end
 
     return recorded(state, Outcome.Done)
@@ -1415,30 +1449,26 @@ def pool_writers_in_turn(state: State, req: Request) -> State
 end
 
 def write_in_turn(job: TurnWriter) -> Result[Void]
-  return DbPool.with(job.pool) do |conn| Db.transaction(conn) do |tx| hold_turn(tx, job.writer) end end
+  DbPool.with(job.pool) do |conn| Db.transaction(conn) do |tx| hold_turn(tx, job.writer) end end
 end
 
 def hold_turn(tx: Db.Connection, writer: Int) -> Result[Void]
   try Db.execute(tx, "insert into notes (writer) values (?)", [Db.Value.Int(writer)])
   Task.sleep(TURN_HOLD_MS)
-  return ok()
+  ok()
 end
 
 # A block of the pool that crashes (`req.text` "crashes") or sleeps past its lease in its transaction, then a writer of
 # the pool; it fails when the writer took `req.number` ms or more, the wait of a turn that was not given back.
 def pool_turn_after(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     first = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| stall(req.text) end end
-    if first.ok?
-      return failed(state, "the first block succeeded")
-    end
+    return failed(state, "the first block succeeded") if first.ok?
 
     started = Time.monotonic_ms()
     second = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| write_note(tx) end end
     took = Time.monotonic_ms() - started
-    if took >= req.number
-      return failed(state, "the next writer waited #{took} ms")
-    end
+    return failed(state, "the next writer waited #{took} ms") if took >= req.number
 
     return counted(state, second)
   end
@@ -1446,35 +1476,29 @@ end
 
 # A crash (`to_i!` of a text that is not a number halts the task), or a sleep that the lease ends.
 def stall(kind: String) -> Result[Int]
-  if kind == "crashes"
-    return ok("not a number".to_i!)
-  end
+  return ok("not a number".to_i!) if kind == "crashes"
 
   Task.sleep(STALL_MS)
-  return ok(0)
+  ok(0)
 end
 
-def write_note(tx: Db.Connection) -> Result[Int]
-  return Db.execute(tx, "insert into notes (writer) values (1)", [])
-end
+def write_note(tx: Db.Connection) -> Result[Int] = Db.execute(tx, "insert into notes (writer) values (1)", [])
 
 # A block of the pool that checks out a second connection inside its transaction and starts a transaction there; it
 # fails when that took `req.number` ms or more.
 def pool_nested_transaction(state: State, req: Request) -> State
-  return with_pool(state) do |pool|
+  with_pool(state) do |pool|
     started = Time.monotonic_ms()
     done = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| inner_write(pool) end end
     took = Time.monotonic_ms() - started
-    if took >= req.number
-      return failed(state, "the nested transaction took #{took} ms")
-    end
+    return failed(state, "the nested transaction took #{took} ms") if took >= req.number
 
     return counted(state, done)
   end
 end
 
 def inner_write(pool: DbPool.Pool) -> Result[Int]
-  return DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| write_note(tx) end end
+  DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| write_note(tx) end end
 end
 
 def run_rows(tx: Db.Connection, rows: List[List[String]]) -> Result[Void]
@@ -1482,7 +1506,7 @@ def run_rows(tx: Db.Connection, rows: List[List[String]]) -> Result[Void]
     try Db.execute(tx, Cells.expand(row[0]), [])
   end
 
-  return ok()
+  ok()
 end
 
 # Every task starts before the first is awaited, so they all want the write lock together. The outcome is the first
@@ -1502,11 +1526,15 @@ def write_together(state: State, req: Request) -> State
     end
   end
 
-  if failures.empty?
-    return recorded(state, Outcome.Done)
-  end
+  return recorded(state, Outcome.Done) if failures.empty?
 
-  return failed(state, failures[0])
+  failed(state, failures[0])
+end
+
+# The statement runs in a task on a connection of its own at the url, and its count is recorded.
+def execute_fresh(state: State, req: Request) -> State
+  job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
+  counted(state, Task.await(Task.spawn(&fresh_execute, job)))
 end
 
 # The statement runs in a task on a connection of its own at the url, which fails: the failure is recorded for the next
@@ -1515,14 +1543,14 @@ def execute_waiting(state: State, req: Request) -> Handled
   started = Time.monotonic_ms()
   job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
   case Task.await(Task.spawn(&fresh_execute, job))
-    ok(_) -> return Handled(state: state, reply: "the statement did not fail")
+    ok(_) -> Handled(state: state, reply: "the statement did not fail")
     error(message) ->
       waited = Time.monotonic_ms() - started
       if waited < req.number
         return Handled(state: state, reply: "it failed after #{waited} ms, less than #{req.number} ms: #{message}")
       end
 
-      return reply_ok(failed(state, message))
+      reply_ok(failed(state, message.message))
   end
 end
 
@@ -1530,32 +1558,26 @@ end
 # away (a COMMIT that waits stays open; a transaction holds its lock). The task is seen by a probe, a connection that
 # never waits (busy_timeout=0): its read fails while another connection holds a lock that refuses new readers, which
 # is a PENDING lock (a commit that waits for the readers) or an EXCLUSIVE one.
-def probe_url(url: String) -> String
-  return "#{url}&busy_timeout=0"
-end
+def probe_url(url: String) -> String = "#{url}&busy_timeout=0"
 
 # True once the probe is refused; false when it is not within BLOCKED_WAIT_MS.
 def blocked?(probe: Db.Connection) -> Bool
   deadline = Time.monotonic_ms() + BLOCKED_WAIT_MS
   while Time.monotonic_ms() < deadline
-    if not Db.query(probe, PROBE_SQL, []).ok?
-      return true
-    end
+    return true if not Db.query(probe, PROBE_SQL, []).ok?
 
     Task.sleep(1)
   end
 
-  return false
+  false
 end
 
-def never_blocked() -> String
-  return "the task never held a lock in #{BLOCKED_WAIT_MS} ms"
-end
+def never_blocked() -> String = "the task never held a lock in #{BLOCKED_WAIT_MS} ms"
 
 def timed_query(job: Fresh) -> Timed
   started = Time.monotonic_ms()
   found = fresh_query(job)
-  return Timed(started: started, ended: Time.monotonic_ms(), found: found)
+  Timed(started: started, ended: Time.monotonic_ms(), found: found)
 end
 
 # The query runs in a task on a connection of its own while this connection, which holds a read lock, commits after
@@ -1564,44 +1586,38 @@ end
 # times do: the task must have started before the commit (by a tenth of the delay, so a slow start does not fail the
 # step) and have ended after it, and nothing but the lock of this connection keeps a statement that long.
 def query_until_commit(state: State, req: Request) -> Handled
-  if state.conns.empty?
-    return reply_ok(failed(state, NO_DATABASE))
-  end
+  return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
   task = Task.spawn(&timed_query, Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0])))
   Task.sleep(req.number)
   committed_at = Time.monotonic_ms()
   committed = Db.execute(state.conns[0], "COMMIT", [])
   timed = Task.await(task)
-  if not committed.ok?
-    return reply_ok(failed(state, committed.message))
-  end
+  return reply_ok(failed(state, committed.message)) if not committed.ok?
 
   if timed.started > committed_at - req.number / 10 or timed.ended < committed_at
     return Handled(state: state, reply: "the query did not wait for the commit: #{timed_range(timed, committed_at)}")
   end
 
   case timed.found
-    error(message) -> return reply_ok(failed(state, message))
-    ok(rows) -> return reply_ok(recorded(state, Outcome.Rows(rows)))
+    error(message) -> reply_ok(failed(state, message.message))
+    ok(rows) -> reply_ok(recorded(state, Outcome.Rows(rows)))
   end
 end
 
 def timed_range(timed: Timed, committed_at: Int) -> String
-  return "it ran from #{timed.started} to #{timed.ended} ms and the commit was at #{committed_at} ms"
+  "it ran from #{timed.started} to #{timed.ended} ms and the commit was at #{committed_at} ms"
 end
 
 # A task writes in a transaction and waits at its COMMIT for this connection, which holds a read lock. This connection
 # then runs its own write, which cannot get the lock of the task, and must be refused at once. It rolls back to let the
 # task commit. The outcome is the result of the write.
 def write_while_blocked(state: State, req: Request) -> Handled
-  if state.conns.empty?
-    return reply_ok(failed(state, NO_DATABASE))
-  end
+  return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
   url = expand(state, req.text)
-  case Db.open(probe_url(url))
-    error(message) -> return Handled(state: state, reply: message)
+  case Db.open(probe_url(url), drivers())
+    error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&commit_write, Fresh(url: url, sql: Cells.expand(req.cells[0])))
       seen = blocked?(probe)
@@ -1611,44 +1627,38 @@ def write_while_blocked(state: State, req: Request) -> Handled
       waited = Time.monotonic_ms() - started
       _ = Db.execute(state.conns[0], "ROLLBACK", [])
       committed = Task.await(task)
-      if not seen
-        return Handled(state: state, reply: never_blocked())
-      end
+      return Handled(state: state, reply: never_blocked()) if not seen
 
-      if not committed.ok?
-        return Handled(state: state, reply: "the task could not commit: #{committed.message}")
-      end
+      return Handled(state: state, reply: "the task could not commit: #{committed.message}") if not committed.ok?
 
       if waited > REFUSED_WRITE_MS
         return Handled(state: state, reply: "the write waited #{waited} ms for a lock that could not come")
       end
 
       case tried
-        error(message) -> return reply_ok(failed(state, message))
-        ok(count) -> return reply_ok(recorded(state, Outcome.Counted(count)))
+        error(message) -> reply_ok(failed(state, message.message))
+        ok(count) -> reply_ok(recorded(state, Outcome.Counted(count)))
       end
   end
 end
 
 def commit_write(job: Fresh) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   try Db.execute(conn, "BEGIN IMMEDIATE", [])
   try Db.execute(conn, job.sql, [])
   done = Db.execute(conn, "COMMIT", [])
   Db.close(conn)
-  return done
+  done
 end
 
 # A task holds the write lock (EXCLUSIVE, which refuses readers too) for `req.number` milliseconds while this
 # connection queries: the query must wait for it, then give its rows.
 def query_while_locked(state: State, req: Request) -> Handled
-  if state.conns.empty?
-    return reply_ok(failed(state, NO_DATABASE))
-  end
+  return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
   url = expand(state, req.text)
-  case Db.open(probe_url(url))
-    error(message) -> return Handled(state: state, reply: message)
+  case Db.open(probe_url(url), drivers())
+    error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
       seen = blocked?(probe)
@@ -1657,17 +1667,15 @@ def query_while_locked(state: State, req: Request) -> Handled
       found = Db.query(state.conns[0], Cells.expand(req.cells[0]), [])
       waited = Time.monotonic_ms() - started
       _ = Task.await(task)
-      if not seen
-        return Handled(state: state, reply: never_blocked())
-      end
+      return Handled(state: state, reply: never_blocked()) if not seen
 
       if waited < req.number / 10
         return Handled(state: state, reply: "the query took #{waited} ms, it did not wait for the lock")
       end
 
       case found
-        error(message) -> return reply_ok(failed(state, message))
-        ok(rows) -> return reply_ok(recorded(state, Outcome.Rows(rows)))
+        error(message) -> reply_ok(failed(state, message.message))
+        ok(rows) -> reply_ok(recorded(state, Outcome.Rows(rows)))
       end
   end
 end
@@ -1677,8 +1685,8 @@ end
 # runs must wait at their prepare, not at a step; the open must give a connection that works.
 def open_while_locked(state: State, req: Request) -> Handled
   url = expand(state, req.text)
-  case Db.open(probe_url(url))
-    error(message) -> return Handled(state: state, reply: message)
+  case Db.open(probe_url(url), drivers())
+    error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
       seen = blocked?(probe)
@@ -1687,43 +1695,39 @@ def open_while_locked(state: State, req: Request) -> Handled
       reopened = open_at(state, state.adapter, url)
       waited = Time.monotonic_ms() - started
       _ = Task.await(task)
-      if not seen
-        return Handled(state: state, reply: never_blocked())
-      end
+      return Handled(state: state, reply: never_blocked()) if not seen
 
       if waited < req.number / 10
         return Handled(state: reopened, reply: "the open took #{waited} ms, it did not wait for the lock")
       end
 
-      return reply_ok(reopened)
+      reply_ok(reopened)
   end
 end
 
 def hold_lock(job: Hold) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   try Db.execute(conn, "BEGIN EXCLUSIVE", [])
   Task.sleep(job.ms)
   done = Db.execute(conn, "COMMIT", [])
   Db.close(conn)
-  return done
+  done
 end
 
 def fresh_execute(job: Fresh) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   done = Db.execute(conn, job.sql, [])
   Db.close(conn)
-  return done
+  done
 end
 
 # A runtime error in the task ends only the task, and its await gives it as an error.
-def run_job(job: Job) -> Result[Int]
-  return Db.execute(job.conn, job.sql, [])
-end
+def run_job(job: Job) -> Result[Int] = Db.execute(job.conn, job.sql, [])
 
 def execute_in_task(state: State, sql: String) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     case Task.await(Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(sql))))
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
@@ -1732,7 +1736,7 @@ end
 # `req.number` tasks each run the query QUERY_REPEATS times on the one connection, at once; the rows when every run
 # gave the same.
 def query_together(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     job = Job(conn: conn, sql: Cells.expand(req.text))
     tasks = (0...req.number).to_a.map do |_| Task.spawn(&query_repeated, job) end
     results = tasks.map do |task| Task.await(task) end
@@ -1743,7 +1747,7 @@ end
 # The rows of a query on the connection while another task runs a long statement there, unless the scheduler stopped
 # meanwhile for `req.number` ms or more: a short call that waited for the other task's statement stops it.
 def query_beside_long(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
     Task.sleep(LONG_START_MS)
     ticker = Task.spawn(&longest_pause, TICKER_MS)
@@ -1759,9 +1763,9 @@ end
 # task runs a long statement there. It fails when the scheduler stopped for `req.number` ms or more: the cancel frees
 # the write's cursor, which must not wait for the long statement.
 def cancel_beside_long(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
-    case Db.open(expand(state, req.text))
-      error(message) -> return failed(state, message)
+  with_conn(state) do |conn|
+    case Db.open(expand(state, req.text), drivers())
+      error(message) -> return failed(state, message.message)
       ok(other) -> return cancel_with_lock(state, conn, other, req)
     end
   end
@@ -1771,6 +1775,8 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   write = Cells.expand(req.cells[0])
   _ = Db.execute(other, "begin immediate", [])
   writer = Task.spawn(&run_job, Job(conn: conn, sql: write))
+  writer_down: Channel[TaskDown] = Channel.new(1)
+  Task.monitor(writer, writer_down) do |down| down end
   Task.sleep(LONG_START_MS)
   ticker = Task.spawn(&longest_pause, TICKER_MS)
   Task.sleep(TICKER_START_MS)
@@ -1779,19 +1785,23 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   Task.cancel(writer)
   pause = Task.await(ticker)
   _ = Task.await(long)
+  # A cancel does not stop a try already on the compute pool: the lock is let go only once the writer has ended.
+  ended = writer_down.recv(WRITER_END_MS)
   _ = Db.execute(other, "rollback", [])
   Db.close(other)
+  return failed(state, "the cancelled write did not end") if not ended.ok?
+
   case pause
-    error(message) -> return failed(state, message)
-    ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
-    ok(_) -> return recorded(state, Outcome.Done)
+    error(message) -> failed(state, message.message)
+    ok(ms) if ms >= req.number -> failed(state, "the scheduler stopped for #{ms} ms")
+    ok(_) -> recorded(state, Outcome.Done)
   end
 end
 
 # A statement on a connection of its own to `req.text`, closed after it: its rows, or its count for `execute`.
 def on_other(state: State, req: Request) -> State
-  case Db.open(expand(state, req.text))
-    error(message) -> return failed(state, message)
+  case Db.open(expand(state, req.text), drivers())
+    error(message) -> failed(state, message.message)
     ok(other) ->
       sql = Cells.expand(req.cells[0])
       if req.number == OTHER_QUERY
@@ -1802,14 +1812,14 @@ def on_other(state: State, req: Request) -> State
 
       count = Db.execute(other, sql, [])
       Db.close(other)
-      return counted(state, count)
+      counted(state, count)
   end
 end
 
 # The rows of `req.text` with one parameter, a JSON list of `req.number` ones, unless the scheduler stopped for
 # `req.cells[0]` ms or more meanwhile: a short call must not take big bound data.
 def query_big_json(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     list = "[#{"1," * (req.number - 1)}1]"
     ticker = Task.spawn(&longest_pause, TICKER_MS)
     Task.sleep(TICKER_START_MS)
@@ -1819,18 +1829,25 @@ def query_big_json(state: State, req: Request) -> State
   end
 end
 
+def query_json_list(state: State, req: Request) -> State
+  with_conn(state) do |conn|
+    list = "[#{"1," * (req.number - 1)}1]"
+    return recorded_rows(state, Db.query(conn, Cells.expand(req.text), [Db.Value.Text(list)]))
+  end
+end
+
 def beside_rows(state: State, rows: Result[List[Db.Row]], pause: Result[Int], limit: Int) -> State
   case pause
-    error(message) -> return failed(state, message)
-    ok(ms) if ms >= limit -> return failed(state, "the scheduler stopped for #{ms} ms")
-    ok(_) -> return recorded_rows(state, rows)
+    error(message) -> failed(state, message.message)
+    ok(ms) if ms >= limit -> failed(state, "the scheduler stopped for #{ms} ms")
+    ok(_) -> recorded_rows(state, rows)
   end
 end
 
 def recorded_rows(state: State, rows: Result[List[Db.Row]]) -> State
   case rows
-    error(message) -> return failed(state, message)
-    ok(found) -> return recorded(state, Outcome.Rows(found))
+    error(message) -> failed(state, message.message)
+    ok(found) -> recorded(state, Outcome.Rows(found))
   end
 end
 
@@ -1849,68 +1866,38 @@ def longest_pause(ms: Int) -> Result[Int]
     last = now
   end
 
-  return ok(longest)
+  ok(longest)
 end
 
 def same_rows(state: State, results: List[Result[List[Db.Row]]]) -> State
   found: List[List[Db.Row]] = []
   for result in results
     case result
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(rows) -> found = found.push(rows)
     end
   end
 
-  if found.any? do |rows| rows != found[0] end
-    return failed(state, "the tasks got different rows: #{found}")
-  end
+  return failed(state, "the tasks got different rows: #{found}") if found.any? do |rows| rows != found[0] end
 
-  return recorded(state, Outcome.Rows(found[0]))
+  recorded(state, Outcome.Rows(found[0]))
 end
 
 def query_repeated(job: Job) -> Result[List[Db.Row]]
   first = try Db.query(job.conn, job.sql, [])
   for _ in 1...QUERY_REPEATS
     again = try Db.query(job.conn, job.sql, [])
-    if again != first
-      return error("a run of the query gave other rows: #{again}")
-    end
+    return error("a run of the query gave other rows: #{again}") if again != first
   end
 
-  return ok(first)
+  ok(first)
 end
 
 # The counters of the statement cache of the connection, as one row.
 def statement_cache(state: State) -> State
-  return with_conn(state) do |conn|
-    case conn
-      Db.Connection.Sqlite(sqlite) ->
-        found = Sqlite.statement_cache(sqlite).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
-        return cache_row(state, found)
-      Db.Connection.Postgres(postgres) ->
-        found = Postgres.statement_cache(postgres).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
-        return cache_row(state, found)
-      Db.Connection.Mysql(mysql) ->
-        found = Mysql.statement_cache(mysql).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
-        return cache_row(state, found)
-    end
-  end
-end
-
-# The server of the first connection, `mariadb` or `mysql`, for the steps of what one of them alone has.
-def mysql_flavor(state: State) -> String
-  if state.conns.empty?
-    return NO_DATABASE
-  end
-
-  case state.conns[0]
-    Db.Connection.Mysql(mysql) ->
-      if mysql.flavor == Mysql.Flavor.MariaDb
-        return "mariadb"
-      end
-
-      return "mysql"
-    _ -> return "not a mysql connection"
+  with_conn(state) do |conn|
+    found = Db.statement_cache(conn).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
+    cache_row(state, found)
   end
 end
 
@@ -1919,22 +1906,29 @@ end
 # native driver when it loads, and any run passes.
 def driver_named(state: State, name: String) -> State
   wanted = System.env(name).unwrap_or("")
-  return with_conn(state) do |conn|
-    case conn
-      Db.Connection.Sqlite(sqlite) ->
-        case Sqlite.statement_cache(sqlite)
-          some(_) -> return driver_ran(state, name, wanted, "native")
-          none -> return driver_ran(state, name, wanted, "ffi")
-        end
-
-      Db.Connection.Postgres(postgres) ->
-        case Postgres.statement_cache(postgres)
-          some(_) -> return driver_ran(state, name, wanted, "native")
-          none -> return driver_ran(state, name, wanted, "ffi")
-        end
-
-      _ -> return failed(state, "only a SQLite or PostgreSQL connection has a driver to name")
+  with_conn(state) do |conn|
+    case Db.statement_cache(conn)
+      some(_) -> driver_ran(state, name, wanted, "native")
+      none -> driver_ran(state, name, wanted, "ffi")
     end
+  end
+end
+
+# The server of the first connection, `mariadb` or `mysql`, for the steps of what one of them alone has.
+def mysql_flavor(state: State) -> String
+  return NO_DATABASE if state.conns.empty?
+
+  conn = state.conns[0]
+  return "not a mysql connection" if conn.adapter != Db.Adapter.Mysql
+
+  # A SHOW, which the statement cache of the native driver never keeps or counts.
+  case Db.query(conn, "show variables like 'version'", [])
+    error(message) -> message.message
+    ok(rows) ->
+      case rows[0]["Value"]
+        Db.Value.Text(version) if version.include?("MariaDB") -> "mariadb"
+        _ -> "mysql"
+      end
   end
 end
 
@@ -1943,12 +1937,12 @@ def driver_ran(state: State, name: String, wanted: String, ran: String) -> State
     return failed(state, "#{name} is #{wanted}, but the connection runs the #{ran} driver")
   end
 
-  return recorded(state, Outcome.Done)
+  recorded(state, Outcome.Done)
 end
 
 def cache_row(state: State, found: Optional[List[Int]]) -> State
   case found
-    none -> return failed(state, "the FFI driver has no statement cache")
+    none -> failed(state, "the FFI driver has no statement cache")
     some(counts) ->
       names = ["size", "capacity", "hits", "misses", "evictions"]
       row: Db.Row = {}
@@ -1956,27 +1950,23 @@ def cache_row(state: State, found: Optional[List[Int]]) -> State
         row = row.put(names[i], Db.Value.Int(counts[i]))
       end
 
-      return recorded(state, Outcome.Rows([row]))
+      recorded(state, Outcome.Rows([row]))
   end
 end
 
 # A task runs `req.text` on the connection and is cancelled after `req.number` ms. With a query in `req.cells`, then
 # its rows, unless it took `req.cells[1]` ms or more: the cancelled statement must not hold it up.
 def cancel_task(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     task = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
     Task.sleep(req.number)
     Task.cancel(task)
-    if req.cells.empty?
-      return recorded(state, Outcome.Done)
-    end
+    return recorded(state, Outcome.Done) if req.cells.empty?
 
     started = Time.monotonic_ms()
     rows = Db.query(conn, Cells.expand(req.cells[0]), [])
     took = Time.monotonic_ms() - started
-    if took >= req.cells[1].to_i!
-      return failed(state, "the query took #{took} ms after the cancel")
-    end
+    return failed(state, "the query took #{took} ms after the cancel") if took >= req.cells[1].to_i!
 
     return recorded_rows(state, rows)
   end
@@ -1984,13 +1974,11 @@ end
 
 # Queries `req.text` with `[N]` replaced by each number from `req.cells[0]` to `req.number`; the rows of the last.
 def query_each(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     rows: Result[List[Db.Row]] = ok([])
     for n in req.cells[0].to_i!..req.number
       rows = Db.query(conn, Cells.expand(req.text.replace("[N]", n.to_s)), [])
-      if not rows.ok?
-        return recorded_rows(state, rows)
-      end
+      return recorded_rows(state, rows) if not rows.ok?
     end
 
     return recorded_rows(state, rows)
@@ -2000,34 +1988,33 @@ end
 # Queries `req.text` with a text of `req.number` characters while another task reads the statement cache of the
 # connection: the reads wait for the query instead of failing its calls.
 def cache_beside_big(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     reader = Task.spawn(&read_cache, conn)
     rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text("x" * req.number)])
     case Task.await(reader)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(_) -> return recorded_rows(state, rows)
     end
   end
 end
 
 def read_cache(conn: Db.Connection) -> Result[Int]
-  for _ in 0...CACHE_READS
-    case conn
-      Db.Connection.Postgres(postgres) -> _ = Postgres.statement_cache(postgres)
-      Db.Connection.Mysql(mysql) -> _ = Mysql.statement_cache(mysql)
-      _ -> return error("only a PostgreSQL or MySQL connection is read here")
-    end
+  if conn.adapter != Db.Adapter.Postgres and conn.adapter != Db.Adapter.Mysql
+    return error("only a PostgreSQL or MySQL connection is read here")
+  end
 
+  for _ in 0...CACHE_READS
+    _ = Db.statement_cache(conn)
     Task.sleep(1)
   end
 
-  return ok(CACHE_READS)
+  ok(CACHE_READS)
 end
 
 # A task executes `req.text` on the connection, a second one executes `req.cells[0]` there, which waits for the first,
 # and this task closes the connection after `req.number` ms: the outcome of the second.
 def close_beside_queries(state: State, req: Request) -> State
-  return with_conn(state) do |conn|
+  with_conn(state) do |conn|
     first = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
     Task.sleep(QUEUE_START_MS)
     second = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
@@ -2035,58 +2022,56 @@ def close_beside_queries(state: State, req: Request) -> State
     Db.close(conn)
     _ = Task.await(first)
     case Task.await(second)
-      error(message) -> return failed(state, message)
+      error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
     end
   end
 end
 
 def fresh_query(job: Fresh) -> Result[List[Db.Row]]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   found = Db.query(conn, job.sql, [])
   Db.close(conn)
-  return found
+  found
 end
 
 def query_in_new_task(state: State, sql: String) -> State
   job = Fresh(url: server_url(state.adapter), sql: Cells.expand(sql))
   case Task.await(Task.spawn(&fresh_query, job))
-    error(message) -> return failed(state, message)
-    ok(rows) -> return recorded(state, Outcome.Rows(rows))
+    error(message) -> failed(state, message.message)
+    ok(rows) -> recorded(state, Outcome.Rows(rows))
   end
 end
 
 # The task opens a connection and ends without closing it. It gives the id of the session while the connection is
 # open, since a session that never showed would pass the check of its end.
 def open_and_leave(job: Leave) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   rows = try Db.query(conn, SESSION_ID_SQL[job.adapter], [])
-  return int_of(rows)
+  int_of(rows)
 end
 
 def int_of(rows: List[Db.Row]) -> Result[Int]
   case rows[0]["n"]
-    Db.Value.Int(n) -> return ok(n)
-    _ -> return error("the count is not an Int")
+    Db.Value.Int(n) -> ok(n)
+    _ -> error("the count is not an Int")
   end
 end
 
 def sessions(conn: Db.Connection, adapter: String, id: Int) -> Result[Int]
   rows = try Db.query(conn, SESSIONS_SQL[adapter], [Db.Value.Int(id)])
-  return int_of(rows)
+  int_of(rows)
 end
 
 # The end of the task that opened a connection closes it: the server drops the session within `limit_ms`.
 def leave_open(state: State, limit_ms: Int) -> Handled
-  if state.conns.empty?
-    return Handled(state: state, reply: NO_DATABASE)
-  end
+  return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
 
   job = Leave(url: expand(state, "[URL]"), adapter: state.adapter)
   seen = Task.await(Task.spawn(&open_and_leave, job))
   case seen
-    error(message) -> return Handled(state: state, reply: "the task failed: #{message}")
-    ok(id) -> return reply_ok_when_gone(state, id, limit_ms)
+    error(message) -> Handled(state: state, reply: "the task failed: #{message}")
+    ok(id) -> reply_ok_when_gone(state, id, limit_ms)
   end
 end
 
@@ -2099,10 +2084,33 @@ def reply_ok_when_gone(state: State, id: Int, limit_ms: Int) -> Handled
   end
 
   case left
-    error(message) -> return Handled(state: state, reply: "counting the sessions failed: #{message}")
-    ok(0) -> return reply_ok(state)
-    ok(_) -> return Handled(state: state, reply: "the session #{id} stayed open after #{limit_ms} ms")
+    error(message) -> Handled(state: state, reply: "counting the sessions failed: #{message}")
+    ok(0) -> reply_ok(state)
+    ok(_) -> Handled(state: state, reply: "the session #{id} stayed open after #{limit_ms} ms")
   end
+end
+
+# No other session runs a statement whose text has `marker` within `limit_ms`.
+def none_running(state: State, marker: String, limit_ms: Int) -> Handled
+  return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
+
+  started = Time.monotonic_ms()
+  left = running(state.conns[0], state.adapter, marker)
+  while left.ok? and left.unwrap_or(0) > 0 and Time.monotonic_ms() - started < limit_ms
+    Task.sleep(SESSION_POLL_MS)
+    left = running(state.conns[0], state.adapter, marker)
+  end
+
+  case left
+    error(message) -> Handled(state: state, reply: "counting the statements failed: #{message}")
+    ok(0) -> reply_ok(state)
+    ok(n) -> Handled(state: state, reply: "#{n} statements with #{marker} still ran after #{limit_ms} ms")
+  end
+end
+
+def running(conn: Db.Connection, adapter: String, marker: String) -> Result[Int]
+  rows = try Db.query(conn, RUNNING_SQL[adapter], [Db.Value.Text("%#{marker}%")])
+  int_of(rows)
 end
 
 # The longest time between two wake-ups of a task that sleeps a few milliseconds at a time.
@@ -2119,7 +2127,7 @@ def longest_gap(ticks: Int) -> Int
     last = now
   end
 
-  return longest
+  longest
 end
 
 # The time the other task waited is measured while a query of a connection of its own waits for the server.
@@ -2128,77 +2136,65 @@ def keep_running(state: State, sql: String, limit: Int) -> Handled
   ticks = Task.spawn(&longest_gap, TICKS)
   found = Task.await(slow)
   gap = Task.await(ticks)
-  if not found.ok?
-    return Handled(state: state, reply: "the query failed: #{found.message}")
-  end
+  return Handled(state: state, reply: "the query failed: #{found.message}") if not found.ok?
 
   if gap >= limit
     return Handled(state: state, reply: "the other task was stopped for #{gap} ms during the query, limit #{limit} ms")
   end
 
-  return reply_ok(state)
+  reply_ok(state)
 end
 
 # Each table row is a column type and a cell: a table with a column of that type is written with the cell as a
 # parameter and read back, and the value must come back the same.
 def round_trips(state: State, table: List[List[String]]) -> Handled
-  if state.conns.empty?
-    return Handled(state: state, reply: NO_DATABASE)
-  end
+  return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
 
   for row in table.drop(1)
     case Cells.parse(row[1])
-      error(message) -> return Handled(state: state, reply: message)
+      error(message) -> return Handled(state: state, reply: message.message)
       ok(value) ->
         verdict = round_trip(state.conns[0], row[0], value)
-        if not verdict.empty?
-          return Handled(state: state, reply: "a #{row[0]} column: #{verdict}")
-        end
+        return Handled(state: state, reply: "a #{row[0]} column: #{verdict}") if not verdict.empty?
     end
   end
 
-  return reply_ok(state)
+  reply_ok(state)
 end
 
 # The empty string when the value came back the same.
 def round_trip(conn: Db.Connection, kind: String, value: Db.Value) -> String
   created = Db.execute(conn, "create temporary table rt (v #{kind})", [])
-  if not created.ok?
-    return created.message
-  end
+  return created.message if not created.ok?
 
   inserted = Db.execute(conn, "insert into rt (v) values (?)", [value])
   found = Db.query(conn, "select v from rt", [])
   _ = Db.execute(conn, "drop table rt", [])
-  if not inserted.ok?
-    return "the insert failed: #{inserted.message}"
-  end
+  return "the insert failed: #{inserted.message}" if not inserted.ok?
 
   case found
-    error(message) -> return "the select failed: #{message}"
-    ok(rows) if rows.size == 1 and Cells.same?(rows[0]["v"], value) -> return ""
-    ok(rows) -> return "wrote #{Cells.show(value)}, read back #{shown(rows)}"
+    error(message) -> "the select failed: #{message}"
+    ok(rows) if rows.size == 1 and Cells.same?(rows[0]["v"], value) -> ""
+    ok(rows) -> "wrote #{Cells.show(value)}, read back #{shown(rows)}"
   end
 end
 
 # The server is the judge of a float: the driver reads the literal, sends the float back as a parameter, and the
 # server says whether it is the literal. It compares the text forms, since `-0 = 0` is true for float8.
 def float_oracle(state: State, literal: String) -> Handled
-  if state.conns.empty?
-    return Handled(state: state, reply: NO_DATABASE)
-  end
+  return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
 
   conn = state.conns[0]
   case Db.query(conn, "select '#{literal}'::float8 as v", [])
-    error(message) -> return Handled(state: state, reply: "reading #{literal} failed: #{message}")
+    error(message) -> Handled(state: state, reply: "reading #{literal} failed: #{message}")
     ok(rows) ->
       sql = "select (?::float8)::text = ('#{literal}'::float8)::text as v"
       case Db.query(conn, sql, [rows[0]["v"]])
-        error(message) -> return Handled(state: state, reply: "sending #{literal} back failed: #{message}")
-        ok(same) if Cells.same?(same[0]["v"], Db.Value.Bool(true)) -> return reply_ok(state)
+        error(message) -> Handled(state: state, reply: "sending #{literal} back failed: #{message}")
+        ok(same) if Cells.same?(same[0]["v"], Db.Value.Bool(true)) -> reply_ok(state)
         ok(_) ->
           read = Cells.show(rows[0]["v"])
-          return Handled(state: state, reply: "#{literal} was read as #{read}, which the server does not take for it")
+          Handled(state: state, reply: "#{literal} was read as #{read}, which the server does not take for it")
       end
   end
 end
@@ -2206,83 +2202,81 @@ end
 def expect(state: State, req: Request) -> Handled
   checked = State(conns: state.conns, pools: state.pools, adapter: state.adapter, last: state.last, checked: true)
   verdict = judge(state.last, req)
-  if verdict.empty?
-    return reply_ok(checked)
-  end
+  return reply_ok(checked) if verdict.empty?
 
-  return Handled(state: checked, reply: verdict)
+  Handled(state: checked, reply: verdict)
 end
 
 # The empty string when the last outcome is what the request expects, else what went wrong.
 def judge(last: Outcome, req: Request) -> String
   wanted = Cells.expand(req.text)
   case req.op
-    "expect_ok" -> return judge_ok(last)
-    "expect_timeout" -> return judge_failure(last, "that is a timeout", "") do |message| Db.timeout?(message) end
-    "expect_count" -> return judge_count(last, req.number)
-    "expect_rows" -> return judge_rows(last, req.table)
-    "expect_last" -> return judge_last(last, req.number, req.table)
-    "expect_prefix" -> return judge_failure(last, "starting with", wanted) do |message| message.start_with?(wanted) end
-    "expect_exact" -> return judge_failure(last, "exactly", wanted) do |message| message == wanted end
-    "expect_mentions" -> return judge_failure(last, "mentioning", wanted) do |message| message.include?(wanted) end
-    "expect_kind" -> return judge_kind(last, wanted)
-    "expect_hides" -> return judge_failure(last, "never showing", wanted) do |message| not message.include?(wanted) end
-    _ -> return "unknown op #{req.op.inspect}"
+    "expect_ok" -> judge_ok(last)
+    "expect_timeout" -> judge_failure(last, "that is a timeout", "") do |message| Db.timeout?(message) end
+    "expect_count" -> judge_count(last, req.number)
+    "expect_rows" -> judge_rows(last, req.table)
+    "expect_last" -> judge_last(last, req.number, req.table)
+    "expect_prefix" -> judge_failure(last, "starting with", wanted) do |message| message.start_with?(wanted) end
+    "expect_exact" -> judge_failure(last, "exactly", wanted) do |message| message == wanted end
+    "expect_mentions" -> judge_failure(last, "mentioning", wanted) do |message| message.include?(wanted) end
+    "expect_kind" -> judge_kind(last, wanted)
+    "expect_hides" -> judge_failure(last, "never showing", wanted) do |message| not message.include?(wanted) end
+    _ -> "unknown op #{req.op.inspect}"
   end
 end
 
 # The failure must be of the kind that `Orm.classify` gives its message.
 def judge_kind(last: Outcome, wanted: String) -> String
   case last
-    Outcome.Failed(message) if Orm.kind(Orm.classify(message)) == wanted -> return ""
-    Outcome.Failed(message) -> return "expected a #{wanted} error, got #{Orm.kind(Orm.classify(message))}: #{message}"
-    _ -> return "expected a #{wanted} error, but it succeeded"
+    Outcome.Failed(message) if Orm.kind(Orm.classify(message)) == wanted -> ""
+    Outcome.Failed(message) -> "expected a #{wanted} error, got #{Orm.kind(Orm.classify(message))}: #{message}"
+    _ -> "expected a #{wanted} error, but it succeeded"
   end
 end
 
 def judge_ok(last: Outcome) -> String
   case last
-    Outcome.Failed(message) -> return "expected it to succeed, but it failed with #{message.inspect}"
-    Outcome.Nothing -> return "nothing ran before"
-    Outcome.Counted(_) -> return ""
-    Outcome.Rows(_) -> return ""
-    Outcome.Done -> return ""
+    Outcome.Failed(message) -> "expected it to succeed, but it failed with #{message.inspect}"
+    Outcome.Nothing -> "nothing ran before"
+    Outcome.Counted(_) -> ""
+    Outcome.Rows(_) -> ""
+    Outcome.Done -> ""
   end
 end
 
 def judge_count(last: Outcome, wanted: Int) -> String
   case last
-    Outcome.Counted(count) if count == wanted -> return ""
-    Outcome.Counted(count) -> return "expected #{wanted} rows changed, got #{count}"
-    Outcome.Failed(message) -> return "expected a count, but it failed with #{message.inspect}"
-    _ -> return "expected a count, got no count"
+    Outcome.Counted(count) if count == wanted -> ""
+    Outcome.Counted(count) -> "expected #{wanted} rows changed, got #{count}"
+    Outcome.Failed(message) -> "expected a count, but it failed with #{message.inspect}"
+    _ -> "expected a count, got no count"
   end
 end
 
 # The failure message must pass `accepted`; a success never does.
 def judge_failure(last: Outcome, how: String, wanted: String, accepted: Fn[String, Bool]) -> String
   case last
-    Outcome.Failed(message) if accepted.call(message) -> return ""
-    Outcome.Failed(message) -> return "expected a failure #{how} #{wanted.inspect}, got #{message.inspect}"
-    _ -> return "expected a failure #{how} #{wanted.inspect}, but it succeeded"
+    Outcome.Failed(message) if accepted.call(message) -> ""
+    Outcome.Failed(message) -> "expected a failure #{how} #{wanted.inspect}, got #{message.inspect}"
+    _ -> "expected a failure #{how} #{wanted.inspect}, but it succeeded"
   end
 end
 
 def judge_rows(last: Outcome, table: List[List[String]]) -> String
   case last
-    Outcome.Rows(rows) -> return compare_rows(rows, table)
-    Outcome.Failed(message) -> return "expected rows, but it failed with #{message.inspect}"
-    _ -> return "expected rows, got none"
+    Outcome.Rows(rows) -> compare_rows(rows, table)
+    Outcome.Failed(message) -> "expected rows, but it failed with #{message.inspect}"
+    _ -> "expected rows, got none"
   end
 end
 
 # The result has `size` rows and the last one is the one row of the table.
 def judge_last(last: Outcome, size: Int, table: List[List[String]]) -> String
   case last
-    Outcome.Rows(rows) if rows.size == size -> return compare_rows(rows.drop(size - 1), table)
-    Outcome.Rows(rows) -> return "expected #{size} rows, got #{rows.size}"
-    Outcome.Failed(message) -> return "expected rows, but it failed with #{message.inspect}"
-    _ -> return "expected rows, got none"
+    Outcome.Rows(rows) if rows.size == size -> compare_rows(rows.drop(size - 1), table)
+    Outcome.Rows(rows) -> "expected #{size} rows, got #{rows.size}"
+    Outcome.Failed(message) -> "expected rows, but it failed with #{message.inspect}"
+    _ -> "expected rows, got none"
   end
 end
 
@@ -2290,9 +2284,7 @@ end
 def compare_rows(rows: List[Db.Row], table: List[List[String]]) -> String
   header = table[0]
   wanted = table.drop(1)
-  if rows.size != wanted.size
-    return "expected #{wanted.size} rows, got #{rows.size}: #{shown(rows)}"
-  end
+  return "expected #{wanted.size} rows, got #{rows.size}: #{shown(rows)}" if rows.size != wanted.size
 
   for i in 0...rows.size
     if not Test.eq(rows[i].keys, header).ok?
@@ -2301,7 +2293,7 @@ def compare_rows(rows: List[Db.Row], table: List[List[String]]) -> String
 
     for c in 0...header.size
       case Cells.parse(wanted[i][c])
-        error(message) -> return message
+        error(message) -> return message.message
         ok(expected) ->
           actual = rows[i][header[c]]
           if not Cells.same?(actual, expected)
@@ -2311,9 +2303,10 @@ def compare_rows(rows: List[Db.Row], table: List[List[String]]) -> String
     end
   end
 
-  return ""
+  ""
 end
 
 def shown(rows: List[Db.Row]) -> String
-  return rows.map do |row| "{#{Cells.show_row(row)}}" end.join(", ")
+  texts = rows.map do |row| "{#{Cells.show_row(row)}}" end
+  texts.join(", ")
 end

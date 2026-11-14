@@ -1,12 +1,10 @@
 import PostgresUrl from "../postgres/url"
 
-def target_of(text: String) -> PostgresUrl.Target
-  return PostgresUrl.parse(text).unwrap!
-end
+private
 
-def conninfo_of(text: String) -> String
-  return target_of(text).conninfo
-end
+def target_of(text: String) -> PostgresUrl.Target = PostgresUrl.parse(text).unwrap!
+
+def conninfo_of(text: String) -> String = target_of(text).conninfo
 
 def main() -> Void
   Test.run([

@@ -61,6 +61,7 @@ typedef void (*sqlite3_destructor)(void *);
 
 enum {
   SQLITE_OK = 0,
+  SQLITE_ERROR = 1,
   SQLITE_BUSY = 5,
   SQLITE_LOCKED = 6,
   SQLITE_NOMEM = 7,
@@ -74,6 +75,7 @@ enum {
   SQLITE_TEXT = 3,
   SQLITE_BLOB = 4,
   SQLITE_UTF8 = 1,
+  SQLITE_TXN_NONE = 0,
   SQLITE_TXN_READ = 1,
   SQLITE_STMTSTATUS_VM_STEP = 4,
   SQLITE_DBSTATUS_CACHE_WRITE = 9,
@@ -1172,6 +1174,24 @@ static int step(conn *c, sqlite3_stmt *stmt, bool short_call, outcome *o) {
 
 /* ---- Preparing. ---- */
 
+/* With busy timeout 0, SQLite reports the parse error of a stale schema ("no such table") when the read lock that
+   checks the schema is refused. This read loads the current schema; its code, a lock for the caller to wait for. */
+static int recheck_schema(conn *c) {
+  static const char SQL[] = "SELECT 1 FROM main.sqlite_master LIMIT 1";
+  sqlite3_stmt *stmt = NULL;
+  int rc = sq.prepare_v2(c->db, SQL, (int)sizeof SQL - 1, &stmt, NULL);
+  if (rc == SQLITE_OK && stmt) rc = sq.step(stmt);
+  /* finalize keeps the error of the step for extended_errcode. */
+  if (stmt) (void)sq.finalize(stmt);
+  return rc == SQLITE_ROW || rc == SQLITE_DONE ? SQLITE_OK : rc;
+}
+
+/* Whether SQLite checked the schema under no lock of this connection: outside any transaction. */
+static bool schema_unchecked(conn *c) {
+  if (sq.get_autocommit(c->db) == 0) return false;
+  return !sq.txn_state || sq.libversion_number() < TXN_STATE_VERSION || sq.txn_state(c->db, NULL) == SQLITE_TXN_NONE;
+}
+
 /* Prepares the one statement of SQL, refusing none or a second one; the statement, or NULL with the failure in O
    (a lock comes back as its code, for the caller to wait). */
 static sqlite3_stmt *prepare(conn *c, const char *sql, size_t len, outcome *o) {
@@ -1185,6 +1205,21 @@ static sqlite3_stmt *prepare(conn *c, const char *sql, size_t len, outcome *o) {
   sqlite3_mutex *m = sq.db_mutex(c->db);
   sq.mutex_enter(m);
   int rc = sq.prepare_v2(c->db, sql, (int)len, &stmt, &tail);
+  if (rc == SQLITE_ERROR && schema_unchecked(c)) {
+    failure parsed;
+    fail_code(&parsed, c, rc);
+    int checked = recheck_schema(c);
+    if (lock_code(checked)) {
+      /* The caller waits for the lock and fetches again; when the wait ends it reports the error of SQL, not the
+         lock. */
+      o->code = checked;
+      o->extended = sq.extended_errcode(c->db);
+      o->why = parsed;
+      sq.mutex_leave(m);
+      return NULL;
+    }
+    rc = checked == SQLITE_INTERRUPT ? checked : sq.prepare_v2(c->db, sql, (int)len, &stmt, &tail);
+  }
   if (rc != SQLITE_OK) {
     o->code = rc;
     o->extended = sq.extended_errcode(c->db);
@@ -1358,6 +1393,11 @@ static bool short_plan(conn *c, const char *sql, size_t len, bool write) {
           ok = strcmp(op, "Count") != 0;
         } else if (pass == 0) {
           ok = note_op(&scan, addr, op, p1, p2, sq.column_int64(plan, 4), sequence);
+        } else if (addr >= scan.count) {
+          /* Another connection changed the schema between the passes and this step prepared the plan again, longer:
+             the arrays of the first pass do not reach it (they are NULL after an empty one). The statement runs in a
+             normal call. */
+          ok = false;
         } else if (opcode_in(op, WRITE_LONG, sizeof WRITE_LONG / sizeof WRITE_LONG[0])) {
           ok = false;
         } else if (strcmp(op, "Rewind") == 0 || strcmp(op, "Last") == 0) {

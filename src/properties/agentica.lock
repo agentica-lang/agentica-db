@@ -9,15 +9,16 @@ workspace = true
 
 [[package]]
 name = "pool"
-git = "https://github.com/agentica-lang/agentica-db"
-subdir = "src/pool"
-ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf"
-workspace = true
+git = "https://github.com/agentica-lang/packages"
+subdir = "pool"
+tag = "pool-0.1.1"
+commit = "5aac32c3aee16b71effebb1125c9f6f265fde244"
+hash = "sha256:68ac2a47e1b6c762d524f793ad52c2f554f03d072892d30a2350e7212e635cdf"
 
 [[package]]
 name = "prop"
 git = "https://github.com/agentica-lang/packages"
 subdir = "prop"
-tag = "prop-0.1.0"
-commit = "489aec5c1684e44303851cdfd2b72f98685f9cd5"
-hash = "sha256:b6f393cea32dc002988812949a082d79b664034ae750d564bf75593e3a0093ba"
+tag = "prop-0.3.0"
+commit = "1f5b3fea6fe85fd595c6fe441c0d736eaeed435b"
+hash = "sha256:d3ec60a30604c0d1b3ec5dd5450f6d8532b0fcf5cf711c976fe7147868bc23ec"

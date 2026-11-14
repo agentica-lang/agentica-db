@@ -1,5 +1,7 @@
 import Migrations from "../examples/migrations"
 
+private
+
 # The versions go 1..N with no gap, and N is the number of .agc files of the folder (other names, such as .DS_Store,
 # do not count), so a migration file that is missing from the list (or a list entry with no file) fails. `Dir.list`
 # is relative to the folder that `agentica test` runs in, which is this package.

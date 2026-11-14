@@ -13,11 +13,12 @@ The writes take the connection first. They bind every value and run the name, ty
 | `Orm.insert(conn, schema, value)` | `Result[T]`, the row as stored, with its generated key |
 | `Orm.update(conn, schema, value)` | `Result[Int]`, the rows set (0: no row has the key of `value`) |
 | `Orm.delete(conn, schema, id)` | `Result[Int]`, the rows removed; `id` is a `Db.Value` |
-| `Orm.patch(conn, schema, id, changes)` | `Result[Int]`, the rows changed; `changes` is a `Json` object |
+| `Orm.patch(conn, schema, id, changes)` | `Result[Int]`, the rows changed; `changes` is a `JSON.Value` object |
 
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -26,7 +27,7 @@ struct User
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   users = Orm.schema("users", User.codec)
   ana = try Db.transaction(conn) do |tx|
@@ -62,7 +63,7 @@ done
 
 ## insert
 
-`insert` leaves out a generated key (whatever the value holds) and writes every other field: an `Optional` that is `none` is a NULL. A `JsonField` field that is `Absent` is left out too, so the default of the database applies. It gives the row back read again by its key.
+`insert` leaves out a generated key (whatever the value holds) and writes every other field: an `Optional` that is `none` is a NULL. A `JSON.Field` field that is `Absent` is left out too, so the default of the database applies. It gives the row back read again by its key.
 
 The key must be the one the database generates: the `INTEGER PRIMARY KEY` of SQLite, the `AUTO_INCREMENT` column of MySQL, a `serial` or identity column of PostgreSQL. PostgreSQL gets the key with `returning`; SQLite and MySQL with `last_insert_rowid()` and `last_insert_id()` on the same connection.
 
@@ -70,17 +71,17 @@ The insert and the read after it are two statements, so put them in a transactio
 
 ## update
 
-`update` sets every column but the key to the field, in the row with the key of the value. `none` and `JsonField.Null` clear the column, and `JsonField.Absent` keeps it. A value with only the key and `Absent` fields has nothing to set, which is an error.
+`update` sets every column but the key to the field, in the row with the key of the value. `none` and `JSON.Field.Null` clear the column, and `JSON.Field.Absent` keeps it. A value with only the key and `Absent` fields has nothing to set, which is an error.
 
 ## delete and patch
 
 `delete` and `patch` take the key as a `Db.Value` of the kind of the key field (`Db.Value.Int(7)` for an `Int` key). Another kind is an error.
 
-`patch` takes the changes as a `Json` object, such as the body of a request. A key that is a column sets it (`null` clears an `Optional` or `JsonField` column), and a column the object leaves out keeps its value. These are errors, before any sql runs: a key that is not a column, the primary key, a value of the wrong kind, a `null` for a field that is not an `Optional` or a `JsonField`, and an object with no column to change.
+`patch` takes the changes as a `JSON.Value` object, such as the body of a request. A key that is a column sets it (`null` clears an `Optional` or `JSON.Field` column), and a column the object leaves out keeps its value. These are errors, before any sql runs: a key that is not a column, the primary key, a value of the wrong kind, a `null` for a field that is not an `Optional` or a `JSON.Field`, and an object with no column to change.
 
 ## Many rows: update_all and delete_all
 
-`Orm.update_all(query, conn, changes)` sets the columns of a `Json` object in every row the conditions keep, as `patch` does. `Orm.delete_all(query, conn)` removes them. Both give the number of rows.
+`Orm.update_all(query, conn, changes)` sets the columns of a `JSON.Value` object in every row the conditions keep, as `patch` does. `Orm.delete_all(query, conn)` removes them. Both give the number of rows.
 
 They refuse two things, because not every database allows them and because a mistake here is costly:
 
@@ -92,6 +93,7 @@ When you do mean every row, say so with a condition that is always true: `|> Orm
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -100,7 +102,7 @@ struct User
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   try Db.execute(conn, "insert into users (name, age) values ('Ana', 31), ('Bob', 27), ('Cy', 40)", [])
   users = Orm.schema("users", User.codec)

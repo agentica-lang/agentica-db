@@ -6,6 +6,53 @@
 ## control character after the two dashes) and `#` comments run to the end of the line, and `/* .. */` comments do
 ## not nest. A `/*! .. */` or `/*M! .. */` comment is code for the server, so it counts as content.
 
+## The first word of the statement in lower case (`begin`, `start`, `insert`, `select`; empty when the statement
+## starts with something else), read after any whitespace and comments.
+struct Statement
+  verb: String
+end
+
+## Checks the sql. An error is `mysql error: <message>` for a NUL, a second statement, or no statement at all.
+def inspect(sql: String) -> Result[Statement]
+  return error("mysql error: the sql contains a NUL character") if sql.include?(String.from_code(0))
+
+  return plain_statement(sql) if not SCAN_MARKS.any? do |mark| sql.include?(mark) end
+
+  bytes = sql.bytes
+  at = 0
+  ended = false
+  content = false
+  verb = ""
+  while at < bytes.size
+    byte = bytes[at]
+    skipped = comment_end(bytes, at)
+    if skipped > at
+      at = skipped
+    elsif space?(byte)
+      at += 1
+    elsif byte == SEMICOLON
+      ended = true
+      at += 1
+    else
+      # Content after the end of the statement is a second statement.
+      return error("mysql error: the sql has more than one statement") if ended
+
+      if not content
+        content = true
+        verb = word_at(bytes, at)
+      end
+
+      at = literal_end(bytes, at)
+    end
+  end
+
+  return error("mysql error: the sql has no statement") if not content
+
+  ok(Statement(verb: verb))
+end
+
+private
+
 TAB = 9
 NEWLINE = 10
 CARRIAGE_RETURN = 13
@@ -29,59 +76,6 @@ LOWER_Z = 122
 # statement, and the scan below, which costs about 60 VM steps for each byte, is not needed.
 SCAN_MARKS = ["'", "\"", "`", "#", "-", "/", ";"]
 
-## The first word of the statement in lower case (`begin`, `start`, `insert`, `select`; empty when the statement
-## starts with something else), read after any whitespace and comments.
-export struct Statement
-  verb: String
-end
-
-## Checks the sql. An error is `mysql error: <message>` for a NUL, a second statement, or no statement at all.
-export def inspect(sql: String) -> Result[Statement]
-  if sql.include?(String.from_code(0))
-    return error("mysql error: the sql contains a NUL character")
-  end
-
-  if not SCAN_MARKS.any? do |mark| sql.include?(mark) end
-    return plain_statement(sql)
-  end
-
-  bytes = sql.bytes
-  at = 0
-  ended = false
-  content = false
-  verb = ""
-  while at < bytes.size
-    byte = bytes[at]
-    skipped = comment_end(bytes, at)
-    if skipped > at
-      at = skipped
-    elsif space?(byte)
-      at += 1
-    elsif byte == SEMICOLON
-      ended = true
-      at += 1
-    else
-      # Content after the end of the statement is a second statement.
-      if ended
-        return error("mysql error: the sql has more than one statement")
-      end
-
-      if not content
-        content = true
-        verb = word_at(bytes, at)
-      end
-
-      at = literal_end(bytes, at)
-    end
-  end
-
-  if not content
-    return error("mysql error: the sql has no statement")
-  end
-
-  return ok(Statement(verb: verb))
-end
-
 # The statement of sql that has none of SCAN_MARKS: its first word, after the white space.
 def plain_statement(sql: String) -> Result[Statement]
   bytes = sql.bytes
@@ -90,20 +84,14 @@ def plain_statement(sql: String) -> Result[Statement]
     at += 1
   end
 
-  if at == bytes.size
-    return error("mysql error: the sql has no statement")
-  end
+  return error("mysql error: the sql has no statement") if at == bytes.size
 
-  return ok(Statement(verb: word_at(bytes, at)))
+  ok(Statement(verb: word_at(bytes, at)))
 end
 
-def space?(byte: Int) -> Bool
-  return byte == SPACE or (byte >= TAB and byte <= CARRIAGE_RETURN)
-end
+def space?(byte: Int) -> Bool = byte == SPACE or (byte >= TAB and byte <= CARRIAGE_RETURN)
 
-def letter?(byte: Int) -> Bool
-  return (byte >= UPPER_A and byte <= UPPER_Z) or (byte >= LOWER_A and byte <= LOWER_Z)
-end
+def letter?(byte: Int) -> Bool = (byte >= UPPER_A and byte <= UPPER_Z) or (byte >= LOWER_A and byte <= LOWER_Z)
 
 def word_at(bytes: Bytes, at: Int) -> String
   stop = at
@@ -112,12 +100,10 @@ def word_at(bytes: Bytes, at: Int) -> String
   end
 
   # A run of ASCII letters is always valid UTF-8, so the empty fallback never shows.
-  return String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
+  String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
 end
 
-def byte_is?(bytes: Bytes, at: Int, expected: Int) -> Bool
-  return at < bytes.size and bytes[at] == expected
-end
+def byte_is?(bytes: Bytes, at: Int, expected: Int) -> Bool = at < bytes.size and bytes[at] == expected
 
 # The index after the comment that starts at `at`, or `at` when none starts there.
 def comment_end(bytes: Bytes, at: Int) -> Int
@@ -130,21 +116,17 @@ def comment_end(bytes: Bytes, at: Int) -> Int
     return block_end(bytes, at)
   end
 
-  return at
+  at
 end
 
 # `--` starts a comment only when whitespace or a control character follows it, or the sql ends.
-def dash_comment?(bytes: Bytes, at: Int) -> Bool
-  return at + 2 >= bytes.size or bytes[at + 2] <= SPACE
-end
+def dash_comment?(bytes: Bytes, at: Int) -> Bool = at + 2 >= bytes.size or bytes[at + 2] <= SPACE
 
 # `/*!` and `/*M!` hold code that the server runs.
 def executable?(bytes: Bytes, at: Int) -> Bool
-  if byte_is?(bytes, at + 2, EXCLAMATION)
-    return true
-  end
+  return true if byte_is?(bytes, at + 2, EXCLAMATION)
 
-  return byte_is?(bytes, at + 2, UPPER_M) and byte_is?(bytes, at + 3, EXCLAMATION)
+  byte_is?(bytes, at + 2, UPPER_M) and byte_is?(bytes, at + 3, EXCLAMATION)
 end
 
 def line_end(bytes: Bytes, at: Int) -> Int
@@ -153,21 +135,19 @@ def line_end(bytes: Bytes, at: Int) -> Int
     stop += 1
   end
 
-  return stop
+  stop
 end
 
 # A comment that is not closed runs to the end of the sql.
 def block_end(bytes: Bytes, at: Int) -> Int
   stop = at + 2
   while stop < bytes.size
-    if bytes[stop] == STAR and byte_is?(bytes, stop + 1, SLASH)
-      return stop + 2
-    end
+    return stop + 2 if bytes[stop] == STAR and byte_is?(bytes, stop + 1, SLASH)
 
     stop += 1
   end
 
-  return bytes.size
+  bytes.size
 end
 
 # The index after the literal or identifier that starts at `at`, or after the one byte when none starts there. A
@@ -182,7 +162,7 @@ def literal_end(bytes: Bytes, at: Int) -> Int
     return block_end(bytes, at)
   end
 
-  return at + 1
+  at + 1
 end
 
 # A quote doubled inside the literal is a quote of the text, not its end. One that is not closed runs to the end of
@@ -203,5 +183,5 @@ def quoted_end(bytes: Bytes, at: Int, backslash: Bool) -> Int
     end
   end
 
-  return bytes.size
+  bytes.size
 end

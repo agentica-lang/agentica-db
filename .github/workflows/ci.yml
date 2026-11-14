@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 env:
-  # The package needs Agentica 0.27.0 (the OpenSSL builtins): .github/actions/agentica
-  # builds the commit of the tag 0.27.0 of agentica-lang/agentica.
-  AGENTICA_COMMIT: d42f1d49a559aecf8adaaff713893399745b675b
+  # The package needs Agentica 0.31.0: .github/actions/agentica
+  # builds the commit of the tag 0.31.0 of agentica-lang/agentica.
+  AGENTICA_COMMIT: e90cf1207f8424745f7f67d28f6b67459d3b5bf3
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare
@@ -70,9 +70,7 @@ jobs:
         run: |
           agentica --version
           make check
-          (cd src/db && agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test)
-          (cd src/pool && agentica fmt --check *.agc specs test)
-          (cd src/properties && agentica fmt --check *.agc test)
+          make fmt-check
           make site-samples
 
       # The sqlite job of macOS and Windows runs the scenarios named "on sqlite" (an outline has "on <adapter>"), so a
@@ -83,14 +81,13 @@ jobs:
             | grep -vE 'on (<adapter>|sqlite|postgres|mysql)|The users example' || true)
           [ -z "$bad" ] || { echo "$bad"; echo "name each scenario 'on <adapter>' or 'on sqlite'"; exit 1; }
 
-      # The features of src/db/specs/ and the unit tests of src/db/test/, four files at once, on each driver where there
-      # are two. The variables name the driver outright, so a run cannot fall back to the other one: `native` is an
-      # error when the module did not build, `ffi` skips the native module, and the scenarios of driver_choice.feature
-      # fail when the connection runs another driver than the variable names. The ffi run leaves out @native, the
-      # scenarios of what only the native drivers have (the statement cache, batches, cancels). It runs after the native
-      # one, which has the unit tests of src/db/test/ (a run with tags has none). MySQL and MariaDB have the FFI driver
-      # only: their native driver joins this loop with agentica-lang/agentica-db#77. The variables point the postgres
-      # and mysql scenarios at the service containers; without them they fail. The mysql host is an address:
+      # The features of src/db/specs/ and the unit tests of src/db/test/, four scenarios at once, on each driver where
+      # there are two. The variables name the driver outright, so a run cannot fall back to the other one: `native` is
+      # an error when the module did not build, `ffi` skips the native module, and the scenarios of
+      # driver_choice.feature fail when the connection runs another driver than the variable names. The ffi run leaves
+      # out @native, the scenarios of what only the native drivers have (the statement cache, batches, cancels). It runs
+      # after the native one, which has the unit tests of src/db/test/ (a run with tags has none). The variables point
+      # the postgres and mysql scenarios at the service containers; without them they fail. The mysql host is an address:
       # `localhost` means the local socket to the client library.
       - name: Test (native and FFI drivers)
         env:
@@ -99,7 +96,7 @@ jobs:
         run: |
           for driver in native ffi; do
             echo "::group::src/db on the $driver drivers"
-            export AGENTICA_DB_SQLITE_DRIVER=$driver AGENTICA_DB_POSTGRES_DRIVER=$driver
+            export AGENTICA_DB_SQLITE_DRIVER=$driver AGENTICA_DB_POSTGRES_DRIVER=$driver AGENTICA_DB_MYSQL_DRIVER=$driver
             tags=()
             [ "$driver" = native ] || tags=(--tags "not @native")
             (cd src/db && agentica test --jobs 4 "${tags[@]}")
@@ -110,7 +107,40 @@ jobs:
             (cd src/properties && agentica test --jobs 4 "${paths[@]}")
             echo "::endgroup::"
           done
-          (cd src/pool && agentica test --jobs 4)
+
+  # No C compiler: the native modules are optional, so a program warns that db_sqlite is not built and runs the FFI
+  # driver. The job removes `cc` and `gcc` from the runner after building Agentica, checks the warning on the users
+  # example, and runs the SQLite scenarios with the driver variable unset, so they pass on the fallback.
+  no-compiler:
+    name: sqlite (no C compiler)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-0
+
+      - name: Agentica
+        uses: ./.github/actions/agentica
+        with:
+          commit: ${{ env.AGENTICA_COMMIT }}
+
+      - name: Remove the C compiler
+        run: |
+          sudo rm -f $(which -a cc gcc c89 c99 clang || true)
+          ! command -v cc && ! command -v gcc
+
+      - name: Test (fallback to the FFI driver)
+        run: |
+          cd src/db
+          agentica install
+          agentica examples/users.agc 2> warnings.txt
+          cat warnings.txt
+          [ "$(grep -c 'warning: native module db_sqlite not built' warnings.txt)" = 1 ]
+          unset AGENTICA_DB_SQLITE_DRIVER
+          agentica test --jobs 4 --only "on sqlite" --tags "not @native"
+          agentica test --jobs 4 --only "users example" --tags "not @native"
 
   # The SQLite scenarios on macOS and Windows, on the native and the FFI driver. A service container runs on Linux only,
   # so the PostgreSQL and MySQL scenarios stay in the job above; here `--only "on sqlite"` keeps the SQLite ones (every
@@ -144,11 +174,9 @@ jobs:
         run: |
           agentica --version
           cd src/db
+          agentica install
           agentica check *.agc sqlite postgres mysql support orm examples specs test
           agentica fmt --check *.agc sqlite postgres mysql support orm examples specs test
-          cd ../pool
-          agentica check *.agc specs test
-          agentica fmt --check *.agc specs test
           cd ../properties
           agentica install
           agentica check *.agc test
@@ -156,7 +184,7 @@ jobs:
 
       # The SQLite scenarios and the users example (a scenario of examples.feature) on each driver, named outright as
       # in the job above (see there for what the variable and the tags do); then the unit tests of src/db/test/, which
-      # need no connection, and the features of the pool package, which use a fake resource.
+      # need no connection.
       - name: Test (native and FFI drivers)
         shell: bash
         run: |
@@ -171,8 +199,6 @@ jobs:
             echo "::endgroup::"
           done
           agentica test --jobs 4 test
-          cd ../pool
-          agentica test --jobs 4
           # The properties named "on sqlite" (the round trip of a row, and the scanners of the native driver), on each
           # driver; the scanners read the statement cache, which only the native driver has.
           cd ../properties

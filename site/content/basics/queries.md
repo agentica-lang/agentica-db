@@ -13,15 +13,16 @@ Two functions run sql. Both take the connection, the sql and a list of parameter
 | `Db.query(conn, sql, params, timeout_ms)` | `Result[List[Db.Row]]`, the rows of the statement; a statement without a result gives none |
 | `Db.execute(conn, sql, params, timeout_ms)` | `Result[Int]`, the rows inserted, updated or deleted |
 
-`timeout_ms` is the limit of the call in milliseconds (`-1`, the default, takes the connection's `timeout_ms`; `0` has none). A statement that runs over it fails, and `Db.timeout?(message)` tells that failure from others. See [Timeouts](/production/timeouts/) and the page of each database.
+`timeout_ms` is the limit of the call in milliseconds (`-1`, the default, takes the connection's `timeout_ms`; `0` has none). A statement that runs over it fails, and `Db.timeout?(e.message)` tells that failure from others. See [Timeouts](/production/timeouts/) and the page of each database.
 
 A `Db.Row` is a `Map[String, Db.Value]`, in column order. Read a column with `row["name"]` and look at the `Db.Value` with `case`.
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (name text not null, age integer)", [])
   changed = try Db.execute(conn, "insert into users (name, age) values (?, ?), (?, ?)",
                            [Db.Value.Text("Ana"), Db.Value.Int(31), Db.Value.Text("Bob"), Db.Value.Null])
@@ -63,13 +64,15 @@ A list does not expand one placeholder. For `in (...)`, build the `?, ?, ?` from
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def main() -> Void
-  conn = Db.open("sqlite::memory:").unwrap!
+  conn = Db.open("sqlite::memory:", [Sqlite.driver()]).unwrap!
   Db.execute(conn, "create table users (id integer primary key, name text not null)", []).unwrap!
   Db.execute(conn, "insert into users (name) values ('Ana'), ('Bob'), ('Cy'), ('Dee')", []).unwrap!
   ids = [1, 3, 4]
-  marks = ids.map do |_id| "?" end.join(", ")
+  holes = ids.map do |_id| "?" end
+  marks = holes.join(", ")
   params = ids.map do |id| Db.Value.Int(id) end
   rows = Db.query(conn, "select name from users where id in (#{marks}) order by id", params).unwrap!
   puts(rows.size)

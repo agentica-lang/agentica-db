@@ -12,6 +12,7 @@ A web app should not open a connection for each request. `DbPool` (`import DbPoo
 import Db from "pkg/db/db"
 import DbPool from "pkg/db/db_pool"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -20,7 +21,7 @@ end
 
 def main() -> Void
   users = Orm.schema("users", User.codec)
-  pool = DbPool.start(DbPool.Options(url: "sqlite::memory:")).unwrap!
+  pool = DbPool.start(DbPool.Options(url: "sqlite::memory:", drivers: [Sqlite.driver()])).unwrap!
   setup = DbPool.with(pool) do |conn|
     try Db.execute(conn, "create table users (id integer primary key, name text not null)", [])
     try Db.execute(conn, "insert into users (name) values (?)", [Db.Value.Text("Ana")])
@@ -38,17 +39,17 @@ end
 ok(some(User(id: 1, name: "Ana")))
 ```
 
-Start the pool once, in a task that lives as long as it does, such as `main`: it opens the connections in that task, which owns them, and they close when it ends. Hand the `pool` value to the tasks that serve requests. In a web handler, one `DbPool.with` is one request: `with` waits in line for a connection, runs the block, and gives the connection back.
+Start the pool once, in a task that lives as long as it does, such as `main`: each connection is opened in a task of the pool of its own, which owns it, and the pool ends with the task that started it. Hand the `pool` value to the tasks that serve requests. In a web handler, one `DbPool.with` is one request: `with` waits in line for a connection, runs the block, and gives the connection back. A task that has used the pool counts its crash as observed, because the pool watches its callers: a run whose only unobserved crash is in such a task exits 0 and prints no "task crash was not observed" summary (the crash itself still prints). The fix belongs in the language ([agentica-lang/agentica#1522](https://github.com/agentica-lang/agentica/issues/1522)).
 
 ## Options
 
-`DbPool.start(DbPool.Options(url: ...))` opens `size` connections at once, so a wrong url or a database that is down fails `start`, not the first request. The fields besides `url`:
+`DbPool.start(DbPool.Options(url: ..., drivers: ...))` opens `size` connections at once, so a wrong url or a database that is down fails `start`, not the first request. `url` and `drivers` are what [`Db.open`](/basics/connecting/) takes. The other fields:
 
 - `size` (0): how many connections. 0 takes the size of the database: 4 for SQLite, 10 for PostgreSQL and MySQL or MariaDB. A private in-memory SQLite database (`sqlite::memory:`, `sqlite:file::memory:` or a `file:` name with `mode=memory`) has one connection, and a `size` or `max_overflow` that asks for more is refused with `db error: a pool of a private in-memory database can have one connection only` (each connection would be an empty database of its own). With `cache=shared` in the name (`sqlite:file:app?mode=memory&cache=shared`) every connection sees one database, and the size is free.
 - `max_overflow` (0): in a spike, up to this many connections more are opened, so `size + max_overflow` is the most there are.
 - `overflow_idle_ms` (1000): an overflow connection that nobody needs is closed after this long.
 - `checkout_ms` (5000): how long a caller waits for a connection.
-- `lease_ms` (30000): how long a block may run.
+- `lease_ms` (30000): how long a block may run. 0 runs the block in the caller with no limit: a crash in it is the caller's own, the check-in of the connection after it is not bounded, and a block still running when the drain of `DbPool.close` ends finds its connection closed (on SQLite its next call crashes the caller; with a `lease_ms` above 0 the block is cancelled and its caller gets `pool error: closed`).
 - `max_age_ms` (0): a connection this old is closed and replaced when it is idle. 0 turns it off.
 - `idle_ms` (0): a connection unused this long is closed. It needs `lazy: true`, which opens connections only when callers need them (default `false`: always connected).
 - `max_waiting` (1000): how many callers may wait in line for a connection at once, 0 or more. One more is refused with `pool error: queue full (max_waiting 1000)`. 0 lets nobody wait: a caller that finds every connection busy is refused at once. Raise it for a burst of many callers (thousands of WebSockets that connect together), or lower it to refuse load early.
@@ -66,6 +67,7 @@ The connection goes back to the pool, whatever the block did:
 - On PostgreSQL too, a connection that the server ended quietly while it was idle fails the first caller that gets it, up to `size` callers, until the health check (`health_ms`) pings it and replaces it.
 - A block that crashes ends its connection: the pool rolls it back, closes it and opens another. The caller gets `error("task crashed: ...")`.
 - A block that runs past `lease_ms` ends its connection too, and its caller gets `pool error: lease timed out after N ms`.
+- A caller that is cancelled while it holds a connection cancels its block, and the connection is interrupted, closed and replaced, as after a crash.
 - A connection whose rollback fails is closed and replaced.
 - Idle connections are pinged with `Db.healthy?` every 5 seconds, and one that does not answer is replaced.
 
@@ -93,16 +95,16 @@ Since its `COMMIT` no longer checkpoints, the `COMMIT` of a transaction of short
 - `pool error: closed`: the pool is closed.
 - `sqlite error 9: interrupted`, `postgres error 57014: ...` and the like: a statement ran over its `timeout_ms`.
 
-`DbPool.timeout?(message)` is true for the first two and for a statement that ran over its `timeout_ms` (the same as `Db.timeout?`), so a handler can answer "busy, try later" to all of them. The other errors are those of the block. Cancelling a caller does not cancel its block: `lease_ms` bounds it.
+`DbPool.timeout?(e.message)` is true for the first two and for a statement that ran over its `timeout_ms` (the same as `Db.timeout?`), so a handler can answer "busy, try later" to all of them. The other errors are those of the block. The errors of the pool have kinds (`pool.timeout.checkout`, `pool.timeout.lease`, `pool.full` and `pool.closed`), which `e.kind` gives; their texts are the ones above.
 
 ## A block that runs past `lease_ms`
 
 The caller gets `pool error: lease timed out after N ms` when the time is over, and the pool cancels the block, but a block that is inside a native call cannot be stopped from outside, so it can keep running for a while. What the pool does with its connection depends on the database:
 
 - SQLite: the statement is interrupted, so the connection closes at once and the next caller gets a new one.
-- PostgreSQL: the connection is closed while the statement may still run on the server until it ends.
-- MySQL and MariaDB: the statement runs until the server stops it, and closing the connection under it is not safe: the process can crash when it exits. Set `timeout_ms` in the url below `lease_ms`, so that the server ends a statement before the lease does.
+- PostgreSQL: the pool sends a cancel request for the statement, so the server stops it, and closes the connection.
+- MySQL and MariaDB: the pool runs `KILL QUERY` for the statement on a new connection to the same url (its connect waits at most 5 s), so the server stops it, and closes the connection. The kill is skipped when that connection reaches another server, as behind a load balancer, or the server restarted since. Still set `timeout_ms` in the url below `lease_ms`, so that the server ends a statement before the lease does.
 
 In all cases a `timeout_ms` below `lease_ms` makes the statement fail by itself (`Db.timeout?`), as an ordinary error of the block, and the connection is kept.
 
-`DbPool.close(pool, drain_ms)` refuses new callers, lets the running blocks finish for up to `drain_ms`, and closes every connection.
+`DbPool.close(pool, drain_ms)` refuses new callers, lets the running blocks finish for up to `drain_ms`, and closes every connection. A block that runs in a task of the pool (`lease_ms` above 0) and outlasts the drain is cancelled, and its caller gets `pool error: closed`. With `lease_ms` 0 the block runs in its caller and is not cancelled: it finds its connection closed, so drain for longer than your blocks run.

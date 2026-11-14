@@ -12,6 +12,7 @@ Write a function that takes a `Db.Connection` instead of opening one. A test the
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def adults(conn: Db.Connection, min_age: Int) -> Result[Int]
   rows = try Db.query(conn, "select name from users where age >= ?", [Db.Value.Int(min_age)])
@@ -19,7 +20,7 @@ def adults(conn: Db.Connection, min_age: Int) -> Result[Int]
 end
 
 def main() -> Void
-  conn = Db.open("sqlite::memory:").unwrap!
+  conn = Db.open("sqlite::memory:", [Sqlite.driver()]).unwrap!
   Db.execute(conn, "create table users (name text not null, age integer)", []).unwrap!
   Db.execute(conn, "insert into users (name, age) values ('Ana', 31), ('Bob', 17)", []).unwrap!
   puts(adults(conn, 18).unwrap!)
@@ -45,7 +46,7 @@ agentica test
 
 `make check` runs `agentica check` on every `.agc` file. `agentica test`, run in `src/db`, the package folder, runs the features and the unit tests.
 
-Developing the package needs Agentica 0.27.0 or later and a C compiler, and CI runs `agentica test --jobs 4` (four test files at once, which the specs allow); using the package still needs only the version in the README.
+Developing the package needs Agentica 0.31.0 or later and a C compiler, and CI runs `agentica test --jobs 4` (four scenarios at once, which the specs allow); using the package still needs only the version in the README.
 
 - SQLite needs no server. Without a PostgreSQL or MySQL server run only the SQLite scenarios, which have "on sqlite" in their name: `agentica test --only "on sqlite"`.
 - The PostgreSQL scenarios read `AGENTICA_DB_POSTGRES_URL`, and the MySQL ones read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail: no scenario is skipped.

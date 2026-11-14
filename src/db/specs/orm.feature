@@ -2,7 +2,7 @@ Feature: Orm
   Orm reads the rows of a query into plain structs, with the schema of a struct (the table, the columns and the
   codec of the struct). The scenarios use a `people` table and the struct Person of the driver:
   id: Int = 0, name: String, age: Optional[Int] = none, admin: Bool, score: Float. The struct Partial is the same with
-  age: JsonField[Int], which tells a column the query left out. The cells of a result show the fields of the structs
+  age: JSON.Field[Int], which tells a column the query left out. The cells of a result show the fields of the structs
   read: an age shows its value or Null, and the age of a Partial shows `Text absent` when the query left it out.
 
   Scenario Outline: A query reads its rows into structs, with NULL and booleans, on <adapter>

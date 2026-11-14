@@ -5,49 +5,39 @@
 
 import SqliteLock from "lock"
 
-export SQLITE_LOCKED = 6
-export SQLITE_INTERRUPT = 9
+SQLITE_LOCKED = 6
+SQLITE_INTERRUPT = 9
 ## The text of a statement that SQLite interrupted, or that did not start because its deadline had passed.
-export INTERRUPTED = "sqlite error 9: interrupted"
-# The sleep between two tries starts at 1 ms, grows with the time already waited and stops at 25 ms.
-MAX_PAUSE_MS = 25
+INTERRUPTED = "sqlite error 9: interrupted"
 
 ## How long a statement waits for a lock: `busy_timeout` ms from its first refusal, and never past `deadline` (a
 ## `Time.monotonic_ms`, 0 for none), the end of the `timeout_ms` of the call.
-export struct Wait
+struct Wait
   busy_timeout: Int
   deadline: Int = 0
 end
 
 ## Whether a result code is SQLITE_BUSY or SQLITE_LOCKED, the two that can be a lock of another connection.
-export def lock_code?(code: Int) -> Bool
-  return code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED
-end
+def lock_code?(code: Int) -> Bool = code == SqliteLock.SQLITE_BUSY or code == SQLITE_LOCKED
 
 ## True when `code` (with its `extended` code) says that another connection holds a lock and the wait that began at
 ## `started` is not over, so the caller pauses and tries again.
-export def lock_wait?(wait: Wait, code: Int, extended: Int, started: Int) -> Bool
-  if not lock_code?(code) or not SqliteLock.waitable?(extended)
-    return false
-  end
+def lock_wait?(wait: Wait, code: Int, extended: Int, started: Int) -> Bool
+  return false if not lock_code?(code) or not SqliteLock.waitable?(extended)
 
   now = Time.monotonic_ms()
-  if wait.deadline > 0 and now >= wait.deadline
-    return false
-  end
+  return false if wait.deadline > 0 and now >= wait.deadline
 
-  return now - started < wait.busy_timeout
+  now - started < wait.busy_timeout
 end
 
 ## Whether the deadline of the call has passed. An interrupt that came before the first step is lost (SQLite ignores
 ## one while no statement runs), so the drivers ask this before it.
-export def expired?(wait: Wait) -> Bool
-  return wait.deadline > 0 and Time.monotonic_ms() >= wait.deadline
-end
+def expired?(wait: Wait) -> Bool = wait.deadline > 0 and Time.monotonic_ms() >= wait.deadline
 
 ## Sleeps a little: the task parks, so its thread of the compute pool is free for the connection that holds the lock.
 ## The sleep never goes past the end of the wait, nor the deadline of the call.
-export def pause(wait: Wait, started: Int) -> Void
+def pause(wait: Wait, started: Int) -> Void
   now = Time.monotonic_ms()
   waited = now - started
   length = waited / 4 + 1
@@ -70,3 +60,8 @@ export def pause(wait: Wait, started: Int) -> Void
 
   Task.sleep(length)
 end
+
+private
+
+# The sleep between two tries starts at 1 ms, grows with the time already waited and stops at 25 ms.
+MAX_PAUSE_MS = 25

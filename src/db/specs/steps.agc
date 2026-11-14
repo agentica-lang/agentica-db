@@ -5,14 +5,18 @@
 ## `--only "on sqlite"`.
 
 import BDD from "std/bdd"
-import MysqlNative from "../mysql/native"
 import Protocol from "protocol"
 import {Request} from "protocol"
+
+private
 
 URL_VARIABLES = {"postgres": "AGENTICA_DB_POSTGRES_URL", "mysql": "AGENTICA_DB_MYSQL_URL"}
 REPLY_MS = 60_000
 SCRATCH_VARIABLE = "AGENTICA_DB_SCRATCH"
 IO_TIMEOUT_MS = 5_000
+# A cold build of a native module runs the C compiler.
+BUILD_TIMEOUT_MS = 25_000
+MISSING_COMPILER = "agentica-db-no-such-cc"
 # The `timeout_ms` of a call that takes the one of the connection (`Db.CONNECTION_DEFAULT`).
 CONNECTION_DEFAULT = -1
 
@@ -82,6 +86,21 @@ def main() -> Void
     BDD.step("I keep a connection of the pool for {int} ms") do |ctx, args|
       send(ctx, Request(op: "pool_hold", number: args[0].to_i!))
     end,
+    BDD.step("I cancel a task that keeps a connection of the pool for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_cancel_holder", number: args[0].to_i!))
+    end,
+    BDD.step("I cancel a task that holds a transaction with {string} for {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_cancel_holder", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("I execute {string} in the pool within {int} ms") do |ctx, args|
+      send(ctx, Request(op: "pool_write_within", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("a block of the pool runs in the task of its caller") do |ctx, _args|
+      send(ctx, Request(op: "pool_runs_in", text: "caller"))
+    end,
+    BDD.step("a block of the pool runs in a task of its own") do |ctx, _args|
+      send(ctx, Request(op: "pool_runs_in", text: "pool"))
+    end,
     BDD.step(
       "another task keeps a connection of the pool for {int} ms while I query {string} in the pool",
     ) do |ctx, args| send(ctx, Request(op: "pool_query_while_held", text: args[1], number: args[0].to_i!)) end,
@@ -94,6 +113,11 @@ def main() -> Void
     end,
     BDD.step("I run these statements in a transaction that fails with {string}:") do |ctx, args|
       send(ctx, Request(op: "transaction", text: args[0], table: BDD.table(ctx)))
+    end,
+    BDD.step(
+      "I run these statements in a transaction that fails with {string}, kind {string} and code {int}:",
+    ) do |ctx, args|
+      send(ctx, Request(op: "transaction", text: args[0], kind: args[1], number: args[2].to_i!, table: BDD.table(ctx)))
     end,
     BDD.step("I run these statements in a transaction that gives a count:") do |ctx, _args|
       send(ctx, Request(op: "transaction", table: BDD.table(ctx), gives: true))
@@ -123,7 +147,19 @@ def main() -> Void
     BDD.step("a program whose native libraries are missing") do |ctx, _args|
       BDD.given_program(without_driver_choice(ctx), "fixtures/nolib/open.agc")
     end,
+    BDD.step("a program that has only the SQLite driver") do |ctx, _args|
+      BDD.given_program(without_driver_choice(ctx), "fixtures/sqlite_only.agc")
+    end,
     BDD.step("the program opens {string}") do |ctx, args| BDD.when_line(ctx, args[0]) end,
+    BDD.step("I compile {string} with an empty package cache") do |ctx, args| compile_cold(ctx, args[0], false) end,
+    BDD.step("I compile {string} with an empty package cache and no C compiler") do |ctx, args|
+      compile_cold(ctx, args[0], true)
+    end,
+    BDD.step("the build warns that the native module {string} is not built") do |ctx, args|
+      printed(ctx, "warning: native module #{args[0]} not built")
+    end,
+    BDD.step("the build makes the native module {string}") do |ctx, args| built(ctx, args[0], true) end,
+    BDD.step("the build never makes the native module {string}") do |ctx, args| built(ctx, args[0], false) end,
     BDD.step("the program answers a line starting with {string}", &answers_with),
     text_step("another task executes {string}", "execute_in_task"),
     BDD.step("another task on {string} queries {string} while I commit after {int} ms") do |ctx, args|
@@ -137,6 +173,9 @@ def main() -> Void
     end,
     BDD.step("another task on {string} holds the write lock for {int} ms while I open it") do |ctx, args|
       send(ctx, Request(op: "open_while_locked", text: args[0], number: args[1].to_i!))
+    end,
+    BDD.step("another task on {string} executes {string}") do |ctx, args|
+      send(ctx, Request(op: "execute_fresh", text: args[0], cells: [args[1]]))
     end,
     BDD.step("another task on {string} executes {string} and waits {int} ms") do |ctx, args|
       send(ctx, Request(op: "execute_waiting", text: args[0], cells: [args[1]], number: args[2].to_i!))
@@ -160,8 +199,11 @@ def main() -> Void
     BDD.step("I query {string} with a JSON list of {int} numbers, and no scheduler stops for {int} ms") do |ctx, args|
       send(ctx, Request(op: "query_big_json", text: args[0], number: args[1].to_i!, cells: [args[2]]))
     end,
+    BDD.step("I query {string} with a JSON list of {int} numbers") do |ctx, args|
+      send(ctx, Request(op: "query_json_list", text: args[0], number: args[1].to_i!))
+    end,
+    plain_step("I read how many short calls left their statement to the compute pool", "fallbacks"),
     plain_step("I read the statement cache", "statement_cache"),
-    BDD.step("the native MySQL driver runs here", &native_mysql_only),
     BDD.step("the server is MariaDB", &mariadb_only),
     text_step("I check that the connection runs the driver that {string} names", "driver_named"),
     BDD.step("a task that runs {string} is cancelled after {int} ms") do |ctx, args|
@@ -246,6 +288,9 @@ def main() -> Void
     text_step("it fails mentioning {string}", "expect_mentions"),
     text_step("the failure never shows {string}", "expect_hides"),
     BDD.step("a task leaves a connection open, and the server drops its session within {int} ms", &left_open),
+    BDD.step("no other session runs a statement with {string} within {int} ms") do |ctx, args|
+      send(ctx, Request(op: "none_running", text: args[0], number: args[1].to_i!))
+    end,
     BDD.step("another task keeps running during {string}, with gaps under {int} milliseconds") do |ctx, args|
       send(ctx, Request(op: "keep_running", text: args[0], number: args[1].to_i!))
     end,
@@ -254,34 +299,79 @@ end
 
 # A step that sends its one captured text.
 def text_step(pattern: String, op: String) -> BDD.Step
-  return BDD.step(pattern) do |ctx, args| send(ctx, Request(op: op, text: args[0])) end
+  BDD.step(pattern) do |ctx, args| send(ctx, Request(op: op, text: args[0])) end
 end
 
 # The program of the missing libraries takes the driver by itself: a run that names `native` would get "the native
 # driver is not built" in place of the error of the FFI library, which this scenario is about.
 def without_driver_choice(ctx: BDD.Context) -> BDD.Context
   sqlite = BDD.given_env(ctx, "AGENTICA_DB_SQLITE_DRIVER", "")
-  return BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
+  BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
 end
 
 # A step that captures nothing.
 def plain_step(pattern: String, op: String) -> BDD.Step
-  return BDD.step(pattern) do |ctx, _args| send(ctx, Request(op: op)) end
+  BDD.step(pattern) do |ctx, _args| send(ctx, Request(op: op)) end
 end
 
 # The program of `fixtures/nolib` answers each url with one line.
 def answers_with(ctx: BDD.Context, args: List[String]) -> BDD.Context
   answer = BDD.read_line(ctx, REPLY_MS).unwrap_or("no answer")
-  return BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
+  BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
 end
 
-# The scenarios of the native MySQL driver are skipped while it is off (`MysqlNative.available?`).
-def native_mysql_only(ctx: BDD.Context, _args: List[String]) -> BDD.Context
-  if MysqlNative.available?()
-    return ctx
+# Compiles the program `program` (a path from specs/) with a package cache of its own, empty, so that every native
+# module it reaches is built (with a C compiler that does not exist when `no_compiler`), and keeps what
+# agentica printed.
+def compile_cold(ctx: BDD.Context, program: String, no_compiler: Bool) -> BDD.Context
+  cache = "#{Path.cwd().unwrap!}/tmp/cache-#{OpenSSL.Random.hex(8)}"
+  cleaned = BDD.after(ctx) do |_|
+    _ = Path.remove(cache, IO_TIMEOUT_MS)
+    ok()
   end
 
-  return BDD.skip(ctx, "the native MySQL driver is off until agentica-lang/agentica#1193")
+  return BDD.assert(cleaned, false, "cannot make #{cache}") if not Dir.mkdir(cache, IO_TIMEOUT_MS).ok?
+
+  env = {"XDG_CACHE_HOME": cache, "LOCALAPPDATA": cache}
+  if no_compiler
+    env = env.put("CC", MISSING_COMPILER)
+  end
+
+  options = Process.Options(timeout_ms: BUILD_TIMEOUT_MS, env: env)
+  compile = ["compile", "specs/#{program}", "-o", "#{cache}/program.agcb"]
+  started = Process.spawn_captured("agentica", compile, options)
+  case started
+    error(message) -> BDD.assert(cleaned, false, "agentica did not start: #{message.message}")
+    ok(process) ->
+      code = Process.wait(process, BUILD_TIMEOUT_MS).unwrap_or(-1)
+      printed = ""
+      case Process.output(process, IO_TIMEOUT_MS)
+        ok(output) -> printed = output.stdout + output.stderr
+        error(message) -> printed = message.message
+      end
+
+      checked = BDD.assert(cleaned, code == 0, "agentica compile exited with #{code}: #{printed}")
+      BDD.set(checked, "build", JSON.from(printed))
+  end
+end
+
+# Whether the build that `compile_cold` ran made the native module `name` (`built native NAME:`), as `wanted` says.
+def built(ctx: BDD.Context, name: String, wanted: Bool) -> BDD.Context
+  text = build_output(ctx)
+  made = text.include?("built native #{name}:")
+  BDD.assert(ctx, made == wanted, "the build printed #{text.inspect}")
+end
+
+def printed(ctx: BDD.Context, wanted: String) -> BDD.Context
+  text = build_output(ctx)
+  BDD.assert(ctx, text.include?(wanted), "the build printed #{text.inspect}")
+end
+
+def build_output(ctx: BDD.Context) -> String
+  case BDD.get(ctx, "build")
+    ok(value) -> JSON.string(value).unwrap_or("")
+    error(_) -> ""
+  end
 end
 
 # A scenario of what MariaDB alone has (`RETURNING`) is skipped on MySQL. The driver answers with the flavor of its
@@ -289,15 +379,13 @@ end
 def mariadb_only(ctx: BDD.Context, _args: List[String]) -> BDD.Context
   asked = BDD.when_line(start(ctx), JSON.encode(Request(op: "mysql_flavor")))
   answer = BDD.read_line(asked, REPLY_MS).unwrap_or("no answer")
-  if answer == "mysql"
-    return BDD.skip(asked, "MariaDB only")
-  end
+  return BDD.skip(asked, "MariaDB only") if answer == "mysql"
 
-  return BDD.assert(asked, answer == "mariadb", "the driver answered #{answer.inspect}")
+  BDD.assert(asked, answer == "mariadb", "the driver answered #{answer.inspect}")
 end
 
 def left_open(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return send(ctx, Request(op: "leave_open", number: args[0].to_i!))
+  send(ctx, Request(op: "leave_open", number: args[0].to_i!))
 end
 
 def open_database(ctx: BDD.Context, args: List[String]) -> BDD.Context
@@ -306,7 +394,7 @@ def open_database(ctx: BDD.Context, args: List[String]) -> BDD.Context
   missing = not variable.empty? and not System.env(variable).ok?
   message = "#{variable} is not set: set it, or run only the SQLite scenarios with --only \"on sqlite\""
   checked = BDD.assert(ctx, not missing, message)
-  return send(checked, Request(op: "open", text: adapter))
+  send(checked, Request(op: "open", text: adapter))
 end
 
 # Sends the request to the driver, started on the first one, and checks that it answers ok. The driver puts what went
@@ -314,13 +402,11 @@ end
 def send(ctx: BDD.Context, req: Request) -> BDD.Context
   running = start(ctx)
   asked = BDD.when_line(running, JSON.encode(req))
-  return BDD.then_line(asked, Protocol.OK, REPLY_MS)
+  BDD.then_line(asked, Protocol.OK, REPLY_MS)
 end
 
 def start(ctx: BDD.Context) -> BDD.Context
-  if BDD.get(ctx, "driver").ok?
-    return ctx
-  end
+  return ctx if BDD.get(ctx, "driver").ok?
 
   # `[SCRATCH]` is a folder of this scenario under tmp/, so that test files that run at once never share, or empty,
   # one folder. The driver makes it when a scenario needs it; the hook removes it, and the scenario is not failed
@@ -332,15 +418,13 @@ def start(ctx: BDD.Context) -> BDD.Context
     ok()
   end
 
-  return BDD.set(BDD.given_program(named, "driver.agc"), "driver", JSON.from(true))
+  BDD.set(BDD.given_program(named, "driver.agc"), "driver", JSON.from(true))
 end
 
 # A scenario that failed between `read_only` and `writable` leaves a read-only file, which Windows refuses to remove
 # (the driver has the same two commands in `set_access`). Only when the file exists: a process costs time.
 def make_writable(path: String) -> Void
-  if not File.stat(path, IO_TIMEOUT_MS).ok?
-    return
-  end
+  return if not File.stat(path, IO_TIMEOUT_MS).ok?
 
   command = "chmod"
   args = ["644", path]
@@ -349,21 +433,17 @@ def make_writable(path: String) -> Void
     args = ["-R", path.replace("/", "\\")]
   end
 
-  started = Process.spawn(command, args, IO_TIMEOUT_MS)
+  started = Process.spawn(command, args, Process.Options(timeout_ms: IO_TIMEOUT_MS))
   if started.ok?
     _ = Process.wait(started.unwrap!, IO_TIMEOUT_MS)
   end
 end
 
 # The Data Table of a step is a header row and one row per item.
-def body(ctx: BDD.Context) -> List[List[String]]
-  return BDD.table(ctx).drop(1)
-end
+def body(ctx: BDD.Context) -> List[List[String]] = BDD.table(ctx).drop(1)
 
 def with_params(op: String, sql: String, ctx: BDD.Context) -> Request
-  return Request(op: op, text: sql, cells: body(ctx).map do |row| row[0] end)
+  Request(op: op, text: sql, cells: body(ctx).map do |row| row[0] end)
 end
 
-def rows_request(ctx: BDD.Context) -> Request
-  return Request(op: "expect_rows", table: BDD.table(ctx))
-end
+def rows_request(ctx: BDD.Context) -> Request = Request(op: "expect_rows", table: BDD.table(ctx))

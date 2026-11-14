@@ -1,11 +1,9 @@
 name = "db"
 
-# db_pool.agc is a pool of connections on the generic pool (src/pool, a member of the workspace of the root
-# agentica.toml). In the repository the workspace reads it from its folder, so an edit there is seen at once; a project
-# outside the repository fetches the commit below, which must hold the pool at src/pool with the queue-full error that
-# names `max_waiting` (the commit of the pull request that added the option; move it to a tag at a release).
+# db_pool.agc is a pool of connections on the generic pool, the `pool` package of agentica-lang/packages (its own tag,
+# `pool-X.Y.Z`; its releases are in that repository).
 [dependencies]
-pool = { git = "https://github.com/agentica-lang/agentica-db", ref = "7df56bf2a4c6780a04fb9f605dcd7a78d4053ebf", subdir = "src/pool" }
+pool = { git = "https://github.com/agentica-lang/packages", tag = "pool-0.1.1", subdir = "pool" }
 
 # The system SQLite; `extern "sqlite3"` in sqlite/sqlite.agc opens the entry of the running system.
 [native.sqlite3]
@@ -14,11 +12,13 @@ macos = { system = "libsqlite3.dylib" }
 windows = { system = "winsqlite3.dll" }
 
 # The native SQLite driver (sqlite/native.agc), built from native/db_sqlite.c with the system C compiler into the
-# package cache by the first run or compile of a program that imports the package, a fetched package too. It opens the
-# system SQLite itself (the library of [native.sqlite3]), so the build needs no SQLite headers. When the library does
-# not load, the adapter runs the FFI driver (sqlite/ffi.agc).
+# package cache by the first run or compile of a program that imports the SQLite driver (sqlite.agc), a fetched package
+# too. It opens the system SQLite itself (the library of [native.sqlite3]), so the build needs no SQLite headers. It is
+# optional: when it cannot be built (no C compiler), Agentica warns once and the adapter runs the FFI driver
+# (sqlite/ffi.agc), as it does when the library does not load.
 [native.db_sqlite]
 build = { sources = ["native/db_sqlite.c"] }
+optional = true
 linux = { system = "libdb_sqlite.so" }
 macos = { system = "libdb_sqlite.dylib" }
 windows = { system = "db_sqlite.dll" }
@@ -31,11 +31,13 @@ linux = { system = "libpq.so.5" }
 macos = { system = "libpq.5.dylib" }
 windows = { system = "libpq.dll" }
 
-# The native PostgreSQL driver (postgres/native.agc), built from native/db_postgres.c like db_sqlite. It opens the
-# system libpq itself (the library of [native.pq]; on macOS from DYLD_LIBRARY_PATH, Homebrew or Postgres.app), so the
-# build needs no libpq headers. When the library does not load, the adapter runs the FFI driver (postgres/ffi.agc).
+# The native PostgreSQL driver (postgres/native.agc), built from native/db_postgres.c like db_sqlite, by a program that
+# imports the PostgreSQL driver (postgres.agc). It opens the system libpq itself (the library of [native.pq]; on macOS
+# from DYLD_LIBRARY_PATH, Homebrew or Postgres.app), so the build needs no libpq headers. Optional like db_sqlite: when
+# it cannot be built or does not load, the adapter runs the FFI driver (postgres/ffi.agc).
 [native.db_postgres]
 build = { sources = ["native/db_postgres.c"] }
+optional = true
 linux = { system = "libdb_postgres.so" }
 macos = { system = "libdb_postgres.dylib" }
 windows = { system = "db_postgres.dll" }
@@ -48,12 +50,13 @@ linux = { system = "libmariadb.so.3" }
 macos = { system = "libmariadb.3.dylib" }
 windows = { system = "libmariadb.dll" }
 
-# The native MySQL driver (mysql/native.agc), built from native/db_mysql.c like db_sqlite. It opens the system
-# libmariadb itself (the library of [native.mariadb]), so the build needs no client headers. It is off until it runs
-# the library under an_blocking (agentica-lang/agentica#1193): until then the adapter runs the FFI driver
-# (mysql/ffi.agc). Once on, it runs on Linux only; elsewhere, and when the library does not load, the FFI one runs.
+# The native MySQL driver (mysql/native.agc), built from native/db_mysql.c like db_sqlite, by a program that imports
+# the MySQL driver (mysql.agc). It opens the system libmariadb itself (the library of [native.mariadb]), so the build
+# needs no client headers. It runs on Linux only; elsewhere, and when it cannot be built or does not load, the adapter
+# runs the FFI driver (mysql/ffi.agc).
 [native.db_mysql]
 build = { sources = ["native/db_mysql.c"] }
+optional = true
 linux = { system = "libdb_mysql.so" }
 macos = { system = "libdb_mysql.dylib" }
 windows = { system = "db_mysql.dll" }

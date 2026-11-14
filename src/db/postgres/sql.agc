@@ -5,6 +5,57 @@
 ## (`-- ?`, `/* ? */`, which nest) stays as it is. The PostgreSQL operators that contain `?` (jsonb `?`, `?|`, `?&`)
 ## are not available: call `jsonb_exists`, `jsonb_exists_any` or `jsonb_exists_all`.
 
+## The sql with `$n` placeholders, how many there are, and its first word in lower case (`begin`, `commit`,
+## `select`; empty when the statement starts with something else), read after any whitespace and comments.
+struct Translated
+  sql: String
+  count: Int
+  verb: String
+end
+
+## Translates `?` to `$1..$n`. An error is `postgres error: <message>` for a NUL, a second statement, no statement
+## at all, or a `$n` written by hand.
+def translate(sql: String) -> Result[Translated]
+  return error("postgres error: the sql contains a NUL character") if sql.include?(String.from_code(0))
+
+  bytes = sql.bytes
+  scan = Scan(parts: [], from: 0, at: 0, count: 0, depth: 0, ended: false, content: false, verb: "")
+  while scan.at < bytes.size
+    scan = try step(bytes, scan)
+  end
+
+  return error("postgres error: the sql has no statement") if not scan.content
+
+  translated = try String.from_bytes(Bytes.concat(scan.parts.push(bytes.drop(scan.from))))
+  ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
+end
+
+## The first `limit` bare words of the sql in lower case, outside literals, quoted names and comments (`deallocate
+## mine /* all */` gives `["deallocate", "mine"]`). A scan of its own, apart from `translate`, so that only the
+## statements that need it pay for it.
+def first_words(sql: String, limit: Int) -> List[String]
+  bytes = sql.bytes
+  words: List[String] = []
+  at = 0
+  while at < bytes.size and words.size < limit
+    byte = bytes[at]
+    stop = span_end(bytes, at)
+    if stop > at
+      at = stop
+    elsif (letter?(byte) or byte >= FIRST_NON_ASCII) and not word_before?(bytes, at)
+      word = bare_word_at(bytes, at)
+      words = words.push(word.downcase)
+      at = word_end(bytes, at)
+    else
+      at += 1
+    end
+  end
+
+  words
+end
+
+private
+
 TAB = 9
 NEWLINE = 10
 CARRIAGE_RETURN = 13
@@ -31,14 +82,6 @@ LOWER_E = 101
 LOWER_Z = 122
 FIRST_NON_ASCII = 128
 
-## The sql with `$n` placeholders, how many there are, and its first word in lower case (`begin`, `commit`,
-## `select`; empty when the statement starts with something else), read after any whitespace and comments.
-export struct Translated
-  sql: String
-  count: Int
-  verb: String
-end
-
 # The state of the walk: the parts of the translated sql so far, the start of the bytes not copied yet (they are
 # copied as they are, in one slice, when a placeholder or the end comes), the next byte to read, and what has been
 # seen.
@@ -51,51 +94,6 @@ struct Scan
   ended: Bool
   content: Bool
   verb: String
-end
-
-## Translates `?` to `$1..$n`. An error is `postgres error: <message>` for a NUL, a second statement, no statement
-## at all, or a `$n` written by hand.
-export def translate(sql: String) -> Result[Translated]
-  if sql.include?(String.from_code(0))
-    return error("postgres error: the sql contains a NUL character")
-  end
-
-  bytes = sql.bytes
-  scan = Scan(parts: [], from: 0, at: 0, count: 0, depth: 0, ended: false, content: false, verb: "")
-  while scan.at < bytes.size
-    scan = try step(bytes, scan)
-  end
-
-  if not scan.content
-    return error("postgres error: the sql has no statement")
-  end
-
-  translated = try String.from_bytes(Bytes.concat(scan.parts.push(bytes.drop(scan.from))))
-  return ok(Translated(sql: translated, count: scan.count, verb: scan.verb))
-end
-
-## The first `limit` bare words of the sql in lower case, outside literals, quoted names and comments (`deallocate
-## mine /* all */` gives `["deallocate", "mine"]`). A scan of its own, apart from `translate`, so that only the
-## statements that need it pay for it.
-export def first_words(sql: String, limit: Int) -> List[String]
-  bytes = sql.bytes
-  words: List[String] = []
-  at = 0
-  while at < bytes.size and words.size < limit
-    byte = bytes[at]
-    stop = span_end(bytes, at)
-    if stop > at
-      at = stop
-    elsif (letter?(byte) or byte >= FIRST_NON_ASCII) and not word_before?(bytes, at)
-      word = bare_word_at(bytes, at)
-      words = words.push(word.downcase)
-      at = word_end(bytes, at)
-    else
-      at += 1
-    end
-  end
-
-  return words
 end
 
 # Reads one literal, comment, placeholder or byte.
@@ -113,7 +111,7 @@ def step(bytes: Bytes, scan: Scan) -> Result[Scan]
     return ok(scan.with(at: at + 1))
   end
 
-  return other(bytes, scan)
+  other(bytes, scan)
 end
 
 # A literal is content, a comment is not.
@@ -123,14 +121,14 @@ def span(bytes: Bytes, scan: Scan, stop: Int) -> Result[Scan]
     seen = try with_content(bytes, scan)
   end
 
-  return ok(seen.with(at: stop))
+  ok(seen.with(at: stop))
 end
 
 def placeholder(bytes: Bytes, scan: Scan) -> Result[Scan]
   seen = try with_content(bytes, scan)
   count = seen.count + 1
   parts = seen.parts.push(bytes.slice(seen.from, seen.at - seen.from)).push("$#{count}".bytes)
-  return ok(seen.with(parts: parts, from: seen.at + 1, count: count, at: seen.at + 1))
+  ok(seen.with(parts: parts, from: seen.at + 1, count: count, at: seen.at + 1))
 end
 
 def other(bytes: Bytes, scan: Scan) -> Result[Scan]
@@ -141,20 +139,16 @@ def other(bytes: Bytes, scan: Scan) -> Result[Scan]
     return error("postgres error: write ? for a parameter, not a $n placeholder")
   end
 
-  return ok(seen.with(at: at + 1, depth: next_depth(seen.depth, byte)))
+  ok(seen.with(at: at + 1, depth: next_depth(seen.depth, byte)))
 end
 
 # Content after the end of the statement is a second statement. The first content gives the verb.
 def with_content(bytes: Bytes, scan: Scan) -> Result[Scan]
-  if scan.ended
-    return error(more_than_one())
-  end
+  return error(more_than_one()) if scan.ended
 
-  if scan.content
-    return ok(scan)
-  end
+  return ok(scan) if scan.content
 
-  return ok(scan.with(content: true, verb: word_at(bytes, scan.at)))
+  ok(scan.with(content: true, verb: word_at(bytes, scan.at)))
 end
 
 def word_at(bytes: Bytes, at: Int) -> String
@@ -164,7 +158,7 @@ def word_at(bytes: Bytes, at: Int) -> String
   end
 
   # A run of ASCII letters is always valid UTF-8, so the empty fallback never shows.
-  return String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
+  String.from_bytes(bytes.slice(at, stop - at)).unwrap_or("").downcase
 end
 
 def word_end(bytes: Bytes, at: Int) -> Int
@@ -173,17 +167,15 @@ def word_end(bytes: Bytes, at: Int) -> Int
     stop += 1
   end
 
-  return stop
+  stop
 end
 
 # A word of an identifier or keyword; its bytes outside ASCII come whole, so it is valid UTF-8.
 def bare_word_at(bytes: Bytes, at: Int) -> String
-  return String.from_bytes(bytes.slice(at, word_end(bytes, at) - at)).unwrap_or("")
+  String.from_bytes(bytes.slice(at, word_end(bytes, at) - at)).unwrap_or("")
 end
 
-def more_than_one() -> String
-  return "postgres error: the sql has more than one statement"
-end
+def more_than_one() -> String = "postgres error: the sql has more than one statement"
 
 # Parentheses are counted because a `;` inside them belongs to the statement (a rule with several actions).
 def next_depth(depth: Int, byte: Int) -> Int
@@ -193,37 +185,25 @@ def next_depth(depth: Int, byte: Int) -> Int
     return depth - 1
   end
 
-  return depth
+  depth
 end
 
-def space?(byte: Int) -> Bool
-  return byte == SPACE or (byte >= TAB and byte <= CARRIAGE_RETURN)
-end
+def space?(byte: Int) -> Bool = byte == SPACE or (byte >= TAB and byte <= CARRIAGE_RETURN)
 
-def digit?(byte: Int) -> Bool
-  return byte >= DIGIT_ZERO and byte <= DIGIT_NINE
-end
+def digit?(byte: Int) -> Bool = byte >= DIGIT_ZERO and byte <= DIGIT_NINE
 
-def letter?(byte: Int) -> Bool
-  return (byte >= UPPER_A and byte <= UPPER_Z) or (byte >= LOWER_A and byte <= LOWER_Z)
-end
+def letter?(byte: Int) -> Bool = (byte >= UPPER_A and byte <= UPPER_Z) or (byte >= LOWER_A and byte <= LOWER_Z)
 
 # Characters of an identifier; a byte outside ASCII belongs to a letter of another script.
 def word_byte?(byte: Int) -> Bool
-  return letter?(byte) or digit?(byte) or byte == UNDERSCORE or byte == DOLLAR or byte >= FIRST_NON_ASCII
+  letter?(byte) or digit?(byte) or byte == UNDERSCORE or byte == DOLLAR or byte >= FIRST_NON_ASCII
 end
 
-def word_before?(bytes: Bytes, i: Int) -> Bool
-  return i > 0 and word_byte?(bytes[i - 1])
-end
+def word_before?(bytes: Bytes, i: Int) -> Bool = i > 0 and word_byte?(bytes[i - 1])
 
-def digit_after?(bytes: Bytes, i: Int) -> Bool
-  return i + 1 < bytes.size and digit?(bytes[i + 1])
-end
+def digit_after?(bytes: Bytes, i: Int) -> Bool = i + 1 < bytes.size and digit?(bytes[i + 1])
 
-def comment_at?(bytes: Bytes, i: Int) -> Bool
-  return bytes[i] == MINUS or bytes[i] == SLASH
-end
+def comment_at?(bytes: Bytes, i: Int) -> Bool = bytes[i] == MINUS or bytes[i] == SLASH
 
 # The index after the literal or comment that starts at `i`, or `i` when none starts there. One that is not
 # closed runs to the end of the sql; the server then reports the syntax error.
@@ -241,21 +221,17 @@ def span_end(bytes: Bytes, i: Int) -> Int
     return dollar_end(bytes, i)
   end
 
-  return i
+  i
 end
 
 # E'...' is the only string where a backslash escapes: the E must not end a longer word.
 def escape_string?(bytes: Bytes, i: Int) -> Bool
-  if i == 0
-    return false
-  end
+  return false if i == 0
 
   prefix = bytes[i - 1]
-  if prefix != UPPER_E and prefix != LOWER_E
-    return false
-  end
+  return false if prefix != UPPER_E and prefix != LOWER_E
 
-  return not word_before?(bytes, i - 1)
+  not word_before?(bytes, i - 1)
 end
 
 # A quote doubled inside the literal is a quote of the text, not its end.
@@ -275,7 +251,7 @@ def quoted_end(bytes: Bytes, i: Int, backslash: Bool) -> Int
     end
   end
 
-  return bytes.size
+  bytes.size
 end
 
 # PostgreSQL ends a `--` comment at \n or \r.
@@ -285,7 +261,7 @@ def line_end(bytes: Bytes, i: Int) -> Int
     at += 1
   end
 
-  return at
+  at
 end
 
 # Block comments nest in PostgreSQL.
@@ -304,11 +280,9 @@ def block_end(bytes: Bytes, i: Int) -> Int
     end
   end
 
-  if at > bytes.size
-    return bytes.size
-  end
+  return bytes.size if at > bytes.size
 
-  return at
+  at
 end
 
 # `$tag$ ... $tag$`, with an empty tag as `$$`. A tag does not start with a digit, so `$1` is not a quote.
@@ -318,41 +292,31 @@ def dollar_end(bytes: Bytes, i: Int) -> Int
     tag_end += 1
   end
 
-  if tag_end >= bytes.size or bytes[tag_end] != DOLLAR
-    return i
-  end
+  return i if tag_end >= bytes.size or bytes[tag_end] != DOLLAR
 
   tag = bytes.slice(i, tag_end + 1 - i)
   at = tag_end + 1
   while at < bytes.size
-    if bytes[at] == DOLLAR and matches_at?(bytes, at, tag)
-      return at + tag.size
-    end
+    return at + tag.size if bytes[at] == DOLLAR and matches_at?(bytes, at, tag)
 
     at += 1
   end
 
-  return bytes.size
+  bytes.size
 end
 
 def tag_byte?(byte: Int, first: Bool) -> Bool
-  if first
-    return letter?(byte) or byte == UNDERSCORE or byte >= FIRST_NON_ASCII
-  end
+  return letter?(byte) or byte == UNDERSCORE or byte >= FIRST_NON_ASCII if first
 
-  return letter?(byte) or digit?(byte) or byte == UNDERSCORE or byte >= FIRST_NON_ASCII
+  letter?(byte) or digit?(byte) or byte == UNDERSCORE or byte >= FIRST_NON_ASCII
 end
 
 def matches_at?(bytes: Bytes, at: Int, tag: Bytes) -> Bool
-  if at + tag.size > bytes.size
-    return false
-  end
+  return false if at + tag.size > bytes.size
 
   for offset in 0...tag.size
-    if bytes[at + offset] != tag[offset]
-      return false
-    end
+    return false if bytes[at + offset] != tag[offset]
   end
 
-  return true
+  true
 end

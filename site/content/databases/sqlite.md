@@ -10,10 +10,11 @@ The SQLite adapter uses the system `libsqlite3`. It needs no server, so it is al
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def main() -> Void
-  file = Db.open("sqlite:app.db")
-  memory = Db.open("sqlite::memory:")
+  file = Db.open("sqlite:app.db", [Sqlite.driver()])
+  memory = Db.open("sqlite::memory:", [Sqlite.driver()])
   puts(file.ok?)
   puts(memory.ok?)
   Db.close(memory.unwrap!)
@@ -49,9 +50,10 @@ A connection is set up for a web app. The parameters after a `?` change the sett
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def main() -> Void
-  case Db.open("sqlite::memory:?fts5=required")
+  case Db.open("sqlite::memory:?fts5=required", [Sqlite.driver()])
     error(message) -> puts(message)
     ok(conn) ->
       created = Db.execute(conn, "create virtual table notes using fts5(body, tokenize = porter)", [])
@@ -80,18 +82,18 @@ true
 
 Two drivers run the statements, with the same results and errors:
 
-- The native driver is a small C module of the package (`src/db/native/db_sqlite.c`) that opens the system SQLite itself. Each connection keeps up to `statement_cache` prepared statements, keyed by the sql text: a statement that ran before is not parsed again, and the one used least long ago is finalized when the cache is full. A cached read (`select`, `with`, `values`, `PRAGMA data_version` or `PRAGMA user_version`) runs whole in one short call on the scheduler while it stays small (about 100 µs of SQLite work, 100 rows, and 256 KiB of rows or of parameters) and never waits there for another task; a `count(*)` of a whole table and any other statement run on the compute pool, one call per `batch_rows` rows or `batch_bytes` bytes. The pragmas that `open` runs are not cached. Closing the connection finalizes its statements.
+- The native driver is a small C module of the package (`src/db/native/db_sqlite.c`) that opens the system SQLite itself. Each connection keeps up to `statement_cache` prepared statements, keyed by the sql text: a statement that ran before is not parsed again, and the one used least long ago is finalized when the cache is full. A cached read (`select`, `with`, `values`, `PRAGMA data_version` or `PRAGMA user_version`) runs whole in one short call on the scheduler while it stays small (about 100 µs of SQLite work, 100 rows, and 256 KiB of rows or of parameters) and never waits there for another task; a `count(*)` of a whole table and any other statement run on the compute pool, one call per `batch_rows` rows or `batch_bytes` bytes. The pragmas that `open` runs are not cached. Closing the connection finalizes its statements. `Db.statement_cache(conn)` gives the counters of the cache (`size`, `capacity`, `hits`, `misses`, `evictions`, `shorts`, `fallbacks`), and none on the FFI driver.
 - The FFI driver calls `libsqlite3` through `extern` functions: it prepares each statement at its call and steps it one row per call. Each query costs about ten times as much.
 
 In WAL mode the native driver runs short writes on the scheduler too. The `BEGIN` of `Db.transaction`, and a cached `insert`, `update`, `delete` or `replace` inside a transaction, run in one short call when the plan of the statement bounds its work (it finds its rows by key: no scan of a table or of a range of keys, no trigger, no sort, no virtual table such as FTS5), its last run took at most the 10000 SQLite instructions of a short read, and the write lock is free. A statement that would wait for the lock goes to the compute pool, which waits for it, so a short call never waits. So does a write that makes or reads a value or row over 256 KiB (the statement alone fails there and runs again on the compute pool), and every write of a transaction after 64 short ones or one on the compute pool. Any other write, a write outside a transaction and the `COMMIT` run on the compute pool, since a `COMMIT` can checkpoint the WAL, which copies it into the database file. In a [pool](/production/pooling/#sqlite-checkpoints) a checkpointer takes the checkpoints off the commits, and then the `COMMIT` of a transaction of short writes and the cheap writes outside a transaction run short too. The FFI driver runs every write on the compute pool.
 
-`open` takes the native driver when its library loads, else the FFI one. Agentica builds the library with the system C compiler (`cc`, or `CC`; no SQLite headers) at the first run or `agentica compile` of a program that imports the package, a `git` dependency or a `path` one, and keeps it in its package cache for the next runs: `native-build/` of `$XDG_CACHE_HOME/agentica/pkg` (by default `~/.cache/agentica/pkg`), or of `%LOCALAPPDATA%/agentica/cache/pkg` on Windows. Without a compiler that first run fails with `PKG-NATIVE-BUILD`, even for a program that uses no SQLite. The bytecode of `agentica compile` names the built library by its path and runs without a compiler; where that file is missing it runs the FFI driver. `AGENTICA_DB_SQLITE_DRIVER=native` makes a missing library an error of `open`, and `AGENTICA_DB_SQLITE_DRIVER=ffi` always runs the FFI driver.
+`open` takes the native driver when its library loads, else the FFI one. Agentica builds the library with the system C compiler (`cc`, or `CC`; no SQLite headers) at the first run or `agentica compile` of a program that imports the SQLite driver (`pkg/db/sqlite`), from a `git` dependency or a `path` one, and keeps it in its package cache for the next runs: `native-build/` of `$XDG_CACHE_HOME/agentica/pkg` (by default `~/.cache/agentica/pkg`), or of `%LOCALAPPDATA%/agentica/cache/pkg` on Windows. Without a compiler (or when the build fails) Agentica prints `warning: native module db_sqlite not built: REASON; the package runs without it` and the program runs the FFI driver; with no built library to cache, each run tries the build again and warns again, and the bytecode of `agentica compile` runs the FFI driver until it is compiled again with a compiler. A program that imports only another driver builds nothing for SQLite. The bytecode of `agentica compile` names the built library by its path and runs without a compiler; where that file is missing it runs the FFI driver. `AGENTICA_DB_SQLITE_DRIVER=native` makes a missing library an error of `open`, and `AGENTICA_DB_SQLITE_DRIVER=ffi` always runs the FFI driver.
 
 On Debian or Ubuntu, `apt-get install gcc libc6-dev` gives the compiler, and `libsqlite3-0` the SQLite of the run. In a Docker image either keep the compiler in the image that runs the program, or run `agentica compile` in a build stage and copy the bytecode and the package cache, at the same path, into the final image.
 
 ### Timeouts
 
-`timeout_ms` (a url parameter, or the `timeout_ms` argument of `Db.query` and `Db.execute`: `-1` takes the connection's, `0` has none) ends a statement that runs longer. A watchdog task calls `sqlite3_interrupt` when the time is over, and the statement fails with `sqlite error 9: interrupted`; `Db.timeout?(message)` tells it from other failures. The connection works after it. The wait for a lock (`busy_timeout`) ends at the same deadline and fails the same way.
+`timeout_ms` (a url parameter, or the `timeout_ms` argument of `Db.query` and `Db.execute`: `-1` takes the connection's, `0` has none) ends a statement that runs longer. A watchdog task calls `sqlite3_interrupt` when the time is over, and the statement fails with `sqlite error 9: interrupted`; `Db.timeout?(e.message)` tells it from other failures. The connection works after it. The wait for a lock (`busy_timeout`) ends at the same deadline and fails the same way.
 
 SQLite rolls back the whole transaction when it interrupts a write inside one, the earlier writes of the transaction included: `Db.in_transaction?(conn)` is then `false`. `Db.transaction` sends its `ROLLBACK` only when the transaction is still open, so its error is the timeout alone. A read that times out leaves the transaction open, and so does a statement whose time ran out before its first step: it does not run, so nothing is rolled back.
 

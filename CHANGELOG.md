@@ -4,6 +4,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A native MySQL and MariaDB driver on Linux (`[native.db_mysql]`, optional like the others): a query waits on the socket with no compute call, prepared statements are cached per connection (`Db.statement_cache` gives its counters) and rows come many per call; the url parameters `statement_cache`, `batch_rows` and `batch_bytes` set it up, and `AGENTICA_DB_MYSQL_DRIVER=native` or `ffi` picks a driver. Elsewhere, and without a C compiler, the FFI driver runs.
+
+### Changed
+
+- The native SQLite and PostgreSQL modules are optional: without a C compiler a program prints Agentica's warning and runs the FFI drivers, instead of failing with `PKG-NATIVE-BUILD` (this lifts the compiler requirement of 0.6.0).
+
+### Fixed
+
+- `DbPool`: a block that runs past `lease_ms`, or whose caller is cancelled, stops its statement on PostgreSQL (a cancel request) and on MySQL and MariaDB (`KILL QUERY` from a connection of its own), as on SQLite; it no longer runs on the server until its end.
+
+## [0.11.0] - 2026-11-14
+
+Needs Agentica 0.31.0 or later.
+
+### Changed
+
+- **Breaking:** `Db.open` and `DbPool.Options` take the drivers of the program, and a program builds the native modules of the drivers it imports only (an app on SQLite no longer builds the PostgreSQL one, about 1 s of its first run): `Db.open("sqlite:app.db", [Sqlite.driver()])` with `import Sqlite from "pkg/db/sqlite"` (also `pkg/db/postgres` and `pkg/db/mysql`), and `DbPool.Options(url: ..., drivers: [...])`.
+- A url whose driver was not passed is `db error: no driver for the url scheme ...`, and the error of an unknown scheme lists the schemes of the drivers passed (`expected sqlite:`), or says `no driver was given`.
+- **Breaking:** `Db.open_sqlite`, `Db.open_postgres` and `Db.open_mysql` are `Sqlite.open`, `Postgres.open` and `Mysql.open`.
+- **Breaking:** `Db.Connection` is a record of the functions of a connection, not an enum with a case per database: a match on `Db.Connection.Sqlite(...)` reads `conn.adapter` (a `Db.Adapter`), and `Db.statement_cache(conn)` gives the counters of the native drivers.
+- **Breaking:** `Task.spawn_owning` can no longer hand a connection to another task: open it in the task that keeps it, or use a pool.
+
+## [0.10.1] - 2026-11-14
+
+Needs Agentica 0.31.0 or later.
+
+### Fixed
+
+- SQLite: a statement on a table that another connection made waits for a lock held at its prepare, instead of failing at once with `no such table`.
+- SQLite native driver: a write whose plan grew between the two reads of its check (another connection changed the schema) runs in a normal call instead of reading past the check's arrays.
+
+## [0.10.0] - 2026-11-13
+
+Needs Agentica 0.31.0 or later.
+
+### Changed
+
+- **Breaking:** needs Agentica 0.31.0 or later: the sources use `private` (a file is public above a `private` line, so `export` before a declaration is gone) and the nested builtin names (`JSON.Value`, `JSON.Field`), and the errors of Agentica are records. The public names of the package do not change. CI tests with Agentica 0.31.0.
+- **Breaking:** `DbPool` is built on the `pool` package of agentica-lang/packages (tag `pool-0.1.1`), and `src/pool` is gone from this repository. `DbPool` and its public names do not change, and a project that imports `db_pool` outside the workspace gets `pool` as a dependency of `db`. What changes for users of `DbPool`: cancelling a caller now cancels its block, and the connection is interrupted, closed and replaced (it ran on for up to `lease_ms` before); `lease_ms: 0` is valid and runs the block in the caller with no limit, a crash in it is then the caller's own, the check-in of the connection is not bounded, and a block still running when the drain of `DbPool.close` ends finds its connection closed (on SQLite its next call crashes the caller), while with a `lease_ms` above 0 it is cancelled and its caller gets `pool error: closed`; the errors of the pool have kinds (`pool.timeout.checkout`, `pool.timeout.lease`, `pool.full`, `pool.closed`) and the same texts; the error of a setting out of range says `checkout_ms must be at least 1, and lease_ms 0 or more` (it said `checkout_ms and lease_ms must be at least 1`); the first health check of a connection comes at the first tick after `health_ms` of idleness; a connection is opened in a task of the pool of its own, not in the task that started the pool; a task that has used the pool counts its crash as observed (the run exits 0 when it is the only unobserved crash; the crash still prints), until [agentica-lang/agentica#1522](https://github.com/agentica-lang/agentica/issues/1522) is fixed; `DbPool.Pool` has no public fields `jobs` and `control` any more. The messages of `with` and the settings with their defaults are the same.
+- **Breaking, for the code of users:** `error(message)` in a `case` binds an `Error`, not a text. `Db.timeout?`, `DbPool.timeout?` and `Orm.classify` still take the text, so pass `e.message`. The messages of the failures are the same.
+- `Db.transaction` gives the error of its block as it is, with its kind, code and cause (it gave a plain error with the same text before); a failed rollback is still added to the message after a semicolon.
+
+## [0.10.0-alpha.1] - 2026-11-12
+
+Needs Agentica 0.31.0-alpha.1 or later.
+
+### Changed
+
+- **Breaking:** needs Agentica 0.31.0-alpha.1 or later (the HTTP types of `std/http`, `Error` reserved); CI tests
+  with Agentica 0.31.0-alpha.1.
+- **Breaking:** `Orm.Error` is `Orm.Failure` (same cases), since Agentica 0.31 reserves the type name `Error`.
+
+## [0.9.0] - 2026-11-12
+
+Needs Agentica 0.30.0 or later.
+
+### Changed
+
+- **Breaking:** needs Agentica 0.30.0 or later: the sources are formatted with `agentica fmt` of 0.30.0, which uses its syntax (implicit returns, guards, one-line defs). CI tests with Agentica 0.30.0.
+
+### Fixed
+
+- The sources compile with the next Agentica, which refuses a method call right after the `end` of a `do` block
+  (`CHECK-CHAIN-AFTER-END`); they still need Agentica 0.30.0 or later.
+
 ## [0.8.0] - 2026-11-08
 
 Needs Agentica 0.27.0 or later.
@@ -12,10 +79,6 @@ Needs Agentica 0.27.0 or later.
 
 - `AGENTICA_DB_MYSQL_DRIVER` is read by `Db.open` of a MySQL url: `ffi` (or unset) runs the FFI driver, the only one
   for now; `native` (which waits for agentica-lang/agentica#1193) and any other value are an error.
-- A native MySQL and MariaDB driver (`src/db/native/db_mysql.c`), built but off until Agentica ships `an_blocking`
-  (agentica-lang/agentica#1193): the FFI driver still runs everywhere. Once on, a query waits on the socket with no
-  compute call, prepared statements are cached per connection and rows come many per call. The url parameters
-  `statement_cache`, `batch_rows` and `batch_bytes` are read for it.
 - `DbPool.Options` has `max_waiting` (default 1000, 0 or more; 0 lets nobody wait): how many callers may wait for a
   connection.
 
@@ -210,7 +273,12 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.8.0...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...HEAD
+[0.11.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...0.11.0
+[0.10.1]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...0.10.1
+[0.10.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.0-alpha.1...0.10.0
+[0.10.0-alpha.1]: https://github.com/agentica-lang/agentica-db/compare/0.9.0...0.10.0-alpha.1
+[0.9.0]: https://github.com/agentica-lang/agentica-db/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/agentica-lang/agentica-db/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/agentica-lang/agentica-db/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/agentica-lang/agentica-db/compare/0.5.0...0.6.0

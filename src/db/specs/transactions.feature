@@ -40,6 +40,22 @@ Feature: Transactions
       | postgres |
       | mysql    |
 
+  Scenario Outline: A transaction passes on the kind and the code of the error of its block on <adapter>
+    Given a "<adapter>" database
+    And I execute "create temporary table users (name varchar(50) not null unique)"
+    When I run these statements in a transaction that fails with "remote call timed out", kind "net.timeout" and code 110:
+      | sql                                      |
+      | insert into users (name) values ('lost') |
+    Then it fails with exactly "net.timeout 110: remote call timed out"
+    And the query "select name from users" returns:
+      | name |
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
   Scenario Outline: A transaction that returns a value commits and gives it on <adapter>
     Given a "<adapter>" database
     And I execute "create temporary table users (name varchar(50) not null unique)"

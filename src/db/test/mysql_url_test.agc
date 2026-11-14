@@ -1,11 +1,11 @@
 import MysqlUrl from "../mysql/url"
 
-def target_of(url: String) -> MysqlUrl.Target
-  return MysqlUrl.parse(url).unwrap!
-end
+private
+
+def target_of(url: String) -> MysqlUrl.Target = MysqlUrl.parse(url).unwrap!
 
 def refused(url: String, message: String) -> Result[Void]
-  return Test.eq(MysqlUrl.parse(url).message, "mysql error: #{message}")
+  Test.eq(MysqlUrl.parse(url).message, "mysql error: #{message}")
 end
 
 def main() -> Void

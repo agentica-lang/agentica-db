@@ -17,6 +17,7 @@ The reads take the connection first.
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -25,7 +26,7 @@ struct User
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   try Db.execute(conn, "insert into users (name, age) values ('Ana', 31), ('Bob', null)", [])
   users = Orm.schema("users", User.codec)
@@ -71,7 +72,7 @@ done
 
 ## query
 
-The sql is yours, with `?` for the parameters. The columns it returns are matched with the fields by name, in any order, and the case must be the same. The database decides the name of a result column (SQLite and MySQL give the case of the table), so use `as` to choose it. An extra column is ignored. A missing column is an error, even for an `Optional` field (select its column, NULL or not), unless the field is a `JsonField`, which reads it as `Absent`.
+The sql is yours, with `?` for the parameters. The columns it returns are matched with the fields by name, in any order, and the case must be the same. The database decides the name of a result column (SQLite and MySQL give the case of the table), so use `as` to choose it. An extra column is ignored. A missing column is an error, even for an `Optional` field (select its column, NULL or not), unless the field is a `JSON.Field`, which reads it as `Absent`.
 
 Inside a transaction pass its connection: `Db.transaction(conn) do |tx| Orm.query(tx, users, sql, []) end`.
 

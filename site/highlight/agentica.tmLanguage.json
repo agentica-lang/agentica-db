@@ -521,7 +521,7 @@
       ]
     },
     "builtin-types": {
-      "match": "\\b(Int|Float|Bool|String|Nil|Void|List|Map|Set|Result|Range|Fn|Json|JsonField|JSON|Task|Await|Channel|Process|ProcessOutput|IO|System|Time|Random|Test|TestCase|File|Dir|Path|FileHandle|FileInfo|TCP|TLS|HttpWire|LogRegistry|LogEvent|LogLevel|Socket|Listener|HttpClient|HttpServer|Header|HttpRequest|HttpResponse|HttpClientOptions|HttpServerOptions)\\b",
+      "match": "\\b(Int|Float|Bool|String|Nil|Void|List|Map|Set|Result|Range|Fn|Json|JsonField|JSON|Task|Await|Channel|Process|ProcessOutput|IO|System|Time|Random|Test|TestCase|File|Dir|Path|FileHandle|FileInfo|TCP|TLS|HttpWire|LogRegistry|LogEvent|LogLevel|Socket|Listener|Error)\\b",
       "name": "support.type.builtin.agentica"
     },
     "types": {

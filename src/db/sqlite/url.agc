@@ -13,20 +13,6 @@
 
 import Milliseconds from "../support/milliseconds"
 
-JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
-SYNCHRONOUS_MODES = ["off", "normal", "full", "extra"]
-NAMES = [
-  "journal_mode, foreign_keys, busy_timeout, timeout_ms, synchronous, mmap_size, cache_size, ",
-  "journal_size_limit, fts5, statement_cache, batch_rows or batch_bytes",
-].join("")
-# At most 15 digits, so that a number is far from the limit of an Int and of what SQLite takes.
-MAX_DIGITS = 15
-MINUS = 45
-DIGIT_ZERO = 48
-DIGIT_NINE = 57
-URI_PREFIX = "file:"
-MAX_STATEMENT_CACHE = 10_000
-
 ## What a url sets besides the path. The defaults suit a web app: WAL lets readers run beside the one writer, foreign
 ## keys are checked, and a busy database is waited for, not failed at once. `journal_given` says that the url named
 ## the journal mode, which makes a WAL that cannot be set an error, not a skip. `uri` says that the name is a `file:`
@@ -41,7 +27,7 @@ MAX_STATEMENT_CACHE = 10_000
 ## The native driver keeps up to `statement_cache` prepared statements per connection, and a call of it gives at most
 ## `batch_rows` rows or about `batch_bytes` bytes of values: a longer result takes more calls. The FFI driver has no
 ## cache and reads row by row.
-export struct Settings
+struct Settings
   journal_mode: String = "wal"
   journal_given: Bool = false
   uri: Bool = false
@@ -59,53 +45,79 @@ export struct Settings
 end
 
 ## The name to open and the settings to apply.
-export struct Target
+struct Target
   path: String
   settings: Settings
 end
 
 ## Reads the text after `sqlite:`.
-export def parse(text: String) -> Result[Target]
-  if text.start_with?(URI_PREFIX)
-    return ok(Target(path: text, settings: Settings(uri: true)))
-  end
+def parse(text: String) -> Result[Target]
+  return ok(Target(path: text, settings: Settings(uri: true))) if text.start_with?(URI_PREFIX)
 
-  if not text.include?("?")
-    return ok(Target(path: text, settings: Settings()))
-  end
+  return ok(Target(path: text, settings: Settings())) if not text.include?("?")
 
   halves = split_once(text, "?")
   settings = try read_settings(halves[1])
-  return ok(Target(path: halves[0], settings: settings))
+  ok(Target(path: halves[0], settings: settings))
 end
+
+## Whether a url names a SQLite database that lives in its connection: `sqlite::memory:`, or a `file:` name that is
+## `:memory:` or has `mode=memory`, unless `cache=shared` makes it one database for every connection of the process.
+## Every connection of such a database is a database of its own.
+def private_memory?(url: String) -> Bool
+  return true if url.start_with?(MEMORY_URL)
+
+  return false if not url.start_with?(URI_URL) or url.include?("cache=shared")
+
+  url.include?(":memory:") or url.include?("mode=memory")
+end
+
+## Whether a url names a SQLite database in a file: not an in-memory one, private or shared (`mode=memory`,
+## `:memory:`).
+def file?(url: String) -> Bool
+  return false if not url.start_with?(URL_PREFIX) or private_memory?(url)
+
+  not url.include?(":memory:") and not url.include?("mode=memory")
+end
+
+private
+
+URL_PREFIX = "sqlite:"
+URI_URL = "sqlite:file:"
+MEMORY_URL = "sqlite::memory:"
+JOURNAL_MODES = ["wal", "delete", "truncate", "persist", "memory", "off"]
+SYNCHRONOUS_MODES = ["off", "normal", "full", "extra"]
+NAMES = [
+  "journal_mode, foreign_keys, busy_timeout, timeout_ms, synchronous, mmap_size, cache_size, ",
+  "journal_size_limit, fts5, statement_cache, batch_rows or batch_bytes",
+].join("")
+# At most 15 digits, so that a number is far from the limit of an Int and of what SQLite takes.
+MAX_DIGITS = 15
+MINUS = 45
+DIGIT_ZERO = 48
+DIGIT_NINE = 57
+URI_PREFIX = "file:"
+MAX_STATEMENT_CACHE = 10_000
 
 # The text before the first `separator` and the text after it (empty when there is none).
 def split_once(text: String, separator: String) -> List[String]
   found = text.index_of(separator)
   case found
-    some(at) -> return [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
-    none -> return [text, ""]
+    some(at) -> [text.slice(0, at), text.slice(at + 1, text.length - at - 1)]
+    none -> [text, ""]
   end
 end
 
-def one_of?(choices: List[String], value: String) -> Bool
-  return choices.any? do |choice| choice == value end
-end
+def one_of?(choices: List[String], value: String) -> Bool = choices.any? do |choice| choice == value end
 
 def read_settings(query: String) -> Result[Settings]
   settings = Settings()
-  if query.empty?
-    return ok(settings)
-  end
+  return ok(settings) if query.empty?
 
   for pair in query.split("&")
-    if pair.empty?
-      return error("sqlite error: the url has an empty parameter")
-    end
+    return error("sqlite error: the url has an empty parameter") if pair.empty?
 
-    if not pair.include?("=")
-      return error("sqlite error: the url parameter #{pair} has no value, write name=value")
-    end
+    return error("sqlite error: the url parameter #{pair} has no value, write name=value") if not pair.include?("=")
 
     halves = split_once(pair, "=")
     name = halves[0]
@@ -141,28 +153,24 @@ def read_settings(query: String) -> Result[Settings]
     end
   end
 
-  return ok(settings)
+  ok(settings)
 end
 
 def read_milliseconds(text: String, name: String) -> Result[Int]
   case Milliseconds.parse(text)
-    some(n) -> return ok(n)
-    none -> return error("sqlite error: the url #{name} is not a number of milliseconds")
+    some(n) -> ok(n)
+    none -> error("sqlite error: the url #{name} is not a number of milliseconds")
   end
 end
 
 # A whole number from `low` to `high` (no bound when `high` is 0).
 def read_bounded(text: String, name: String, low: Int, high: Int) -> Result[Int]
   n = try read_number(text, name, false)
-  if n < low
-    return error("sqlite error: the url #{name} is below #{low}: #{n}")
-  end
+  return error("sqlite error: the url #{name} is below #{low}: #{n}") if n < low
 
-  if high > 0 and n > high
-    return error("sqlite error: the url #{name} is over #{high}: #{n}")
-  end
+  return error("sqlite error: the url #{name} is over #{high}: #{n}") if high > 0 and n > high
 
-  return ok(n)
+  ok(n)
 end
 
 # A whole number of up to MAX_DIGITS digits, with a leading `-` when `signed`. SQLite reads a negative `cache_size` as
@@ -180,5 +188,5 @@ def read_number(text: String, name: String, signed: Bool) -> Result[Int]
     return error("sqlite error: the url #{name} is not a whole number")
   end
 
-  return ok(text.to_i.unwrap_or(0))
+  ok(text.to_i.unwrap_or(0))
 end

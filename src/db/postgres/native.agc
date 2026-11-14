@@ -12,6 +12,83 @@ import PostgresSql from "sql"
 import PostgresStatement from "statement"
 import {Row, Value} from "../support/value"
 
+## What a call may give at once: up to `rows` rows or about `bytes` bytes of values; a longer result takes more calls.
+struct Options
+  rows: Int = 100
+  bytes: Int = 262_144
+end
+
+## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
+## statement, a `miss` prepared one, an `eviction` let go of the one used least long ago to make room.
+struct CacheStats
+  size: Int
+  capacity: Int
+  hits: Int
+  misses: Int
+  evictions: Int
+end
+
+## A connection of the module, the mutex that keeps its queries apart, and the caps of a call.
+struct Session
+  conn: Conn
+  lock: Native.Mutex
+  options: Options
+end
+
+extern module "db_postgres"
+  ## A connection; `Native.close` ends it (PQfinish).
+  resource Conn
+end
+
+## Whether the module opens: false where the built library does not load, and the FFI driver runs.
+def available?() -> Bool = Native.load("db_postgres").ok?
+
+## Connects with what libpq takes and a cache of `cache` statements (0: none).
+def open(conninfo: String, cache: Int, options: Options) -> Result[Session]
+  conn = try connect(conninfo, cache)
+  ok(Session(conn: conn, lock: Native.mutex(), options: options))
+end
+
+## Runs one statement and gives its rows.
+def query(session: Session, sql: String, params: List[Value]) -> Result[List[Row]]
+  done = try session.lock.synchronize do run(session, sql, params, true) end
+  ok(done.rows)
+end
+
+## Runs one statement and gives the number of rows it inserted, updated or deleted.
+def execute(session: Session, sql: String, params: List[Value]) -> Result[Int]
+  done = try session.lock.synchronize do run(session, sql, params, false) end
+  ok(done.changes)
+end
+
+## PQstatus and PQtransactionStatus, as `status * 16 + transaction status`, once a query that a cancelled task left
+## has ended (while it runs, the transaction status is ACTIVE).
+def link_status(session: Session) -> Int = session.lock.synchronize do settled_status(session) end
+
+## Whether the connection is closed.
+def closed?(session: Session) -> Bool = Native.closed?(session.conn)
+
+## Asks the server to stop the query that a cancelled task left on the connection (a cancel request, on the compute
+## pool). Nothing when no query was left, the connection is closed or a compute call of a cancelled task still holds it.
+def interrupt(session: Session) -> Void
+  session.lock.synchronize do
+    if not Native.closed?(session.conn)
+      cancel(session.conn)
+    end
+  end
+end
+
+## What the statement cache holds and has done; none once the connection is closed.
+def stats(session: Session) -> Optional[CacheStats]
+  session.lock.synchronize do
+    return none if Native.closed?(session.conn)
+
+    return some(cache_stats(session.conn))
+  end
+end
+
+private
+
 # What `Step.state` asks of this file: wait until the socket can be read or written, take the rows and resume, take
 # the last rows, give the failure, translate the sql (it is not cached), ask the server to cancel a query that a
 # cancelled task left, or make the call on the compute pool (start_big, resume_big): parameters or a row of more than
@@ -29,7 +106,6 @@ S_BIG = 9
 # since the server may need this side to read first (the module reads at each resume).
 READ_WAIT_MS = 1_000
 WRITE_WAIT_MS = 50
-TIMED_OUT = "native: timed out"
 # The verbs of the statements that the cache keeps (the ones the server plans), and of the ones that change the
 # schema, after which the cache lets every statement go: a cached plan may no longer fit the tables.
 CACHED_VERBS = Set.new(["select", "insert", "update", "delete", "with", "values", "merge", "table"])
@@ -39,12 +115,6 @@ DROP_ALL_VERBS = Set.new(["deallocate", "discard"])
 # PQstatus CONNECTION_BAD and PQtransactionStatus UNKNOWN, as `link_status` gives them: what a closed connection is.
 CLOSED_STATUS = 1 * 16 + 4
 CLOSED = "postgres error: the connection is closed"
-
-## What a call may give at once: up to `rows` rows or about `bytes` bytes of values; a longer result takes more calls.
-export struct Options
-  rows: Int = 100
-  bytes: Int = 262_144
-end
 
 # What the adapter read of a statement that is not cached: its translation (`sql`, `count` placeholders), whether to
 # cache it, whether it changes the schema, whether it drops every prepared statement (`forgot`), and whether its rows
@@ -70,23 +140,6 @@ struct Step
   tag: String
 end
 
-## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
-## statement, a `miss` prepared one, an `eviction` let go of the one used least long ago to make room.
-export struct CacheStats
-  size: Int
-  capacity: Int
-  hits: Int
-  misses: Int
-  evictions: Int
-end
-
-## A connection of the module, the mutex that keeps its queries apart, and the caps of a call.
-export struct Session
-  conn: Conn
-  lock: Native.Mutex
-  options: Options
-end
-
 # The rows of a statement that ran, its count of changes and its command status.
 struct Done
   rows: List[Row]
@@ -98,56 +151,6 @@ end
 struct Planned
   plan: Plan
   verb: String
-end
-
-extern module "db_postgres"
-  ## A connection; `Native.close` ends it (PQfinish).
-  export resource Conn
-end
-
-## Whether the module opens: false where the built library does not load, and the FFI driver runs.
-export def available?() -> Bool
-  return Native.load("db_postgres").ok?
-end
-
-## Connects with what libpq takes and a cache of `cache` statements (0: none).
-export def open(conninfo: String, cache: Int, options: Options) -> Result[Session]
-  conn = try connect(conninfo, cache)
-  return ok(Session(conn: conn, lock: Native.mutex(), options: options))
-end
-
-## Runs one statement and gives its rows.
-export def query(session: Session, sql: String, params: List[Value]) -> Result[List[Row]]
-  done = try session.lock.synchronize do run(session, sql, params, true) end
-  return ok(done.rows)
-end
-
-## Runs one statement and gives the number of rows it inserted, updated or deleted.
-export def execute(session: Session, sql: String, params: List[Value]) -> Result[Int]
-  done = try session.lock.synchronize do run(session, sql, params, false) end
-  return ok(done.changes)
-end
-
-## PQstatus and PQtransactionStatus, as `status * 16 + transaction status`, once a query that a cancelled task left
-## has ended (while it runs, the transaction status is ACTIVE).
-export def link_status(session: Session) -> Int
-  return session.lock.synchronize do settled_status(session) end
-end
-
-## Whether the connection is closed.
-export def closed?(session: Session) -> Bool
-  return Native.closed?(session.conn)
-end
-
-## What the statement cache holds and has done; none once the connection is closed.
-export def stats(session: Session) -> Optional[CacheStats]
-  return session.lock.synchronize do
-    if Native.closed?(session.conn)
-      return none
-    end
-
-    return some(cache_stats(session.conn))
-  end
 end
 
 # The calls that only this file makes. A connection runs one query at a time, from `start` (or `drain`) to the step
@@ -168,9 +171,7 @@ end
 # A cached statement runs at once; any other is translated and checked here first, then sent. The adapter checked
 # that the connection was open, but another task may have closed it while this one waited for the mutex.
 def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Result[Done]
-  if Native.closed?(session.conn)
-    return error(CLOSED)
-  end
+  return error(CLOSED) if Native.closed?(session.conn)
 
   plan = Plan(keep: keep)
   step = start(session.conn, sql, params, plan, session.options)
@@ -188,7 +189,7 @@ def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Resul
 
   done = try finish(session, step)
   try PostgresStatement.check_commit(done.tag, verb)
-  return ok(done)
+  ok(done)
 end
 
 # The transaction status that the check of a BEGIN reads is the one after a query that a cancelled task left.
@@ -206,7 +207,7 @@ def plan_of(session: Session, sql: String, params: List[Value], keep: Bool) -> R
     keep: keep,
   )
 
-  return ok(Planned(plan: plan, verb: verb))
+  ok(Planned(plan: plan, verb: verb))
 end
 
 # Waits and resumes until the statement ends. The rows of each batch are kept as a list of batches, joined once.
@@ -230,9 +231,7 @@ def finish(session: Session, first: Step) -> Result[Done]
     end
 
     # Another task may close the connection meanwhile.
-    if Native.closed?(session.conn)
-      return error(CLOSED)
-    end
+    return error(CLOSED) if Native.closed?(session.conn)
 
     if step.state == S_BIG
       step = resume_big(session.conn, session.options)
@@ -241,7 +240,7 @@ def finish(session: Session, first: Step) -> Result[Done]
     end
   end
 
-  return error("postgres error: the query ended without a result")
+  error("postgres error: the query ended without a result")
 end
 
 # Waits for the socket, or asks the server to cancel the query that a cancelled task left. A wait that timed out goes
@@ -257,38 +256,30 @@ def wait(session: Session, step: Step) -> Result[Void]
   end
 
   case waited
-    ok(_) -> return ok()
-    error(message) ->
-      if message == TIMED_OUT
-        return ok()
-      end
+    ok(_) -> ok()
+    error(e) ->
+      return ok() if e.kind == "native.timeout"
 
-      return error("postgres error: #{message}")
+      error(e.with(message: "postgres error: #{e.message}"))
   end
 end
 
 def settled_status(session: Session) -> Int
-  if Native.closed?(session.conn)
-    return CLOSED_STATUS
-  end
+  return CLOSED_STATUS if Native.closed?(session.conn)
 
   if left?(session.conn)
     _ = finish(session, drain(session.conn))
-    if Native.closed?(session.conn)
-      return CLOSED_STATUS
-    end
+    return CLOSED_STATUS if Native.closed?(session.conn)
   end
 
-  return status(session.conn)
+  status(session.conn)
 end
 
 # Whether the statement is `DEALLOCATE [PREPARE] ALL` or `DISCARD ALL`, which drop every prepared statement of the
 # session, the cached ones too. WORDS are its first bare words: a statement named `all` must be quoted, and a comment
 # is not a word.
 def drops_all?(words: List[String]) -> Bool
-  if words == ["discard", "all"] or words == ["deallocate", "all"]
-    return true
-  end
+  return true if words == ["discard", "all"] or words == ["deallocate", "all"]
 
-  return words == ["deallocate", "prepare", "all"]
+  words == ["deallocate", "prepare", "all"]
 end

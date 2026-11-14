@@ -17,6 +17,7 @@ Migrate.up(conn: Db.Connection, migrations: List[Migrate.Migration], table: Stri
 ```agentica
 import Db from "pkg/db/db"
 import Migrate from "pkg/db/migrate"
+import Sqlite from "pkg/db/sqlite"
 
 def migrations() -> List[Migrate.Migration]
   return [
@@ -32,7 +33,7 @@ def first_user(tx: Db.Connection) -> Result[Void]
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   puts(try Migrate.up(conn, migrations()))
   puts(try Migrate.up(conn, migrations()))
   Db.close(conn)
@@ -63,7 +64,7 @@ Give each migration its own file, as Rails does, numbered with zero-padded versi
 import Db from "pkg/db/db"
 import Migrate from "pkg/db/migrate"
 
-export def migration() -> Migrate.Migration
+def migration() -> Migrate.Migration
   return Migrate.code(3, "first user", &first_user)
 end
 
@@ -81,7 +82,7 @@ import CreateUsers from "migrations/m0001_create_users"
 import UsersNameIndex from "migrations/m0002_users_name_index"
 import FirstUser from "migrations/m0003_first_user"
 
-export def all() -> List[Migrate.Migration]
+def all() -> List[Migrate.Migration]
   return [CreateUsers.migration(), UsersNameIndex.migration(), FirstUser.migration()]
 end
 ```

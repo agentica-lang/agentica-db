@@ -1,8 +1,8 @@
 import Errors from "../orm/errors"
 
-def kind_of(message: String) -> String
-  return Errors.kind(Errors.classify(message))
-end
+private
+
+def kind_of(message: String) -> String = Errors.kind(Errors.classify(message))
 
 def main() -> Void
   Test.run([

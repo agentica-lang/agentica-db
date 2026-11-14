@@ -5,16 +5,18 @@
 ## with one line: `ok`, or the reason the request or the expectation failed.
 
 ## The reply that means the request worked.
-export OK = "ok"
+OK = "ok"
 
 ## A request. Every field is always sent; each `op` reads the ones it needs. The ops are `open` (text: adapter),
 ## `open_url` (text: url), `execute` and `query` (text: sql, cells: params), `transaction` (table: statements, text:
-## the failure message of the body, empty for ok, nested: start a transaction inside it, gives: the body gives back the
-## rows changed by its last statement, and the transaction gives that count), `close`, `migrate` (text: the history
+## the failure message of the body, empty for ok, kind: with text, the kind of that failure and number its code,
+## nested: start a transaction inside it, gives: the body gives back the rows changed by its last statement, and the
+## transaction gives that count), `close`, `migrate` (text: the history
 ## table or empty, table: header and the version, name and sql of each migration), `write_together` (number: the tasks,
 ## text: a database url, table: statements; each task opens the url and runs the statements in a transaction),
 ## `execute_waiting` (text: a database url, cells: the sql, number: the least time in milliseconds that the failure of
-## the statement of a task with its own connection takes), `query_until_commit` (text: a database url, cells: the sql,
+## the statement of a task with its own connection takes), `execute_fresh` (text: a database url, cells: the sql that a
+## task with its own connection executes), `query_until_commit` (text: a database url, cells: the sql,
 ## number: milliseconds; a task with its own connection queries the sql while this connection commits after that time,
 ## and the query must be in the way of the commit), `write_while_blocked` (text: a database url, cells: the sql of a
 ## write and the sql that this connection runs; a task with its own connection writes it in a transaction and waits at
@@ -37,7 +39,10 @@ export OK = "ok"
 ## `checkout_ms`, `lease_ms`, `max_waiting`, `health_ms` and the `checkpoint_` ones), `pool_query` and `pool_execute`
 ## (text: sql, number: the `timeout_ms` of the call; each runs in one block of the pool), `pool_script` (table: header
 ## and statements, run in one block), `pool_close_connection` (a block that closes its connection), `pool_crash` (a
-## block that crashes), `pool_hold` (number: the milliseconds a block keeps its connection), `pool_query_while_held`
+## block that crashes), `pool_hold` (number: the milliseconds a block keeps its connection), `pool_cancel_holder`
+## (text: sql the task runs in a transaction, or empty; number: the milliseconds it keeps the connection before it is
+## cancelled), `pool_write_within` (text: sql, number: the milliseconds the write must take less than),
+## `pool_runs_in` (text: `caller` or `pool`, where a block must run), `pool_query_while_held`
 ## (text: sql, number: the milliseconds a task keeps a connection of the pool while this one queries), `pool_repeat`
 ## (text: sql, number: how many times one transaction of the pool runs it), `pool_fallbacks` (the short calls of a
 ## connection of the pool that left their statement to the compute pool), `pool_transaction` (table: statements run in
@@ -52,7 +57,7 @@ export OK = "ok"
 ## (number), `expect_ok`, `expect_timeout` (the failure is one that `Db.timeout?` knows), `expect_prefix`,
 ## `expect_exact`, `expect_mentions`, `expect_hides` and `expect_kind` (text; for the last, the kind that
 ## `Orm.classify` gives the failure, such as `Conflict`).
-export struct Request
+struct Request
   op: String
   text: String = ""
   number: Int = 0
@@ -60,5 +65,6 @@ export struct Request
   table: List[List[String]] = []
   nested: Bool = false
   gives: Bool = false
+  kind: String = ""
   partial: Bool = false
 end

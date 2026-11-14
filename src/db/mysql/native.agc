@@ -3,9 +3,8 @@
 ## non-blocking calls of MariaDB Connector/C: every call is short, and a wait for the server is a wait on its socket
 ## (`Native.wait_readable`), which parks only this task, so a query takes no compute call. A connection keeps its
 ## prepared statements in a cache keyed by the sql text, and a result comes in batches of rows, one call per batch.
-## It is off for now: the non-blocking calls run on a stack of their own, and only `an_blocking` of the native API
-## 1.3 (agentica-lang/agentica#1193) keeps the collector of the VM off it. Until the module runs them under it,
-## `available?` is false, the module refuses to connect, and the adapter runs the FFI driver.
+## The non-blocking calls run on a stack of their own, so the module runs them under `an_blocking` of the native API
+## 1.3, which keeps the collector of the VM off it. The driver runs on Linux, where `libmariadb.so.3` is.
 ##
 ## A query holds the mutex of its connection from its first call to its last: the calls of a query must not mix with
 ## another's, and every call on the connection is made under it. A task that is cancelled in the middle of one leaves
@@ -15,6 +14,95 @@ import MysqlSql from "sql"
 import MysqlStatement from "statement"
 import MysqlUrl from "url"
 import {Row, Value} from "../support/value"
+
+## The error of `open` with AGENTICA_DB_MYSQL_DRIVER=native where the driver does not run.
+UNAVAILABLE = "mysql error: the native MySQL driver runs on Linux, with its module built and libmariadb.so.3 loaded"
+
+## What a call may give at once: up to `rows` rows or about `bytes` bytes of values; a longer result takes more calls.
+struct Options
+  rows: Int = 100
+  bytes: Int = 262_144
+end
+
+## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
+## statement, a `miss` prepared one, an `eviction` let go of the one used least long ago to make room.
+struct CacheStats
+  size: Int
+  capacity: Int
+  hits: Int
+  misses: Int
+  evictions: Int
+end
+
+## A connection of the module, the mutex that keeps its queries apart, and the caps of a call.
+struct Session
+  conn: Conn
+  lock: Native.Mutex
+  options: Options
+end
+
+extern module "db_mysql"
+  ## A connection; `Native.close` ends it (mysql_close).
+  resource Conn
+end
+
+## Whether the native driver runs here: on Linux, with a module that loads.
+def available?() -> Bool = System.os() == "linux" and Native.load("db_mysql").ok?
+
+## Connects to the target with its cache and batch caps.
+def open(target: MysqlUrl.Target) -> Result[Session]
+  conn = try connect(login_of(target), target.statement_cache)
+  options = Options(rows: target.batch_rows, bytes: target.batch_bytes)
+  ok(Session(conn: conn, lock: Native.mutex(), options: options))
+end
+
+## Runs one statement and gives its rows.
+def query(session: Session, sql: String, params: List[Value]) -> Result[List[Row]]
+  done = try session.lock.synchronize do run(session, sql, params, true) end
+  ok(done.rows)
+end
+
+## Runs one statement that the cache never keeps and its counters never count, and gives its rows.
+def query_once(session: Session, sql: String) -> Result[List[Row]]
+  done = try session.lock.synchronize do run(session, sql, [], true, false) end
+  ok(done.rows)
+end
+
+## Runs one statement and gives the number of rows it inserted, updated (matched), deleted or replaced.
+def execute(session: Session, sql: String, params: List[Value]) -> Result[Int]
+  done = try session.lock.synchronize do run(session, sql, params, false) end
+  ok(done.changes)
+end
+
+## Whether the server says a transaction is open, once a query that a cancelled task left has ended.
+def in_transaction?(session: Session) -> Bool
+  session.lock.synchronize do
+    settle(session)
+    not Native.closed?(session.conn) and transaction_open?(session.conn)
+  end
+end
+
+## Whether the client library still has its link to the server.
+def connected?(session: Session) -> Bool
+  session.lock.synchronize do not Native.closed?(session.conn) and link_up?(session.conn) end
+end
+
+## The version of the server, `8.4.3` or `11.4.2-MariaDB`.
+def server_version(session: Session) -> String = session.lock.synchronize do server_info(session.conn) end
+
+## Whether the connection is closed.
+def closed?(session: Session) -> Bool = Native.closed?(session.conn)
+
+## What the statement cache holds and has done; none once the connection is closed.
+def stats(session: Session) -> Optional[CacheStats]
+  session.lock.synchronize do
+    return none if Native.closed?(session.conn)
+
+    return some(cache_stats(session.conn))
+  end
+end
+
+private
 
 # What `Step.state` asks of this file: wait until the socket can be read or written, take the rows and resume, take
 # the last rows, give the failure, read the sql (it is not cached), kill the statement that a cancelled task left,
@@ -34,7 +122,6 @@ S_LEFT = 10
 # timeout of the library passed); a wait to write is short, since the server may need this side to read first.
 READ_WAIT_MS = 1_000
 WRITE_WAIT_MS = 50
-TIMED_OUT = "native: timed out"
 # The verbs of the statements that the cache keeps, and of the ones that change the schema, after which the cache
 # lets every statement go: a cached statement may no longer fit its tables.
 CACHED_VERBS = Set.new(["select", "insert", "update", "delete", "replace", "with", "values", "table"])
@@ -44,16 +131,6 @@ TLS_REQUIRED = 1
 TLS_VERIFY = 2
 CLOSED = "mysql error: the connection is closed"
 LEFT_AGAIN = "mysql error: the query that a cancelled task left on the connection did not end"
-## Why the native driver does not run (see the top); `connect` of the module refuses with the same words.
-export UNAVAILABLE = (
-  "mysql error: the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
-)
-
-## What a call may give at once: up to `rows` rows or about `bytes` bytes of values; a longer result takes more calls.
-export struct Options
-  rows: Int = 100
-  bytes: Int = 262_144
-end
 
 # What the adapter read of a statement that is not cached: whether to cache it, whether it changes the schema,
 # whether `execute` counts its rows, and whether its rows are wanted (`keep`, false for `execute`). A Plan that is not
@@ -88,91 +165,10 @@ struct Login
   ca: String
 end
 
-## What the statement cache of a connection holds (`size` of `capacity`) and how it was used: a `hit` ran a cached
-## statement, a `miss` prepared one, an `eviction` let go of the one used least long ago to make room.
-export struct CacheStats
-  size: Int
-  capacity: Int
-  hits: Int
-  misses: Int
-  evictions: Int
-end
-
-## A connection of the module, the mutex that keeps its queries apart, and the caps of a call.
-export struct Session
-  conn: Conn
-  lock: Native.Mutex
-  options: Options
-end
-
 # The rows of a statement that ran and its count of changes.
 struct Done
   rows: List[Row]
   changes: Int
-end
-
-extern module "db_mysql"
-  ## A connection; `Native.close` ends it (mysql_close).
-  export resource Conn
-end
-
-## Whether the native driver runs here: not until the module runs the library under `an_blocking` (see the top). Then
-## it needs Linux and a module that loads.
-export def available?() -> Bool
-  return false
-end
-
-## Connects to the target with its cache and batch caps.
-export def open(target: MysqlUrl.Target) -> Result[Session]
-  conn = try connect(login_of(target), target.statement_cache)
-  options = Options(rows: target.batch_rows, bytes: target.batch_bytes)
-  return ok(Session(conn: conn, lock: Native.mutex(), options: options))
-end
-
-## Runs one statement and gives its rows.
-export def query(session: Session, sql: String, params: List[Value]) -> Result[List[Row]]
-  done = try session.lock.synchronize do run(session, sql, params, true) end
-  return ok(done.rows)
-end
-
-## Runs one statement and gives the number of rows it inserted, updated (matched), deleted or replaced.
-export def execute(session: Session, sql: String, params: List[Value]) -> Result[Int]
-  done = try session.lock.synchronize do run(session, sql, params, false) end
-  return ok(done.changes)
-end
-
-## Whether the server says a transaction is open, once a query that a cancelled task left has ended.
-export def in_transaction?(session: Session) -> Bool
-  return session.lock.synchronize do
-    settle(session)
-    not Native.closed?(session.conn) and transaction_open?(session.conn)
-  end
-end
-
-## Whether the client library still has its link to the server.
-export def connected?(session: Session) -> Bool
-  return session.lock.synchronize do not Native.closed?(session.conn) and link_up?(session.conn) end
-end
-
-## The version of the server, `8.4.3` or `11.4.2-MariaDB`.
-export def server_version(session: Session) -> String
-  return session.lock.synchronize do server_info(session.conn) end
-end
-
-## Whether the connection is closed.
-export def closed?(session: Session) -> Bool
-  return Native.closed?(session.conn)
-end
-
-## What the statement cache holds and has done; none once the connection is closed.
-export def stats(session: Session) -> Optional[CacheStats]
-  return session.lock.synchronize do
-    if Native.closed?(session.conn)
-      return none
-    end
-
-    return some(cache_stats(session.conn))
-  end
 end
 
 # The calls that only this file makes. A connection runs one query at a time, from `start` (or `drain`) to the step
@@ -199,7 +195,7 @@ def login_of(target: MysqlUrl.Target) -> Login
     MysqlUrl.Tls.Verify -> tls = TLS_VERIFY
   end
 
-  return Login(
+  Login(
     host: target.host,
     port: target.port,
     user: target.user,
@@ -214,24 +210,18 @@ end
 
 # A cached statement runs at once; any other is read and checked here first, then sent. The adapter checked that the
 # connection was open, but another task may have closed it while this one waited for the mutex.
-def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Result[Done]
-  if Native.closed?(session.conn)
-    return error(CLOSED)
-  end
+def run(session: Session, sql: String, params: List[Value], keep: Bool, cached: Bool = true) -> Result[Done]
+  return error(CLOSED) if Native.closed?(session.conn)
 
-  plan = Plan(keep: keep)
+  plan = Plan(known: not cached, keep: keep)
   step = start(session.conn, sql, params, plan, session.options)
   if step.state == S_LEFT
     settle(session)
-    if Native.closed?(session.conn)
-      return error(CLOSED)
-    end
+    return error(CLOSED) if Native.closed?(session.conn)
 
     step = start(session.conn, sql, params, plan, session.options)
     # The drain gave up (a failure that did not end the query): never resume a query that is not this one.
-    if step.state == S_LEFT
-      return error(LEFT_AGAIN)
-    end
+    return error(LEFT_AGAIN) if step.state == S_LEFT
   end
 
   if step.state == S_PLAN
@@ -243,22 +233,28 @@ def run(session: Session, sql: String, params: List[Value], keep: Bool) -> Resul
     step = start_big(session.conn, sql, params, plan, session.options)
   end
 
-  return finish(session, step)
+  finish(session, step)
 end
 
 def plan_of(session: Session, sql: String, keep: Bool) -> Result[Plan]
   verb = (try MysqlSql.inspect(sql)).verb
   try MysqlStatement.check_begin(transaction_open?(session.conn), verb)
-  return ok(
+  counts = MysqlStatement.counts?(verb)
+  ok(
     Plan(
       known: true,
-      cache: CACHED_VERBS.include?(verb),
+      cache: CACHED_VERBS.include?(verb) and not (counts and returns_rows?(sql)),
       flush: FLUSH_VERBS.include?(verb),
-      counts: MysqlStatement.counts?(verb),
+      counts: counts,
       keep: keep,
     ),
   )
 end
+
+# A write that gives rows (`INSERT ... RETURNING`) is never cached: a cached statement meets 2057 only after the
+# server ran it, and a write is never run again. The module also checks the columns of the prepared statement, but
+# MariaDB 11.8 reports none for a RETURNING before it runs. A word `returning` in a literal only skips the cache.
+def returns_rows?(sql: String) -> Bool = sql.downcase.include?("returning")
 
 # Waits and resumes until the statement ends. The rows of each batch are kept as a list of batches, joined once.
 def finish(session: Session, first: Step) -> Result[Done]
@@ -283,9 +279,7 @@ def finish(session: Session, first: Step) -> Result[Done]
     end
 
     # Another task may close the connection meanwhile.
-    if Native.closed?(session.conn)
-      return error(CLOSED)
-    end
+    return error(CLOSED) if Native.closed?(session.conn)
 
     if step.state == S_BIG
       step = resume_big(session.conn, session.options)
@@ -294,7 +288,7 @@ def finish(session: Session, first: Step) -> Result[Done]
     end
   end
 
-  return error("mysql error: the query ended without a result")
+  error("mysql error: the query ended without a result")
 end
 
 # Waits for the socket, or kills the statement that a cancelled task left. A wait that timed out goes on with a
@@ -310,13 +304,11 @@ def wait(session: Session, step: Step) -> Result[Void]
   end
 
   case waited
-    ok(_) -> return ok()
-    error(message) ->
-      if message == TIMED_OUT
-        return ok()
-      end
+    ok(_) -> ok()
+    error(e) ->
+      return ok() if e.kind == "native.timeout"
 
-      return error("mysql error: #{message}")
+      error(e.with(message: "mysql error: #{e.message}"))
   end
 end
 
