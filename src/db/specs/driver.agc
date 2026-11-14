@@ -8,11 +8,11 @@ import Db from "../db"
 import DbPool from "../db_pool"
 import Migrate from "../migrate"
 import Orm from "../orm"
-import Postgres from "../postgres/postgres"
+import Mysql from "../mysql"
+import Postgres from "../postgres"
 import Protocol from "protocol"
 import {Request} from "protocol"
-import Sqlite from "../sqlite/sqlite"
-import SqliteNative from "../sqlite/native"
+import Sqlite from "../sqlite"
 
 private
 
@@ -262,6 +262,9 @@ def main() -> Void
   clean_scratch()
 end
 
+# Every database of the scenarios.
+def drivers() -> List[Db.Driver] = [Sqlite.driver(), Postgres.driver(), Mysql.driver()]
+
 def handle(state: State, line: String) -> Handled
   case JSON.decode(line, Request)
     error(message) -> Handled(state: state, reply: "bad request: #{message}")
@@ -398,7 +401,7 @@ def open_at(state: State, adapter: String, url: String) -> State
     _ = Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
   end
 
-  case Db.open(url)
+  case Db.open(url, drivers())
     error(message) ->
       State(conns: [], pools: state.pools, adapter: adapter, last: Outcome.Failed(message.message), checked: false)
     ok(conn) -> State(conns: [conn], pools: state.pools, adapter: adapter, last: Outcome.Done, checked: false)
@@ -465,7 +468,7 @@ def pool_start(state: State, req: Request) -> State
 end
 
 def pool_options(url: String, rows: List[List[String]]) -> Result[DbPool.Options]
-  options = DbPool.Options(url: url)
+  options = DbPool.Options(url: url, drivers: drivers())
   for row in rows
     options = try pool_setting(options, row[0], row[1])
   end
@@ -795,13 +798,12 @@ def fallbacks(state: State) -> State
 end
 
 def stat_of(conn: Db.Connection, name: String) -> Optional[Int]
-  case conn
-    Db.Connection.Sqlite(sqlite) -> Sqlite.statement_cache(sqlite).map do |c| pick_stat(c, name) end
-    _ -> none
-  end
+  return none if conn.adapter != Db.Adapter.Sqlite
+
+  Db.statement_cache(conn).map do |c| pick_stat(c, name) end
 end
 
-def pick_stat(stats: SqliteNative.CacheStats, name: String) -> Int
+def pick_stat(stats: Db.CacheStats, name: String) -> Int
   return stats.fallbacks if name == "fallbacks"
 
   stats.shorts
@@ -839,7 +841,7 @@ end
 def transaction_while_locked(state: State, req: Request) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
-  case Db.open(expand(state, req.text))
+  case Db.open(expand(state, req.text), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(other) ->
       taken = Db.execute(other, "BEGIN IMMEDIATE", [])
@@ -1409,7 +1411,7 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
 end
 
 def write_in_task(job: Writer) -> Result[Void]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   done = Db.transaction(conn) do |tx| run_rows(tx, job.rows) end
   Db.close(conn)
   done
@@ -1602,7 +1604,7 @@ def write_while_blocked(state: State, req: Request) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
   url = expand(state, req.text)
-  case Db.open(probe_url(url))
+  case Db.open(probe_url(url), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&commit_write, Fresh(url: url, sql: Cells.expand(req.cells[0])))
@@ -1629,7 +1631,7 @@ def write_while_blocked(state: State, req: Request) -> Handled
 end
 
 def commit_write(job: Fresh) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   try Db.execute(conn, "BEGIN IMMEDIATE", [])
   try Db.execute(conn, job.sql, [])
   done = Db.execute(conn, "COMMIT", [])
@@ -1643,7 +1645,7 @@ def query_while_locked(state: State, req: Request) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
   url = expand(state, req.text)
-  case Db.open(probe_url(url))
+  case Db.open(probe_url(url), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
@@ -1671,7 +1673,7 @@ end
 # runs must wait at their prepare, not at a step; the open must give a connection that works.
 def open_while_locked(state: State, req: Request) -> Handled
   url = expand(state, req.text)
-  case Db.open(probe_url(url))
+  case Db.open(probe_url(url), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
       task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
@@ -1692,7 +1694,7 @@ def open_while_locked(state: State, req: Request) -> Handled
 end
 
 def hold_lock(job: Hold) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   try Db.execute(conn, "BEGIN EXCLUSIVE", [])
   Task.sleep(job.ms)
   done = Db.execute(conn, "COMMIT", [])
@@ -1701,7 +1703,7 @@ def hold_lock(job: Hold) -> Result[Int]
 end
 
 def fresh_execute(job: Fresh) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   done = Db.execute(conn, job.sql, [])
   Db.close(conn)
   done
@@ -1750,7 +1752,7 @@ end
 # the write's cursor, which must not wait for the long statement.
 def cancel_beside_long(state: State, req: Request) -> State
   with_conn(state) do |conn|
-    case Db.open(expand(state, req.text))
+    case Db.open(expand(state, req.text), drivers())
       error(message) -> return failed(state, message.message)
       ok(other) -> return cancel_with_lock(state, conn, other, req)
     end
@@ -1786,7 +1788,7 @@ end
 
 # A statement on a connection of its own to `req.text`, closed after it: its rows, or its count for `execute`.
 def on_other(state: State, req: Request) -> State
-  case Db.open(expand(state, req.text))
+  case Db.open(expand(state, req.text), drivers())
     error(message) -> failed(state, message.message)
     ok(other) ->
       sql = Cells.expand(req.cells[0])
@@ -1882,15 +1884,12 @@ end
 # The counters of the statement cache of the connection, as one row.
 def statement_cache(state: State) -> State
   with_conn(state) do |conn|
-    case conn
-      Db.Connection.Sqlite(sqlite) ->
-        found = Sqlite.statement_cache(sqlite).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
-        return cache_row(state, found)
-      Db.Connection.Postgres(postgres) ->
-        found = Postgres.statement_cache(postgres).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
-        return cache_row(state, found)
-      _ -> return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
+    if conn.adapter == Db.Adapter.Mysql
+      return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
     end
+
+    found = Db.statement_cache(conn).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
+    cache_row(state, found)
   end
 end
 
@@ -1900,20 +1899,13 @@ end
 def driver_named(state: State, name: String) -> State
   wanted = System.env(name).unwrap_or("")
   with_conn(state) do |conn|
-    case conn
-      Db.Connection.Sqlite(sqlite) ->
-        case Sqlite.statement_cache(sqlite)
-          some(_) -> return driver_ran(state, name, wanted, "native")
-          none -> return driver_ran(state, name, wanted, "ffi")
-        end
+    if conn.adapter == Db.Adapter.Mysql
+      return failed(state, "only a SQLite or PostgreSQL connection has a driver to name")
+    end
 
-      Db.Connection.Postgres(postgres) ->
-        case Postgres.statement_cache(postgres)
-          some(_) -> return driver_ran(state, name, wanted, "native")
-          none -> return driver_ran(state, name, wanted, "ffi")
-        end
-
-      _ -> return failed(state, "only a SQLite or PostgreSQL connection has a driver to name")
+    case Db.statement_cache(conn)
+      some(_) -> driver_ran(state, name, wanted, "native")
+      none -> driver_ran(state, name, wanted, "ffi")
     end
   end
 end
@@ -1985,16 +1977,14 @@ def cache_beside_big(state: State, req: Request) -> State
 end
 
 def read_cache(conn: Db.Connection) -> Result[Int]
-  case conn
-    Db.Connection.Postgres(postgres) ->
-      for _ in 0...CACHE_READS
-        _ = Postgres.statement_cache(postgres)
-        Task.sleep(1)
-      end
+  return error("only a PostgreSQL connection is read here") if conn.adapter != Db.Adapter.Postgres
 
-      ok(CACHE_READS)
-    _ -> error("only a PostgreSQL connection is read here")
+  for _ in 0...CACHE_READS
+    _ = Db.statement_cache(conn)
+    Task.sleep(1)
   end
+
+  ok(CACHE_READS)
 end
 
 # A task executes `req.text` on the connection, a second one executes `req.cells[0]` there, which waits for the first,
@@ -2015,7 +2005,7 @@ def close_beside_queries(state: State, req: Request) -> State
 end
 
 def fresh_query(job: Fresh) -> Result[List[Db.Row]]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   found = Db.query(conn, job.sql, [])
   Db.close(conn)
   found
@@ -2032,7 +2022,7 @@ end
 # The task opens a connection and ends without closing it. It gives the id of the session while the connection is
 # open, since a session that never showed would pass the check of its end.
 def open_and_leave(job: Leave) -> Result[Int]
-  conn = try Db.open(job.url)
+  conn = try Db.open(job.url, drivers())
   rows = try Db.query(conn, SESSION_ID_SQL[job.adapter], [])
   int_of(rows)
 end

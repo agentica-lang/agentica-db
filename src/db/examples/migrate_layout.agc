@@ -6,6 +6,7 @@
 import Db from "../db"
 import Migrate from "../migrate"
 import Migrations from "migrations"
+import Sqlite from "../sqlite"
 
 private
 
@@ -17,7 +18,7 @@ def main() -> Void
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   puts(try Migrate.up(conn, Migrations.all()))
   puts(try Migrate.up(conn, Migrations.all()))
   rows = try Db.query(conn, "select name from users", [])

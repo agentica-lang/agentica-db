@@ -1,4 +1,7 @@
 import Db from "../db"
+import Mysql from "../mysql"
+import Postgres from "../postgres"
+import Sqlite from "../sqlite"
 
 private
 
@@ -19,5 +22,24 @@ def main() -> Void
       try Test.eq(Db.timeout?("mysql error 2013: Lost connection to server during query"), false)
       return Test.eq(Db.timeout?("db error: unsupported database url scheme ftp"), false)
     end,
+    Test.test("each scheme of a driver of the package names that driver when the driver was not passed") do
+      drivers = {
+        "Sqlite.driver()": Sqlite.driver(),
+        "Postgres.driver()": Postgres.driver(),
+        "Mysql.driver()": Mysql.driver(),
+      }
+
+      return Test.eq(drivers.keys.flat_map do |name| unnamed(name, drivers[name]) end, [])
+    end,
   ])
+end
+
+# The schemes of `driver` whose url, opened with no driver, fails without naming it.
+def unnamed(name: String, driver: Db.Driver) -> List[String]
+  driver.schemes.select do |prefix|
+    case Db.open("#{prefix}x", [])
+      ok(_) -> true
+      error(e) -> not e.message.include?("pass #{name} to")
+    end
+  end
 end

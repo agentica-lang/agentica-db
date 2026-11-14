@@ -21,6 +21,7 @@ The Orm does not know about HTTP, so the statuses are only suggestions.
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -37,7 +38,7 @@ def status(message: String) -> Int
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (id integer primary key, name text not null unique, age integer)", [])
   users = Orm.schema("users", User.codec)
   try Orm.insert(conn, users, User(name: "Ana"))

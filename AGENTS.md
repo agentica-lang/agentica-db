@@ -7,7 +7,12 @@ is a workspace (`[workspace]` in the root `agentica.toml`, which only names the 
 
 ```text
 src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the dependency on pool; agentica.lock)
-  db.agc       Db: the one API, dispatches on Connection
+  db.agc       Db: the one API, calls the functions of a Connection (support/connection.agc: a record of the
+               functions of one open connection, made by a Driver)
+  sqlite.agc, postgres.agc, mysql.agc
+               the drivers (`Sqlite.driver()`, ...) that Db.open and DbPool.Options take, each over its adapter: a
+               program builds the native modules of the drivers it imports only; sqlite.agc also has the SQLite side
+               of a pool (the line of writers, the WAL checkpointer)
   db_pool.agc  DbPool, a pool of Db connections on the generic pool (the `pool` package of agentica-lang/packages,
                `pkg/pool/pool`, in [dependencies]);
                specs/pooling.feature drives it through the pool_* ops of specs/driver.agc
@@ -29,7 +34,8 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                statement.agc (what a driver reads of a verb), sql.agc (the statement scanner), url.agc
   orm/         build.agc (the sql of the query builder), codec.agc (row to JSON.Value for T.codec), dialect.agc
                (identifier names and quotes), errors.agc
-  support/     value.agc (Value, Row; db.agc re-exports them), milliseconds.agc (the timeout_ms and
+  support/     value.agc (Value, Row; db.agc re-exports them), connection.agc (Connection, Driver, CacheStats and
+               the pool types; db.agc re-exports them), milliseconds.agc (the timeout_ms and
                busy_timeout numbers of the url readers)
   examples/    users.agc, a runnable web-handler style example of the Orm; migrate_layout.agc, with migrations.agc
                and migrations/ (one file per migration), the layout of the Migrations guide;
@@ -45,7 +51,8 @@ site/ tools/   the documentation site (Hugo) and the check of its samples
 
 A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `src/db/db.agc`: the
 dependency says `subdir = "src/db"`. Moving a file other than the modules at the root of `src/db` (`db`, `db_pool`,
-`orm`, `migrate`) does not change the documented imports of users; moving one of those four does. The pool is not in
+`orm`, `migrate`, `sqlite`, `postgres`, `mysql`) does not change the documented imports of users; moving one of those
+does. The pool is not in
 this repository: `src/db` and `src/properties` depend on the `pool` package of agentica-lang/packages at a tag
 (`pool-X.Y.Z`, `subdir = "pool"`), and both name the same tag (one name stands for one source in a build). To move to a
 new release of it, change the tag in both manifests and run `agentica update pool` in both folders.
@@ -113,8 +120,9 @@ new release of it, change the tag in both manifests and run `agentica update poo
   public calls; `sqlite.agc` alone is the adapter) (`wrapping` guide of the Agentica site:
   `library/io-and-system/native/wrapping`). An adapter has the same functions as `db.agc`:
   `open`, `close`, `query`, `execute` (both take a last `timeout_ms`, -1 for the connection's), `in_transaction?`,
-  `connected?` and `healthy?` (SQLite also has `interrupt`, for the pool only). `db.agc` dispatches on `Connection`;
-  `transaction` stays in `db.agc`.
+  `connected?` and `healthy?` (SQLite also has `interrupt`, for the pool only). Its driver (`sqlite.agc`,
+  `postgres.agc`, `mysql.agc` at the root) wraps them in a `Connection` record; `db.agc` calls the record and imports
+  no adapter, so a program builds only the native modules of the drivers it imports; `transaction` stays in `db.agc`.
   `db.agc` also re-exports `Value` and `Row` of `support/value.agc` (`export V.Value`), so a user imports `Db` only.
   The connection of each adapter is a native resource (`sqlite3_close_v2`, `PQfinish`, `mysql_close`): the end of the
   task or of `main` closes it, and `Native.closed?` turns a use after `close` into an error (SQLite keeps the runtime
@@ -124,7 +132,7 @@ new release of it, change the tag in both manifests and run `agentica update poo
 - A failure is `error(message)` in one of two shapes: an engine failure `<adapter> error <code>: <message>`, a
   bad input `<adapter> error: <message>`; the module's own `db error: <message>`. A bad input is an error, not a
   halt.
-- An adapter exports its own `BEGIN_SQL`; `transaction` in `db.agc` uses it.
+- An adapter exports its own `BEGIN_SQL`; its driver puts it in `Connection.begin_sql`, which `transaction` uses.
 - Tests are BDD-first (the paths below are in `src/db`): behavior is a Gherkin scenario in `specs/*.feature`, run by
   `agentica test`, not a test file. The contract every adapter must meet is in the common features (`opening`,
   `values`, `queries`, `errors`, `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct

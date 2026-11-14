@@ -17,6 +17,7 @@ Migrate.up(conn: Db.Connection, migrations: List[Migrate.Migration], table: Stri
 ```agentica
 import Db from "pkg/db/db"
 import Migrate from "pkg/db/migrate"
+import Sqlite from "pkg/db/sqlite"
 
 def migrations() -> List[Migrate.Migration]
   return [
@@ -32,7 +33,7 @@ def first_user(tx: Db.Connection) -> Result[Void]
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   puts(try Migrate.up(conn, migrations()))
   puts(try Migrate.up(conn, migrations()))
   Db.close(conn)

@@ -6,7 +6,7 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.31.0 or later for the tag `0.10.1`, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports the package first runs or is compiled: Agentica builds the native SQLite and PostgreSQL drivers then (see [SQLite](/databases/sqlite/#drivers)). agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.31.0 or later for the tag `0.10.1`, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports a driver of the package first runs or is compiled: Agentica builds the native SQLite or PostgreSQL module of each driver the program imports then (see [SQLite](/databases/sqlite/#drivers)). agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]
@@ -17,11 +17,12 @@ Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.10.
 
 The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release after 0.3.0 and for `ref = "COMMIT"` (a commit of `main`). The releases up to 0.3.0 have the package at the root of the repository: with those tags leave `subdir` out. The imports are the same in both.
 
-Import the modules with `pkg/db/...`. `Db` is enough for most programs, and `Orm` is the typed layer.
+Import the modules with `pkg/db/...`. `Db` is the API, `Orm` the typed layer, and `Sqlite`, `Postgres` and `Mysql` the drivers that `Db.open` takes: import only the ones the program uses (see [Connecting](/basics/connecting/#drivers)).
 
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct Note
   id: Int = 0
@@ -30,7 +31,7 @@ end
 
 def main() -> Void
   notes = Orm.schema("notes", Note.codec)
-  puts(Db.open("sqlite::memory:").ok?)
+  puts(Db.open("sqlite::memory:", [Sqlite.driver()]).ok?)
   puts(notes.table)
 end
 ```
@@ -60,13 +61,14 @@ Save this as `app.agc` and run it with `agentica app.agc`. It opens a database, 
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def save(conn: Db.Connection, name: String, age: Int) -> Result[Int]
   return Db.execute(conn, "insert into users (name, age) values (?, ?)", [Db.Value.Text(name), Db.Value.Int(age)])
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (name text not null, age integer)", [])
   try Db.transaction(conn) do |tx|
     try save(tx, "Ana", 31)

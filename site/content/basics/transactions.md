@@ -15,6 +15,7 @@ Use the `tx` the block receives, not the outer connection, for the statements of
 
 ```agentica
 import Db from "pkg/db/db"
+import Sqlite from "pkg/db/sqlite"
 
 def save(conn: Db.Connection, name: String) -> Result[Int]
   return Db.execute(conn, "insert into users (name) values (?)", [Db.Value.Text(name)])
@@ -29,7 +30,7 @@ def count(conn: Db.Connection) -> Result[Int]
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (name text not null unique)", [])
   saved = try Db.transaction(conn) do |tx|
     save(tx, "Ana")

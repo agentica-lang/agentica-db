@@ -12,9 +12,9 @@ macos = { system = "libsqlite3.dylib" }
 windows = { system = "winsqlite3.dll" }
 
 # The native SQLite driver (sqlite/native.agc), built from native/db_sqlite.c with the system C compiler into the
-# package cache by the first run or compile of a program that imports the package, a fetched package too. It opens the
-# system SQLite itself (the library of [native.sqlite3]), so the build needs no SQLite headers. When the library does
-# not load, the adapter runs the FFI driver (sqlite/ffi.agc).
+# package cache by the first run or compile of a program that imports the SQLite driver (sqlite.agc), a fetched package
+# too. It opens the system SQLite itself (the library of [native.sqlite3]), so the build needs no SQLite headers. When
+# the library does not load, the adapter runs the FFI driver (sqlite/ffi.agc).
 [native.db_sqlite]
 build = { sources = ["native/db_sqlite.c"] }
 linux = { system = "libdb_sqlite.so" }
@@ -29,9 +29,10 @@ linux = { system = "libpq.so.5" }
 macos = { system = "libpq.5.dylib" }
 windows = { system = "libpq.dll" }
 
-# The native PostgreSQL driver (postgres/native.agc), built from native/db_postgres.c like db_sqlite. It opens the
-# system libpq itself (the library of [native.pq]; on macOS from DYLD_LIBRARY_PATH, Homebrew or Postgres.app), so the
-# build needs no libpq headers. When the library does not load, the adapter runs the FFI driver (postgres/ffi.agc).
+# The native PostgreSQL driver (postgres/native.agc), built from native/db_postgres.c like db_sqlite, by a program that
+# imports the PostgreSQL driver (postgres.agc). It opens the system libpq itself (the library of [native.pq]; on macOS
+# from DYLD_LIBRARY_PATH, Homebrew or Postgres.app), so the build needs no libpq headers. When the library does not
+# load, the adapter runs the FFI driver (postgres/ffi.agc).
 [native.db_postgres]
 build = { sources = ["native/db_postgres.c"] }
 linux = { system = "libdb_postgres.so" }

@@ -14,7 +14,7 @@
 
 import Db from "pkg/db/db"
 import Prop from "pkg/prop/prop"
-import Sqlite from "pkg/db/sqlite/sqlite"
+import Sqlite from "pkg/db/sqlite"
 
 ## What a read looks like, by the words it starts with.
 enum ReadShape
@@ -79,7 +79,7 @@ def pragma_gen() -> Prop.Gen[Pragma] = Prop.of(Pragma.codec, JSON.schema(Pragma)
 ## or the PRAGMA data_version or user_version, whatever surrounds it.
 def read_runs_short_as_modelled(read: Read) -> Result[Void]
   sql = read_sql(read)
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   ran = run_twice(conn, sql)
   counted = shorts_of(conn)
   Db.close(conn)
@@ -309,14 +309,11 @@ end
 # The statements that ran whole in a short call. Only the native driver counts them: a run on the FFI driver, which
 # CI makes with AGENTICA_DB_SQLITE_DRIVER=ffi, has nothing to check.
 def shorts_of(conn: Db.Connection) -> Result[Int]
-  case conn
-    Db.Connection.Sqlite(sqlite) ->
-      case Sqlite.statement_cache(sqlite)
-        some(stats) -> ok(stats.shorts)
-        none -> error("the connection runs the FFI driver, which has no short calls")
-      end
+  return error("not a SQLite connection") if conn.adapter != Db.Adapter.Sqlite
 
-    _ -> error("not a SQLite connection")
+  case Db.statement_cache(conn)
+    some(stats) -> ok(stats.shorts)
+    none -> error("the connection runs the FFI driver, which has no short calls")
   end
 end
 
@@ -329,7 +326,7 @@ end
 # Opens a WAL database in the folder, runs two cheap transactions (the second runs whole in short calls), then the
 # PRAGMA, then a third, and gives the statements the third ran in a short call.
 def pragma_outcome(dir: String, pragma: Pragma) -> Result[Int]
-  conn = try Db.open("sqlite:#{try Path.join([dir, "p.db"])}")
+  conn = try Db.open("sqlite:#{try Path.join([dir, "p.db"])}", [Sqlite.driver()])
   counted = counted_after(conn, pragma)
   Db.close(conn)
   counted

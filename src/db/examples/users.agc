@@ -10,6 +10,7 @@
 
 import Db from "../db"
 import Orm from "../orm"
+import Sqlite from "../sqlite"
 import HTTP from "std/http"
 
 private
@@ -246,7 +247,7 @@ def build_request(method: String, target: String, body: String) -> HTTP.Request
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, CREATE_USERS, [])
   schema = users()
   try Orm.check(conn, schema)

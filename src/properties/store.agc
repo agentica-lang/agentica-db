@@ -5,6 +5,9 @@
 ## the drivers agree.
 
 import Db from "pkg/db/db"
+import Mysql from "pkg/db/mysql"
+import Postgres from "pkg/db/postgres"
+import Sqlite from "pkg/db/sqlite"
 import Cells from "pkg/db/specs/cells"
 import Prop from "pkg/prop/prop"
 import Gens from "value_gens"
@@ -76,9 +79,9 @@ end
 
 def connect(adapter: Adapter) -> Result[Db.Connection]
   case adapter
-    Adapter.Sqlite -> Db.open("sqlite::memory:")
-    Adapter.Postgres -> Db.open(try System.env("AGENTICA_DB_POSTGRES_URL"))
-    Adapter.Mysql -> Db.open(try System.env("AGENTICA_DB_MYSQL_URL"))
+    Adapter.Sqlite -> Db.open("sqlite::memory:", [Sqlite.driver()])
+    Adapter.Postgres -> Db.open(try System.env("AGENTICA_DB_POSTGRES_URL"), [Postgres.driver()])
+    Adapter.Mysql -> Db.open(try System.env("AGENTICA_DB_MYSQL_URL"), [Mysql.driver()])
   end
 end
 

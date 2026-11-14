@@ -12,6 +12,7 @@ A web app should not open a connection for each request. `DbPool` (`import DbPoo
 import Db from "pkg/db/db"
 import DbPool from "pkg/db/db_pool"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -20,7 +21,7 @@ end
 
 def main() -> Void
   users = Orm.schema("users", User.codec)
-  pool = DbPool.start(DbPool.Options(url: "sqlite::memory:")).unwrap!
+  pool = DbPool.start(DbPool.Options(url: "sqlite::memory:", drivers: [Sqlite.driver()])).unwrap!
   setup = DbPool.with(pool) do |conn|
     try Db.execute(conn, "create table users (id integer primary key, name text not null)", [])
     try Db.execute(conn, "insert into users (name) values (?)", [Db.Value.Text("Ana")])
@@ -42,7 +43,7 @@ Start the pool once, in a task that lives as long as it does, such as `main`: ea
 
 ## Options
 
-`DbPool.start(DbPool.Options(url: ...))` opens `size` connections at once, so a wrong url or a database that is down fails `start`, not the first request. The fields besides `url`:
+`DbPool.start(DbPool.Options(url: ..., drivers: ...))` opens `size` connections at once, so a wrong url or a database that is down fails `start`, not the first request. `url` and `drivers` are what [`Db.open`](/basics/connecting/) takes. The other fields:
 
 - `size` (0): how many connections. 0 takes the size of the database: 4 for SQLite, 10 for PostgreSQL and MySQL or MariaDB. A private in-memory SQLite database (`sqlite::memory:`, `sqlite:file::memory:` or a `file:` name with `mode=memory`) has one connection, and a `size` or `max_overflow` that asks for more is refused with `db error: a pool of a private in-memory database can have one connection only` (each connection would be an empty database of its own). With `cache=shared` in the name (`sqlite:file:app?mode=memory&cache=shared`) every connection sees one database, and the size is free.
 - `max_overflow` (0): in a spike, up to this many connections more are opened, so `size + max_overflow` is the most there are.

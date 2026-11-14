@@ -10,9 +10,10 @@ The PostgreSQL adapter uses the system `libpq` (PostgreSQL 12 or later). `open` 
 
 ```agentica
 import Db from "pkg/db/db"
+import Postgres from "pkg/db/postgres"
 
 def run() -> Result[Void]
-  conn = try Db.open("postgres://user:pass@localhost:5432/app?sslmode=disable&connect_timeout=5")
+  conn = try Db.open("postgres://user:pass@localhost:5432/app?sslmode=disable&connect_timeout=5", [Postgres.driver()])
   rows = try Db.query(conn, "select id, name from users where age > ?::int", [Db.Value.Int(28)])
   puts(rows.size)
   Db.close(conn)
@@ -29,7 +30,7 @@ end
 
 ## The url
 
-The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`, `options`). A conninfo string such as `host=localhost dbname=app` works with `Db.open_postgres`. Set `connect_timeout` (in seconds): without it, an unreachable host waits as long as the operating system does. The client encoding is always UTF8.
+The url goes to libpq as it is, so every libpq parameter works (`sslmode`, `connect_timeout`, `application_name`, `options`). A conninfo string such as `host=localhost dbname=app` works with `Postgres.open`. Set `connect_timeout` (in seconds): without it, an unreachable host waits as long as the operating system does. The client encoding is always UTF8.
 
 This package reads four parameters itself, which libpq never sees, in a url or in a conninfo string:
 
@@ -77,7 +78,7 @@ An engine failure is `postgres error <SQLSTATE>: <message>`, as in `postgres err
 
 Two drivers run the statements, with the same results and errors:
 
-- The native driver is a small C module of the package (`src/db/native/db_postgres.c`) that opens the system libpq itself (`libpq.so.5`; on macOS `libpq.5.dylib` from `DYLD_LIBRARY_PATH`, Homebrew or Postgres.app; on Windows `libpq.dll` next to `agentica.exe` or in the system folder). It keeps libpq in its non-blocking mode: a query sends its statement, parks its task on the socket until the server answers, and reads the rows in short calls of `batch_rows` rows or `batch_bytes` bytes, so it takes no compute call and other tasks run meanwhile. Each connection keeps up to `statement_cache` prepared statements (`agentica_1`, `agentica_2`, ... on the server), keyed by the sql text: a `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `WITH`, `VALUES`, `MERGE` or `TABLE` that ran before is not parsed or planned again, and runs in one round trip; its first run takes two (a prepare, then the run). When the cache is full the statement used least long ago goes, and the server's copies are deallocated 16 at a time, in one round trip, when no transaction is open. A `CREATE`, `ALTER`, `DROP` or `IMPORT` lets the whole cache go, since a cached plan may not fit the new tables, and so does a `DEALLOCATE ALL` or `DISCARD ALL`, which drops the server's copies. A cached statement that the server refuses because another connection changed its table (`0A000`, cached plan must not change result type) or because it was deallocated (`26000`) is prepared again and run once more when no transaction is open; inside one the error stands and fails the transaction, and the next run prepares it again.
+- The native driver is a small C module of the package (`src/db/native/db_postgres.c`) that opens the system libpq itself (`libpq.so.5`; on macOS `libpq.5.dylib` from `DYLD_LIBRARY_PATH`, Homebrew or Postgres.app; on Windows `libpq.dll` next to `agentica.exe` or in the system folder). It keeps libpq in its non-blocking mode: a query sends its statement, parks its task on the socket until the server answers, and reads the rows in short calls of `batch_rows` rows or `batch_bytes` bytes, so it takes no compute call and other tasks run meanwhile. Each connection keeps up to `statement_cache` prepared statements (`agentica_1`, `agentica_2`, ... on the server), keyed by the sql text: a `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `WITH`, `VALUES`, `MERGE` or `TABLE` that ran before is not parsed or planned again, and runs in one round trip; its first run takes two (a prepare, then the run). When the cache is full the statement used least long ago goes, and the server's copies are deallocated 16 at a time, in one round trip, when no transaction is open. A `CREATE`, `ALTER`, `DROP` or `IMPORT` lets the whole cache go, since a cached plan may not fit the new tables, and so does a `DEALLOCATE ALL` or `DISCARD ALL`, which drops the server's copies. A cached statement that the server refuses because another connection changed its table (`0A000`, cached plan must not change result type) or because it was deallocated (`26000`) is prepared again and run once more when no transaction is open; inside one the error stands and fails the transaction, and the next run prepares it again. `Db.statement_cache(conn)` gives the counters of the cache (`size`, `capacity`, `hits`, `misses`, `evictions`), and none on the FFI driver.
 - The FFI driver calls libpq through `extern` functions: it sends each statement by its text, waits for the server on the compute pool, and reads the result one value per call. A one-row query costs about twice as much, and a query of 1000 rows about four times.
 
 `open` takes the native driver when its library loads, else the FFI one. Agentica builds the library with the system C compiler like the [SQLite one](/databases/sqlite/#drivers) (no libpq headers are needed). `AGENTICA_DB_POSTGRES_DRIVER=native` makes a missing library an error of `open`, and `AGENTICA_DB_POSTGRES_DRIVER=ffi` always runs the FFI driver.

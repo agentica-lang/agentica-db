@@ -18,6 +18,7 @@ The writes take the connection first. They bind every value and run the name, ty
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -26,7 +27,7 @@ struct User
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   users = Orm.schema("users", User.codec)
   ana = try Db.transaction(conn) do |tx|
@@ -92,6 +93,7 @@ When you do mean every row, say so with a condition that is always true: `|> Orm
 ```agentica
 import Db from "pkg/db/db"
 import Orm from "pkg/db/orm"
+import Sqlite from "pkg/db/sqlite"
 
 struct User
   id: Int = 0
@@ -100,7 +102,7 @@ struct User
 end
 
 def run() -> Result[Void]
-  conn = try Db.open("sqlite::memory:")
+  conn = try Db.open("sqlite::memory:", [Sqlite.driver()])
   try Db.execute(conn, "create table users (id integer primary key, name text not null, age integer)", [])
   try Db.execute(conn, "insert into users (name, age) values ('Ana', 31), ('Bob', 27), ('Cy', 40)", [])
   users = Orm.schema("users", User.codec)

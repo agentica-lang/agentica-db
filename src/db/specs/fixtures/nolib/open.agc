@@ -2,13 +2,16 @@
 ## answers the error, or `opened`.
 
 import Db from "../../../db"
+import Mysql from "../../../mysql"
+import Postgres from "../../../postgres"
+import Sqlite from "../../../sqlite"
 
 private
 
 def main() -> Void
   line = IO.gets
   while line.ok?
-    case Db.open(line.unwrap_or(""))
+    case Db.open(line.unwrap_or(""), [Sqlite.driver(), Postgres.driver(), Mysql.driver()])
       error(message) -> puts(message)
       ok(conn) ->
         Db.close(conn)
