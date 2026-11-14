@@ -10,8 +10,8 @@ permissions:
 
 env:
   # The package needs Agentica 0.31.0: .github/actions/agentica
-  # builds the commit of the tag 0.31.0 of agentica-lang/agentica.
-  AGENTICA_COMMIT: e90cf1207f8424745f7f67d28f6b67459d3b5bf3
+  # builds the commit of the tag 0.31.2 of agentica-lang/agentica.
+  AGENTICA_COMMIT: 857b15e04052b55b52c2dfad35c2ef733878ee1e
 
 jobs:
   # The whole suite runs twice, once per MySQL server: MariaDB 11 and MySQL 8.4 differ (MySQL does not prepare

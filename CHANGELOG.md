@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- CI builds Agentica 0.31.2 (the minimum stays 0.31.0) and the property tests use prop 0.4.1.
 - The native SQLite and PostgreSQL modules are optional: without a C compiler a program prints Agentica's warning and runs the FFI drivers, instead of failing with `PKG-NATIVE-BUILD` (this lifts the compiler requirement of 0.6.0).
 
 ### Fixed
