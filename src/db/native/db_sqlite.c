@@ -1393,6 +1393,11 @@ static bool short_plan(conn *c, const char *sql, size_t len, bool write) {
           ok = strcmp(op, "Count") != 0;
         } else if (pass == 0) {
           ok = note_op(&scan, addr, op, p1, p2, sq.column_int64(plan, 4), sequence);
+        } else if (addr >= scan.count) {
+          /* Another connection changed the schema between the passes and this step prepared the plan again, longer:
+             the arrays of the first pass do not reach it (they are NULL after an empty one). The statement runs in a
+             normal call. */
+          ok = false;
         } else if (opcode_in(op, WRITE_LONG, sizeof WRITE_LONG / sizeof WRITE_LONG[0])) {
           ok = false;
         } else if (strcmp(op, "Rewind") == 0 || strcmp(op, "Last") == 0) {

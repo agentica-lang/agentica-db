@@ -28,8 +28,9 @@ def reads_back(adapter: Adapter, runs: Int) -> Result[Void]
     return error(made.message)
   end
 
+  unsigned_zero = adapter == Adapter.Sqlite or mariadb?(conn, adapter)
   checked = Prop.oracle(row_gen(adapter), through(conn, columns), Prop.Config(runs: runs)) do |cells|
-    held(adapter, cells)
+    held(adapter, unsigned_zero, cells)
   end
 
   Db.close(conn)
@@ -107,41 +108,47 @@ def columns_of(adapter: Adapter) -> List[Column]
 end
 
 # MySQL has no NaN and no infinity, and its adapter refuses them (specs/mysql.feature), so its generator makes none.
-# CI showed a -0.0 reading back as 0.0 on MySQL 8.4 and MariaDB 11 (PostgreSQL keeps it, and SQLite does it on purpose,
-# see `held`). Whether the server or the FFI driver does it is open (agentica-lang/agentica-db#84), so a negative zero
-# is left out of the MySQL generator until that issue says.
 def float_kinds(adapter: Adapter) -> Gens.FloatKinds
   case adapter
     Adapter.Sqlite -> Gens.FloatKinds(nan: true, infinite: true, negative_zero: true)
     Adapter.Postgres -> Gens.FloatKinds(nan: true, infinite: true, negative_zero: true)
-    Adapter.Mysql -> Gens.FloatKinds(nan: false, infinite: false, negative_zero: false)
+    Adapter.Mysql -> Gens.FloatKinds(nan: false, infinite: false, negative_zero: true)
   end
 end
 
 # SQLite stores a NaN as NULL (specs/sqlite.feature) and a -0.0 as the integer 0, which reads back as 0.0: SQLite does
-# it itself, and the sqlite3 module of Python shows the same. Everything else comes back as it was written.
-def held(adapter: Adapter, cells: List[String]) -> List[String]
-  return cells if adapter != Adapter.Sqlite
-
-  cells.map do |cell| sqlite_held(cell) end
+# it itself, and the sqlite3 module of Python shows the same. A MariaDB server gives a -0.0 back as 0.0 too, also in
+# its own client (`select -0e0`), while MySQL keeps the sign (agentica-lang/agentica-db#84). Everything else comes back
+# as it was written.
+def held(adapter: Adapter, unsigned_zero: Bool, cells: List[String]) -> List[String]
+  cells.map do |cell| held_cell(adapter, unsigned_zero, cell) end
 end
 
-def sqlite_held(cell: String) -> String
+def held_cell(adapter: Adapter, unsigned_zero: Bool, cell: String) -> String
   case cell
-    "Float NaN" -> "Null"
-    "Float -0.0" -> "Float 0.0"
+    "Float NaN" if adapter == Adapter.Sqlite -> "Null"
+    "Float -0.0" if unsigned_zero -> "Float 0.0"
     _ -> cell
   end
 end
 
-# The row as the database gives it back, for `Prop.oracle`, which compares the lists as JSON: a failure of the database
-# is a one item list that says so. `as_fn` makes a function value of the block, which closes over the connection (the
-# fast function of the law cannot be a block, the last one is).
-def through(conn: Db.Connection, columns: List[Column]) -> Fn[List[String], List[String]]
-  as_fn do |cells| stored(conn, columns, cells) end
+def mariadb?(conn: Db.Connection, adapter: Adapter) -> Bool
+  return false if adapter != Adapter.Mysql
+
+  rows: List[Db.Row] = Db.query(conn, "select version() as v", []).unwrap_or([])
+  return false if rows.empty?
+
+  case rows[0].get("v", Db.Value.Null)
+    Db.Value.Text(version) -> version.include?("MariaDB")
+    _ -> false
+  end
 end
 
-def as_fn[A, B](f: Fn[A, B]) -> Fn[A, B] = f
+# The row as the database gives it back, for `Prop.oracle`, which compares the lists as JSON: a failure of the database
+# is a one item list that says so. The function closes over the connection.
+def through(conn: Db.Connection, columns: List[Column]) -> Fn[List[String], List[String]]
+  ->(cells) { stored(conn, columns, cells) }
+end
 
 def stored(conn: Db.Connection, columns: List[Column], cells: List[String]) -> List[String]
   case read_back(conn, columns, write_row(conn, columns, cells))

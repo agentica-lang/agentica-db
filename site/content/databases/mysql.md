@@ -58,7 +58,7 @@ A url with `timeout_ms` also sets the client read and write timeouts, in whole s
 | MySQL | `Db.Value` |
 |---|---|
 | `tinyint`, `smallint`, `mediumint`, `int`, `bigint`, `year`, and the `unsigned` ones that fit an `Int` | `Int` |
-| `float`, `double` | `Float` (no NaN or infinity) |
+| `float`, `double` | `Float` (no NaN or infinity; a MariaDB server gives a `-0.0` back as `0.0`, MySQL keeps it) |
 | `boolean` (a `tinyint(1)`) | `Int` |
 | `binary`, `varbinary`, the blobs, `bit`, `geometry` | `Blob` |
 | NULL | `Null` |
