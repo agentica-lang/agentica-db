@@ -306,7 +306,8 @@ end
 # driver is not built" in place of the error of the FFI library, which this scenario is about.
 def without_driver_choice(ctx: BDD.Context) -> BDD.Context
   sqlite = BDD.given_env(ctx, "AGENTICA_DB_SQLITE_DRIVER", "")
-  BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
+  postgres = BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
+  BDD.given_env(postgres, "AGENTICA_DB_MYSQL_DRIVER", "")
 end
 
 # A step that captures nothing.
