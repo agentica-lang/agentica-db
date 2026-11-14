@@ -22,6 +22,11 @@ SESSIONS_SQL = {
   "postgres": "select count(*) as n from pg_stat_activity where pid = ?",
   "mysql": "select count(*) as n from information_schema.processlist where id = ?",
 }
+# Per adapter: the count of the statements of other sessions whose text has a marker (a `like` pattern).
+RUNNING_SQL = {
+  "postgres": "select count(*) as n from pg_stat_activity where query like ? and pid <> pg_backend_pid()",
+  "mysql": "select count(*) as n from information_schema.processlist where info like ? and id <> connection_id()",
+}
 # What [SLOW] and [WORK] stand for, per adapter: a statement that runs for many seconds, and one that works for about
 # half a second and gives the row `n = 1`.
 SLOW_SQL = {
@@ -362,6 +367,7 @@ def act(state: State, req: Request) -> Handled
     "float_oracle" -> float_oracle(state, req.text)
     "keep_running" -> keep_running(state, req.text, req.number)
     "leave_open" -> leave_open(state, req.number)
+    "none_running" -> none_running(state, req.text, req.number)
     _ -> Handled(state: state, reply: "unknown op #{req.op.inspect}")
   end
 end
@@ -2064,6 +2070,29 @@ def reply_ok_when_gone(state: State, id: Int, limit_ms: Int) -> Handled
     ok(0) -> reply_ok(state)
     ok(_) -> Handled(state: state, reply: "the session #{id} stayed open after #{limit_ms} ms")
   end
+end
+
+# No other session runs a statement whose text has `marker` within `limit_ms`.
+def none_running(state: State, marker: String, limit_ms: Int) -> Handled
+  return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
+
+  started = Time.monotonic_ms()
+  left = running(state.conns[0], state.adapter, marker)
+  while left.ok? and left.unwrap_or(0) > 0 and Time.monotonic_ms() - started < limit_ms
+    Task.sleep(SESSION_POLL_MS)
+    left = running(state.conns[0], state.adapter, marker)
+  end
+
+  case left
+    error(message) -> Handled(state: state, reply: "counting the statements failed: #{message}")
+    ok(0) -> reply_ok(state)
+    ok(n) -> Handled(state: state, reply: "#{n} statements with #{marker} still ran after #{limit_ms} ms")
+  end
+end
+
+def running(conn: Db.Connection, adapter: String, marker: String) -> Result[Int]
+  rows = try Db.query(conn, RUNNING_SQL[adapter], [Db.Value.Text("%#{marker}%")])
+  int_of(rows)
 end
 
 # The longest time between two wake-ups of a task that sleeps a few milliseconds at a time.

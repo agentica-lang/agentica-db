@@ -71,6 +71,15 @@ def healthy?(handle: Handle) -> Bool = mysql_ping(handle) == 0
 ## The version of the server, `8.4.3` or `11.4.2-MariaDB`.
 def server_info(handle: Handle) -> String = mysql_get_server_info(handle)
 
+## The id of the connection on the server (`CONNECTION_ID()`), which `KILL QUERY` takes. It is an unsigned long, 32
+## bits on Windows, where an id past 2^31 reads negative.
+def thread_id(handle: Handle) -> Int
+  id = mysql_thread_id(handle)
+  return id + UINT32_RANGE if id < 0
+
+  id
+end
+
 private
 
 POINTER_SIZE = 8
@@ -102,6 +111,7 @@ NO_SOCKET = -1
 ATTR_UPDATE_MAX_LENGTH = 0
 # The error of a statement that the server does not prepare.
 UNSUPPORTED_PREPARE = 1295
+UINT32_RANGE = 4_294_967_296
 # The results of mysql_stmt_fetch.
 FETCH_ERROR = 1
 FETCH_NO_DATA = 100
@@ -214,6 +224,7 @@ extern "mariadb"
   def mysql_options_text(mysql: RawHandle, option: C.Int32, value: C.String) -> C.Int32 = "mysql_options"
   compute def mysql_set_character_set(mysql: RawHandle, name: C.String) -> C.Int32
   def mysql_get_server_info(mysql: RawHandle) -> C.String
+  def mysql_thread_id(mysql: RawHandle) -> C.Long
   compute def mysql_ping(mysql: RawHandle) -> C.Int32
   def mysql_errno(mysql: RawHandle) -> C.Int32
   def mysql_get_socket(mysql: RawHandle) -> C.Int32

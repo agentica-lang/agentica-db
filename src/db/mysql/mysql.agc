@@ -46,20 +46,28 @@ enum Flavor
   MariaDb
 end
 
-## An open connection, the server it talks to and the limit of a statement it was opened with (0: none). `link` is
+## An open connection, the server it talks to, the limit of a statement it was opened with (0: none) and its id on the
+## server (`CONNECTION_ID()`). `link` is
 ## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
 ## opaque and pass the `Connection` around.
 struct Connection
   link: Link
   flavor: Flavor
   timeout_ms: Int = 0
+  thread_id: Int = 0
 end
 
 ## Connects with a `mysql://` or `mariadb://` url (see `MysqlUrl`). The client character set is utf8mb4.
 def open(url: String) -> Result[Connection]
   target = try MysqlUrl.parse(url)
   link = try connect(target)
-  conn = Connection(link: link, flavor: flavor_of(server_version(link)), timeout_ms: target.timeout_ms)
+  conn = Connection(
+    link: link,
+    flavor: flavor_of(server_version(link)),
+    timeout_ms: target.timeout_ms,
+    thread_id: thread_id(link),
+  )
+
   limited = limit_session(conn)
   case limited
     ok(_) -> ok(conn)
@@ -73,6 +81,20 @@ end
 def close(conn: Connection) -> Void
   case conn.link
     Link.Ffi(handle) -> Native.close(handle)
+  end
+end
+
+## Stops the statement that runs on the connection, if any: `KILL QUERY` with its id, from a connection of its own to
+## `url`, the url of this one (a server that does not answer holds the caller for its `connect_timeout`). The pool
+## sends it when a block runs past `lease_ms`. Not for `Db`.
+def interrupt(conn: Connection, url: String) -> Void
+  return if closed?(conn.link)
+
+  case open(url)
+    error(_) -> return
+    ok(killer) ->
+      _ = execute(killer, "KILL QUERY #{conn.thread_id}", [])
+      close(killer)
   end
 end
 
@@ -140,6 +162,12 @@ def connect(target: MysqlUrl.Target) -> Result[Link]
 
   handle = try MysqlFfi.open(target)
   ok(Link.Ffi(handle))
+end
+
+def thread_id(link: Link) -> Int
+  case link
+    Link.Ffi(handle) -> MysqlFfi.thread_id(handle)
+  end
 end
 
 def server_version(link: Link) -> String

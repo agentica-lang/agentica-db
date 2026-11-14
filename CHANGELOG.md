@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `DbPool`: a block that runs past `lease_ms`, or whose caller is cancelled, stops its statement on PostgreSQL (a cancel request) and on MySQL and MariaDB (`KILL QUERY` from a connection of its own), as on SQLite; it no longer runs on the server until its end.
+
 ## [0.11.0] - 2026-11-14
 
 Needs Agentica 0.31.0 or later.

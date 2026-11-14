@@ -81,6 +81,24 @@ Feature: Pooling
       | postgres | postgres error 42P01:          |
       | mysql    | mysql error 1146:              |
 
+  # The statement of a block that runs past lease_ms is cancelled on the server (PostgreSQL: a cancel request; MySQL
+  # and MariaDB: KILL QUERY from a connection of its own), not left to run to its end after the pool closes the
+  # connection. SQLite interrupts it (see above).
+  Scenario Outline: A statement that runs past lease_ms is stopped on the server on <adapter>
+    Given a "<adapter>" database
+    When I start a pool on "[URL]" with:
+      | option   | value |
+      | size     | 1     |
+      | lease_ms | 1000  |
+    And I query "<sleep> as hard_cancel_probe" in the pool
+    Then it fails with "pool error: lease timed out after 1000 ms"
+    And no other session runs a statement with "hard_cancel_probe" within 3000 ms
+
+    Examples:
+      | adapter  | sleep               |
+      | postgres | select pg_sleep(30) |
+      | mysql    | select sleep(30)    |
+
   # The caller is cancelled while it holds the connection: its block is cancelled with it (it does not run on for the
   # 10 s it asked), and the connection is closed and replaced, so the next caller gets a new one at once.
   Scenario Outline: A caller cancelled while it holds a connection gives it up on <adapter>

@@ -28,7 +28,7 @@ def connection(conn: PostgresAdapter.Connection) -> C.Connection
     in_transaction: -> { PostgresAdapter.in_transaction?(conn) },
     connected: -> { PostgresAdapter.connected?(conn) },
     healthy: -> { PostgresAdapter.healthy?(conn) },
-    interrupt: -> { return },
+    interrupt: -> { PostgresAdapter.interrupt(conn) },
     enter_gate: -> { connection(conn) },
     leave_gate: -> { return },
     statement_cache: -> { cache_stats(conn) },
