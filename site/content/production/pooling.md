@@ -103,7 +103,7 @@ The caller gets `pool error: lease timed out after N ms` when the time is over, 
 
 - SQLite: the statement is interrupted, so the connection closes at once and the next caller gets a new one.
 - PostgreSQL: the pool sends a cancel request for the statement, so the server stops it, and closes the connection.
-- MySQL and MariaDB: the pool runs `KILL QUERY` for the statement on a new connection to the same url, so the server stops it, and closes the connection. A server that does not answer holds the pool for the `connect_timeout` of that connection. Still set `timeout_ms` in the url below `lease_ms`, so that the server ends a statement before the lease does.
+- MySQL and MariaDB: the pool runs `KILL QUERY` for the statement on a new connection to the same url (its connect waits at most 5 s), so the server stops it, and closes the connection. The kill is skipped when that connection reaches another server, as behind a load balancer. Still set `timeout_ms` in the url below `lease_ms`, so that the server ends a statement before the lease does.
 
 In all cases a `timeout_ms` below `lease_ms` makes the statement fail by itself (`Db.timeout?`), as an ordinary error of the block, and the connection is kept.
 

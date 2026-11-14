@@ -69,10 +69,10 @@ def link_status(session: Session) -> Int = session.lock.synchronize do settled_s
 def closed?(session: Session) -> Bool = Native.closed?(session.conn)
 
 ## Asks the server to stop the query that a cancelled task left on the connection (a cancel request, on the compute
-## pool). Nothing when no query was left or the connection is closed.
+## pool). Nothing when no query was left, the connection is closed or a compute call of a cancelled task still holds it.
 def interrupt(session: Session) -> Void
   session.lock.synchronize do
-    if not Native.closed?(session.conn) and left?(session.conn)
+    if not Native.closed?(session.conn)
       cancel(session.conn)
     end
   end

@@ -22,10 +22,15 @@ SESSIONS_SQL = {
   "postgres": "select count(*) as n from pg_stat_activity where pid = ?",
   "mysql": "select count(*) as n from information_schema.processlist where id = ?",
 }
-# Per adapter: the count of the statements of other sessions whose text has a marker (a `like` pattern).
+# Per adapter: the count of the running statements of other sessions whose text has a marker (a `like` pattern).
 RUNNING_SQL = {
-  "postgres": "select count(*) as n from pg_stat_activity where query like ? and pid <> pg_backend_pid()",
-  "mysql": "select count(*) as n from information_schema.processlist where info like ? and id <> connection_id()",
+  "postgres": (
+    "select count(*) as n from pg_stat_activity where state = 'active' and query like ? and pid <> pg_backend_pid()"
+  ),
+  "mysql": (
+    "select count(*) as n from information_schema.processlist " +
+    "where command = 'Query' and info like ? and id <> connection_id()"
+  ),
 }
 # What [SLOW] and [WORK] stand for, per adapter: a statement that runs for many seconds, and one that works for about
 # half a second and gives the row `n = 1`.

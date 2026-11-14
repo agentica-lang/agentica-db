@@ -34,7 +34,8 @@ def canceller(handle: Handle) -> Result[Canceller]
 end
 
 ## Asks the server to stop the statement that runs on the connection of the key (PQcancel, a connection of its own to
-## the server, so on the compute pool). A failure is dropped: the statement then runs to its end.
+## the server, so on the compute pool). A failure is dropped: the statement then runs to its end. Its connect has no
+## time limit of its own (the system's), unlike the libpq 17 cancel of the native driver, which gives up after 5 s.
 def cancel(canceller: Canceller) -> Void
   _ = Native.memory_pointer(CANCEL_ERROR_SIZE) do |why| pq_cancel(canceller, why, CANCEL_ERROR_SIZE) end
 end

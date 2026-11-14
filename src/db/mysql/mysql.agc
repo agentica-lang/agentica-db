@@ -46,15 +46,21 @@ enum Flavor
   MariaDb
 end
 
-## An open connection, the server it talks to, the limit of a statement it was opened with (0: none) and its id on the
-## server (`CONNECTION_ID()`). `link` is
-## public because a struct has no private fields, but its type is not exported (a user cannot name it): treat it as
-## opaque and pass the `Connection` around.
+## An open connection, the server it talks to, the limit of a statement it was opened with (0: none) and who it is on
+## the server, for `interrupt`. `link` is public because a struct has no private fields, but its type is not exported
+## (a user cannot name it): treat it as opaque and pass the `Connection` around.
 struct Connection
   link: Link
   flavor: Flavor
   timeout_ms: Int = 0
-  thread_id: Int = 0
+  identity: Identity
+end
+
+## The `CONNECTION_ID()` of a connection and the server that gave it (`@@server_id` and `@@hostname`; empty when not
+## known).
+struct Identity
+  id: Int
+  server: String
 end
 
 ## Connects with a `mysql://` or `mariadb://` url (see `MysqlUrl`). The client character set is utf8mb4.
@@ -65,7 +71,7 @@ def open(url: String) -> Result[Connection]
     link: link,
     flavor: flavor_of(server_version(link)),
     timeout_ms: target.timeout_ms,
-    thread_id: thread_id(link),
+    identity: identity_of(link),
   )
 
   limited = limit_session(conn)
@@ -84,17 +90,23 @@ def close(conn: Connection) -> Void
   end
 end
 
-## Stops the statement that runs on the connection, if any: `KILL QUERY` with its id, from a connection of its own to
-## `url`, the url of this one (a server that does not answer holds the caller for its `connect_timeout`). The pool
-## sends it when a block runs past `lease_ms`. Not for `Db`.
+## Stops the statement that runs on the connection, if any: `KILL QUERY` from a connection of its own to `url`, the
+## url of this one, which connects within `connect_timeout` and at most 5 s. The kill is skipped when that connection
+## reached another server (a load balancer) or the identity is not known. The pool sends it when a block runs past
+## `lease_ms`. Not for `Db`.
 def interrupt(conn: Connection, url: String) -> Void
-  return if closed?(conn.link)
+  return if closed?(conn.link) or conn.identity.server.empty?
 
-  case open(url)
+  case MysqlUrl.parse(url)
     error(_) -> return
-    ok(killer) ->
-      _ = execute(killer, "KILL QUERY #{conn.thread_id}", [])
-      close(killer)
+    ok(target) ->
+      case connect(target.with(timeout: killer_timeout(target.timeout)))
+        error(_) -> return
+        ok(killer) ->
+          # A cancel of this task leaves the killer to the end of the task, which frees it.
+          kill_query(killer, conn.identity)
+          close_link(killer)
+      end
   end
 end
 
@@ -141,6 +153,8 @@ private
 
 MS_PER_SECOND = 1000
 DRIVER_VARIABLE = "AGENTICA_DB_MYSQL_DRIVER"
+IDENTITY_SQL = "SELECT CONNECTION_ID() AS id, @@server_id AS server_id, @@hostname AS host"
+KILLER_CONNECT_S = 5
 CLOSED = "mysql error: the connection is closed"
 NATIVE_OFF = (
   "mysql error: the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
@@ -164,9 +178,43 @@ def connect(target: MysqlUrl.Target) -> Result[Link]
   ok(Link.Ffi(handle))
 end
 
-def thread_id(link: Link) -> Int
+def identity_of(link: Link) -> Identity
+  case run_query(link, IDENTITY_SQL, [])
+    ok(rows) if rows.size == 1 -> identity_in(rows[0])
+    _ -> Identity(id: 0, server: "")
+  end
+end
+
+def identity_in(row: Row) -> Identity
+  case row["id"]
+    Value.Int(id) -> Identity(id: id, server: "#{text_of(row["server_id"])}@#{text_of(row["host"])}")
+    _ -> Identity(id: 0, server: "")
+  end
+end
+
+def text_of(value: Value) -> String
+  case value
+    Value.Int(n) -> n.to_s
+    Value.Text(text) -> text
+    _ -> ""
+  end
+end
+
+def kill_query(killer: Link, target: Identity) -> Void
+  return if identity_of(killer).server != target.server
+
+  _ = run_execute(killer, "KILL QUERY #{target.id}", [])
+end
+
+def killer_timeout(seconds: Int) -> Int
+  return KILLER_CONNECT_S if seconds == 0 or seconds > KILLER_CONNECT_S
+
+  seconds
+end
+
+def close_link(link: Link) -> Void
   case link
-    Link.Ffi(handle) -> MysqlFfi.thread_id(handle)
+    Link.Ffi(handle) -> Native.close(handle)
   end
 end
 
