@@ -80,8 +80,8 @@ def query(conn: Conn, wait: SqliteWait.Wait, sql: String, params: List[Value], o
   run_short(conn, wait, sql, params, options)
 end
 
-## Ends what a cancelled query left on the connection: a statement that a lock stopped holds a write that SQLite never
-## ended, which keeps the connection in a hidden transaction until it is reset. Every fetch does it first; the adapter
+## Ends what a cancelled query left on the connection: a write stopped before its end, which SQLite counts as running,
+## keeps the connection in a hidden transaction until it is reset. Every fetch does it first; the adapter
 ## does it before it reads whether a transaction is open.
 def settle(conn: Conn) -> Void
   if pending?(conn)

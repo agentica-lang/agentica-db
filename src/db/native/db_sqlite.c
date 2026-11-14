@@ -846,9 +846,9 @@ static void give_back(conn *c, sqlite3_stmt *stmt, entry *e) {
   if (!kept && !node) (void)sq.finalize(stmt);
 }
 
-/* Settles what the free functions left: resets the dirty entries and finalizes the orphans. A statement that a lock
-   stopped in its first step still counts as a running write for SQLite, which then commits nothing else on the
-   connection until it is reset (and that reset rolls back what came after it), and an orphan holds a read snapshot.
+/* Settles what the free functions left: resets the dirty entries and finalizes the orphans. A write given back before
+   its end still counts as running for SQLite, which then commits nothing else on the connection until it is reset
+   (and that reset rolls back what came after it), and an orphan holds a read snapshot.
    So every fetch settles them before it runs, the short call does not run while any are left, and the adapter's
    in_transaction? settles first. It waits for SQLite's mutex: only a call on the compute pool makes it. */
 static void settle(conn *c) {
@@ -1167,6 +1167,10 @@ static int step(conn *c, sqlite3_stmt *stmt, bool short_call, outcome *o) {
        not wait (the holder may wait for this read lock), so neither must the caller. */
     o->upgrade = rc == SQLITE_BUSY && o->extended == SQLITE_BUSY && !sq.stmt_readonly(stmt) && sq.txn_state &&
                  sq.libversion_number() >= TXN_STATE_VERSION && sq.txn_state(c->db, NULL) == SQLITE_TXN_READ;
+    /* A write that a lock stopped still counts as running for SQLite: no other statement of the connection commits
+       until its reset, and the error of a later step would roll them back. The reset, under this mutex, undoes only
+       what the write began; its next fetch runs it again from its start. */
+    if (lock_code(rc) && !sq.stmt_readonly(stmt)) (void)sq.reset(stmt);
   }
   sq.mutex_leave(m);
   return rc;

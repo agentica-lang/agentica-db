@@ -80,6 +80,8 @@ PAUSE_TICK_MS = 5
 # (25 ms), and only a cancel in its sleep frees its cursor at once; once it tries again it waits in its own call.
 CANCEL_AFTER_MS = 5
 WRITER_END_MS = 10_000
+# `execute_beside_waiting` lets the lock go once the write has waited this long: it then sleeps 25 ms between tries.
+WRITER_WAITS_MS = 150
 # The `number` of an `on_other` request that queries; any other executes.
 OTHER_QUERY = 1
 # `cache_beside_big` reads the statement cache this many times, a millisecond apart, while the big query runs.
@@ -358,6 +360,7 @@ def act(state: State, req: Request) -> Handled
     "query_together" -> reply_ok(query_together(state, req))
     "query_beside_long" -> reply_ok(query_beside_long(state, req))
     "cancel_beside_long" -> reply_ok(cancel_beside_long(state, req))
+    "execute_beside_waiting" -> reply_ok(execute_beside_waiting(state, req))
     "on_other" -> reply_ok(on_other(state, req))
     "query_big_json" -> reply_ok(query_big_json(state, req))
     "query_json_list" -> reply_ok(query_json_list(state, req))
@@ -1785,7 +1788,8 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   Task.cancel(writer)
   pause = Task.await(ticker)
   _ = Task.await(long)
-  # A cancel does not stop a try already on the compute pool: the lock is let go only once the writer has ended.
+  # The writer ends at the cancel, but a try already on the compute pool runs on, and may write once the lock is
+  # let go.
   ended = writer_down.recv(WRITER_END_MS)
   _ = Db.execute(other, "rollback", [])
   Db.close(other)
@@ -1795,6 +1799,26 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
     error(message) -> failed(state, message.message)
     ok(ms) if ms >= req.number -> failed(state, "the scheduler stopped for #{ms} ms")
     ok(_) -> recorded(state, Outcome.Done)
+  end
+end
+
+# A write on the connection (`req.cells[0]`) waits for the lock of another connection to `req.text`; once that lock
+# goes, the statement `req.cells[1]` runs on the connection between two tries of the write, and its count is recorded
+# after the write has ended.
+def execute_beside_waiting(state: State, req: Request) -> State
+  with_conn(state) do |conn|
+    case Db.open(expand(state, req.text), drivers())
+      error(message) -> return failed(state, message.message)
+      ok(other) ->
+        _ = Db.execute(other, "begin immediate", [])
+        writer = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
+        Task.sleep(WRITER_WAITS_MS)
+        _ = Db.execute(other, "rollback", [])
+        Db.close(other)
+        count = Db.execute(conn, Cells.expand(req.cells[1]), [])
+        _ = Task.await(writer)
+        return counted(state, count)
+    end
   end
 end
 
