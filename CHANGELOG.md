@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-14
+
+Needs Agentica 0.31.0 or later.
+
 ### Fixed
 
 - SQLite: a statement on a table that another connection made waits for a lock held at its prepare, instead of failing at once with `no such table`.
@@ -245,7 +249,8 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...HEAD
+[0.10.1]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...0.10.1
 [0.10.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.0-alpha.1...0.10.0
 [0.10.0-alpha.1]: https://github.com/agentica-lang/agentica-db/compare/0.9.0...0.10.0-alpha.1
 [0.9.0]: https://github.com/agentica-lang/agentica-db/compare/0.8.0...0.9.0
