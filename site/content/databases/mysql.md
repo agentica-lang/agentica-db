@@ -35,7 +35,7 @@ The url is `mysql://user:password@host:port/database?parameter=value`, and `mari
 - The user, the password and the database are percent-decoded: write `p%40ss` for `p@ss`.
 - The host is required, the port is 3306 by default, an IPv6 host is `[::1]`, and the database is optional.
 - Use an address. The host `localhost` makes the client library use the local socket, which is not where a container listens.
-- The parameters are `connect_timeout` (seconds; set it, since an unreachable host otherwise waits as long as the operating system does), `timeout_ms` (the limit of each statement, see [timeouts](#timeouts)) and `ssl_mode`. Any other parameter is an error.
+- The parameters are `connect_timeout` (seconds; set it, since an unreachable host otherwise waits as long as the operating system does), `timeout_ms` (the limit of each statement, see [timeouts](#timeouts)), `ssl_mode` and `ssl_ca` (see [TLS](#tls)), and for the [native driver](#drivers) (the FFI one ignores them), `statement_cache` (prepared statements kept per connection, 0 to 10000, default `100`), `batch_rows` (rows that one call gives, 1 to 1000, default `100`) and `batch_bytes` (bytes of values that one call gives, about, 1 to 262144, default `262144`). Any other parameter is an error, and so is a number out of its range.
 
 A bad url is `mysql error: <message>`, and the message never repeats a part of the url. A server that does not accept the connection is `mysql error <code>: <message>`, with the code of the client library or the server (`2002` unreachable, `1045` access denied, `1049` unknown database).
 
@@ -45,7 +45,7 @@ A bad url is `mysql error: <message>`, and the message never repeats a part of t
 
 A url with `timeout_ms` also sets the client read and write timeouts, in whole seconds, to the limit plus 10 seconds, as a backstop for what the server does not time (a `DO` or an `INSERT` on MySQL, a lost network). A statement that hits it fails with `mysql error 2013: Lost connection to server during query` and the connection is gone (`Db.healthy?(conn)` is `false`). The backstop is fixed at `open`, so a call that asks for a limit longer than the url's, `0` included, is cut at the backstop: open with the longer `timeout_ms` for it.
 
-`Db.in_transaction?(conn)` reads the status flag of the last reply from the server, and `Db.healthy?(conn)` pings it.
+`Db.in_transaction?(conn)` reads the status flag of the last reply from the server, and `Db.healthy?(conn)` asks the server (a ping on the FFI driver, `SELECT 1` on the native one).
 
 ## TLS
 
@@ -76,6 +76,19 @@ A `Text` parameter goes into a column of any of those types. A `datetime` reads 
 - `CALL` gives its first result set. A `CREATE PROCEDURE` with a body of several statements cannot be sent: create it with the `mysql` client.
 - `LOAD DATA LOCAL INFILE` is off, so a server cannot ask for a file of this machine.
 
+## Drivers
+
+Two drivers run the statements, with the same values and errors:
+
+- The native driver is a small C module of the package (`src/db/native/db_mysql.c`) that opens the system `libmariadb.so.3` itself. It runs a query through the non-blocking calls of Connector/C: the query sends its statement, parks its task on the socket until the server answers, and reads the rows in short calls of `batch_rows` rows or `batch_bytes` bytes, so it takes no compute call and other tasks run meanwhile. Each connection keeps up to `statement_cache` prepared statements, keyed by the sql text: a `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, `WITH`, `VALUES` or `TABLE` that ran before runs in one round trip; its first run takes two (a prepare, then the run). When the cache is full the statement used least long ago goes, and it is closed on the server with the next statement (a close has no reply, so it costs no wait). A `CREATE`, `ALTER`, `DROP`, `RENAME` or `TRUNCATE` lets the whole cache go. When another connection changes a table of a cached statement, the server prepares it again by itself. When the change adds or drops columns of its result, the server has already run the statement when the library sees it (error 2057): a cached statement that does not write is prepared again and runs once more, so what it does besides reading (a `NEXTVAL`, a stored function that writes) runs twice; a write, and a statement that was not cached, give `mysql error 2057` instead. A write that gives rows (`INSERT ... RETURNING`) is not cached.
+- The FFI driver calls Connector/C through `extern` functions: it prepares each statement again, waits for the server on the compute pool, and reads the result one value per call.
+
+`open` takes the native driver on Linux when its library loads (it opens `libmariadb.so.3`), else the FFI one. Agentica builds the library with the system C compiler like the [SQLite one](/databases/sqlite/#drivers) (no client headers are needed); without a compiler it warns and the program runs the FFI driver. The non-blocking calls of Connector/C run on a stack of their own, so the module runs them under `an_blocking` of Agentica's native API, which keeps the garbage collector off that stack. `AGENTICA_DB_MYSQL_DRIVER=native` makes a driver that does not run here an error of `open`, and `AGENTICA_DB_MYSQL_DRIVER=ffi` always runs the FFI driver.
+
+The native driver is tested with Debian's and Ubuntu's `libmariadb3`; it relies on Connector/C resuming a suspended call on another thread, which other builds of the library may not do, so on another build set `AGENTICA_DB_MYSQL_DRIVER=ffi` if queries misbehave.
+
+A prepared statement belongs to the server session: behind a proxy that hands each transaction another session, set `statement_cache=0`, and the native driver prepares each statement again, as the FFI one does.
+
 ## Transactions
 
 A transaction starts with `START TRANSACTION`. They do not nest: `BEGIN` and `START TRANSACTION` fail with `mysql error: a transaction is already in progress` while the server reports one open. See [transactions](/basics/transactions/).
@@ -84,6 +97,4 @@ A transaction starts with `START TRANSACTION`. They do not nest: `BEGIN` and `ST
 
 The end of the task that opened the connection closes it, or call `Db.close` earlier. `mysql_close` talks to the server and blocks the scheduler while it runs, so open the connection in the task that keeps it. A connection used after `close` is `mysql error: the connection is closed`.
 
-`open`, `query` and `execute` wait for the server on the compute pool, so other tasks keep running. Use a connection from one task at a time, and never close it while a query runs.
-
-The adapter calls Connector/C through `extern` functions (the FFI driver). `AGENTICA_DB_MYSQL_DRIVER=ffi` names it; a native driver, like the [SQLite one](/databases/sqlite/#drivers), waits for `an_blocking` of Agentica's native API ([agentica#1193](https://github.com/agentica-lang/agentica/issues/1193)), so `AGENTICA_DB_MYSQL_DRIVER=native`, like any other value, is an error of `open`.
+Other tasks keep running while the server works: `open` runs on the compute pool, a query of the native driver waits on the socket, and one of the FFI driver runs on the compute pool. Use a connection from one task at a time, and never close it while a query runs. With the native driver, queries of several tasks on one connection run one after the other, and a task cancelled while its query runs leaves it on the connection: the next query sends `KILL QUERY` for it on a connection of its own (which gives up after 5 seconds to connect, and 15 for the answer), only when that connection reaches the same server, not restarted since (as for a pool's `lease_ms`), and reads its end first. A killed statement does not end an open transaction. With the FFI driver, the call of a cancelled task still runs to its end and its result is dropped: close that connection and open a new one.

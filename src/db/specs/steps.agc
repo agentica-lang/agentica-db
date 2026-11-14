@@ -204,6 +204,7 @@ def main() -> Void
     end,
     plain_step("I read how many short calls left their statement to the compute pool", "fallbacks"),
     plain_step("I read the statement cache", "statement_cache"),
+    BDD.step("the server is MariaDB", &mariadb_only),
     text_step("I check that the connection runs the driver that {string} names", "driver_named"),
     BDD.step("a task that runs {string} is cancelled after {int} ms") do |ctx, args|
       send(ctx, Request(op: "cancel_task", text: args[0], number: args[1].to_i!))
@@ -305,7 +306,8 @@ end
 # driver is not built" in place of the error of the FFI library, which this scenario is about.
 def without_driver_choice(ctx: BDD.Context) -> BDD.Context
   sqlite = BDD.given_env(ctx, "AGENTICA_DB_SQLITE_DRIVER", "")
-  BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
+  postgres = BDD.given_env(sqlite, "AGENTICA_DB_POSTGRES_DRIVER", "")
+  BDD.given_env(postgres, "AGENTICA_DB_MYSQL_DRIVER", "")
 end
 
 # A step that captures nothing.
@@ -371,6 +373,16 @@ def build_output(ctx: BDD.Context) -> String
     ok(value) -> JSON.string(value).unwrap_or("")
     error(_) -> ""
   end
+end
+
+# A scenario of what MariaDB alone has (`RETURNING`) is skipped on MySQL. The driver answers with the flavor of its
+# first connection.
+def mariadb_only(ctx: BDD.Context, _args: List[String]) -> BDD.Context
+  asked = BDD.when_line(start(ctx), JSON.encode(Request(op: "mysql_flavor")))
+  answer = BDD.read_line(asked, REPLY_MS).unwrap_or("no answer")
+  return BDD.skip(asked, "MariaDB only") if answer == "mysql"
+
+  BDD.assert(asked, answer == "mariadb", "the driver answered #{answer.inspect}")
 end
 
 def left_open(ctx: BDD.Context, args: List[String]) -> BDD.Context

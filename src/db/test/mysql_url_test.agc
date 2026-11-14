@@ -54,7 +54,8 @@ def main() -> Void
 
       try refused(
         "mysql://u:hunter2@h?nope=1",
-        "the url has an unknown parameter, the ones that exist are connect_timeout, timeout_ms, ssl_mode and ssl_ca",
+        "the url has an unknown parameter, the ones that exist are connect_timeout, timeout_ms, ssl_mode, ssl_ca, " +
+        "statement_cache, batch_rows and batch_bytes",
       )
 
       try refused("mysql://u:hunter2@h?ssl_mode=nope", "the url ssl_mode is required or verify")
@@ -63,6 +64,18 @@ def main() -> Void
       try refused("mysql://u:hunter2@[::1", "the url has an IPv6 host without a closing bracket")
       try refused("mysql://u:hunter2@h?ssl_mode=verify&ssl_ca=x.pem&ssl_mode=required", "the url sets ssl_mode twice")
       return refused("mysql://u:h%00@h", "the url contains a NUL character")
+    end,
+    Test.test("statement_cache, batch_rows and batch_bytes are read, and keep their defaults when missing") do
+      found = target_of("mysql://u@h/app?statement_cache=0&batch_rows=7&batch_bytes=4096")
+      try Test.eq([found.statement_cache, found.batch_rows, found.batch_bytes], [0, 7, 4096])
+      plain = target_of("mysql://u@h/app")
+      return Test.eq([plain.statement_cache, plain.batch_rows, plain.batch_bytes], [100, 100, 262_144])
+    end,
+    Test.test("a statement_cache, batch_rows or batch_bytes out of its range is an error") do
+      try refused("mysql://u@h?statement_cache=10001", "the url statement_cache is over 10000: 10001")
+      try refused("mysql://u@h?batch_rows=0", "the url batch_rows is below 1: 0")
+      try refused("mysql://u@h?batch_bytes=262145", "the url batch_bytes is over 262144: 262145")
+      return refused("mysql://u@h?statement_cache=-1", "the url statement_cache is not a whole number")
     end,
   ])
 end

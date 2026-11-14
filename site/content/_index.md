@@ -7,7 +7,7 @@ aliases:
 
 agentica-db is a database package for [Agentica](https://agentica-lang.github.io/agentica/). One API, `Db`, opens SQLite, PostgreSQL and MySQL or MariaDB, runs queries with bound parameters, and runs transactions. A small layer on top, `Orm`, reads rows into plain structs.
 
-Each database is reached through its system client library, by the C FFI. SQLite and PostgreSQL also have a native driver, a small C module of the package that caches prepared statements and reads many rows per call (see [SQLite](/databases/sqlite/#drivers) and [PostgreSQL](/databases/postgresql/#drivers)).
+Each database is reached through its system client library, by the C FFI. SQLite and PostgreSQL also have a native driver, a small C module of the package that caches prepared statements and reads many rows per call (see [SQLite](/databases/sqlite/#drivers) and [PostgreSQL](/databases/postgresql/#drivers)); MySQL's runs on Linux (see [MySQL](/databases/mysql/#drivers)).
 
 Add it to the `agentica.toml` of your project:
 

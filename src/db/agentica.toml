@@ -50,6 +50,17 @@ linux = { system = "libmariadb.so.3" }
 macos = { system = "libmariadb.3.dylib" }
 windows = { system = "libmariadb.dll" }
 
+# The native MySQL driver (mysql/native.agc), built from native/db_mysql.c like db_sqlite, by a program that imports
+# the MySQL driver (mysql.agc). It opens the system libmariadb itself (the library of [native.mariadb]), so the build
+# needs no client headers. It runs on Linux only; elsewhere, and when it cannot be built or does not load, the adapter
+# runs the FFI driver (mysql/ffi.agc).
+[native.db_mysql]
+build = { sources = ["native/db_mysql.c"] }
+optional = true
+linux = { system = "libdb_mysql.so" }
+macos = { system = "libdb_mysql.dylib" }
+windows = { system = "db_mysql.dll" }
+
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
 blank_line_after_end = true

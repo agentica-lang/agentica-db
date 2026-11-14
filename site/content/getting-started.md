@@ -6,7 +6,7 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.31.0 or later for the tag `0.11.0`, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports a driver of the package first runs or is compiled: Agentica builds the native SQLite or PostgreSQL module of each driver the program imports then (see [SQLite](/databases/sqlite/#drivers)). Without a compiler Agentica prints a warning (`warning: native module db_sqlite not built: ...`) and the program runs the FFI drivers, which are slower. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://agentica-lang.github.io/agentica/getting-started/) 0.31.0 or later for the tag `0.11.0`, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports a driver of the package first runs or is compiled: Agentica builds the native SQLite, PostgreSQL or MySQL module of each driver the program imports then (see [SQLite](/databases/sqlite/#drivers)). Without a compiler Agentica prints a warning (`warning: native module db_sqlite not built: ...`) and the program runs the FFI drivers, which are slower. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]

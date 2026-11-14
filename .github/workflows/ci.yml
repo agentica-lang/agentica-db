@@ -84,11 +84,10 @@ jobs:
       # The features of src/db/specs/ and the unit tests of src/db/test/, four scenarios at once, on each driver where
       # there are two. The variables name the driver outright, so a run cannot fall back to the other one: `native` is
       # an error when the module did not build, `ffi` skips the native module, and the scenarios of
-      # driver_choice.feature fail when the connection runs another driver than the variable names. The ffi run leaves out @native, the
-      # scenarios of what only the native drivers have (the statement cache, batches, cancels). It runs after the native
-      # one, which has the unit tests of src/db/test/ (a run with tags has none). MySQL and MariaDB have the FFI driver
-      # only: their native driver joins this loop with agentica-lang/agentica-db#77. The variables point the postgres
-      # and mysql scenarios at the service containers; without them they fail. The mysql host is an address:
+      # driver_choice.feature fail when the connection runs another driver than the variable names. The ffi run leaves
+      # out @native, the scenarios of what only the native drivers have (the statement cache, batches, cancels). It runs
+      # after the native one, which has the unit tests of src/db/test/ (a run with tags has none). The variables point
+      # the postgres and mysql scenarios at the service containers; without them they fail. The mysql host is an address:
       # `localhost` means the local socket to the client library.
       - name: Test (native and FFI drivers)
         env:
@@ -97,7 +96,7 @@ jobs:
         run: |
           for driver in native ffi; do
             echo "::group::src/db on the $driver drivers"
-            export AGENTICA_DB_SQLITE_DRIVER=$driver AGENTICA_DB_POSTGRES_DRIVER=$driver
+            export AGENTICA_DB_SQLITE_DRIVER=$driver AGENTICA_DB_POSTGRES_DRIVER=$driver AGENTICA_DB_MYSQL_DRIVER=$driver
             tags=()
             [ "$driver" = native ] || tags=(--tags "not @native")
             (cd src/db && agentica test --jobs 4 "${tags[@]}")

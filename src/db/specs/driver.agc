@@ -362,6 +362,7 @@ def act(state: State, req: Request) -> Handled
     "query_big_json" -> reply_ok(query_big_json(state, req))
     "query_json_list" -> reply_ok(query_json_list(state, req))
     "statement_cache" -> reply_ok(statement_cache(state))
+    "mysql_flavor" -> Handled(state: state, reply: mysql_flavor(state))
     "driver_named" -> reply_ok(driver_named(state, req.text))
     "cancel_task" -> reply_ok(cancel_task(state, req))
     "query_each" -> reply_ok(query_each(state, req))
@@ -1895,10 +1896,6 @@ end
 # The counters of the statement cache of the connection, as one row.
 def statement_cache(state: State) -> State
   with_conn(state) do |conn|
-    if conn.adapter == Db.Adapter.Mysql
-      return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
-    end
-
     found = Db.statement_cache(conn).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
     cache_row(state, found)
   end
@@ -1910,14 +1907,28 @@ end
 def driver_named(state: State, name: String) -> State
   wanted = System.env(name).unwrap_or("")
   with_conn(state) do |conn|
-    if conn.adapter == Db.Adapter.Mysql
-      return failed(state, "only a SQLite or PostgreSQL connection has a driver to name")
-    end
-
     case Db.statement_cache(conn)
       some(_) -> driver_ran(state, name, wanted, "native")
       none -> driver_ran(state, name, wanted, "ffi")
     end
+  end
+end
+
+# The server of the first connection, `mariadb` or `mysql`, for the steps of what one of them alone has.
+def mysql_flavor(state: State) -> String
+  return NO_DATABASE if state.conns.empty?
+
+  conn = state.conns[0]
+  return "not a mysql connection" if conn.adapter != Db.Adapter.Mysql
+
+  # A SHOW, which the statement cache of the native driver never keeps or counts.
+  case Db.query(conn, "show variables like 'version'", [])
+    error(message) -> message.message
+    ok(rows) ->
+      case rows[0]["Value"]
+        Db.Value.Text(version) if version.include?("MariaDB") -> "mariadb"
+        _ -> "mysql"
+      end
   end
 end
 
@@ -1988,7 +1999,9 @@ def cache_beside_big(state: State, req: Request) -> State
 end
 
 def read_cache(conn: Db.Connection) -> Result[Int]
-  return error("only a PostgreSQL connection is read here") if conn.adapter != Db.Adapter.Postgres
+  if conn.adapter != Db.Adapter.Postgres and conn.adapter != Db.Adapter.Mysql
+    return error("only a PostgreSQL or MySQL connection is read here")
+  end
 
   for _ in 0...CACHE_READS
     _ = Db.statement_cache(conn)

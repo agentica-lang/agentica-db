@@ -29,8 +29,14 @@ def connection(conn: MysqlAdapter.Connection, url: String) -> C.Connection
     interrupt: -> { MysqlAdapter.interrupt(conn, url) },
     enter_gate: -> { connection(conn, url) },
     leave_gate: -> { return },
-    statement_cache: -> { none },
+    statement_cache: -> { cache_stats(conn) },
   )
+end
+
+def cache_stats(conn: MysqlAdapter.Connection) -> Optional[C.CacheStats]
+  MysqlAdapter.statement_cache(conn).map do |c|
+    C.CacheStats(size: c.size, capacity: c.capacity, hits: c.hits, misses: c.misses, evictions: c.evictions)
+  end
 end
 
 # A pool of a server opens plain connections and starts nothing of its own.

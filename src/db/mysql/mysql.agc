@@ -5,10 +5,13 @@
 ## it (`mysql_close`, the free function of the connection resource), as in the other adapters. A closed connection
 ## gives `mysql error: the connection is closed`.
 ##
-## A driver runs the statements: for now the FFI one (`ffi.agc`), which prepares each statement again, waits on the
-## compute pool and reads one value per call. A native driver waits for `an_blocking` of Agentica's native API
-## (agentica-lang/agentica#1193). `AGENTICA_DB_MYSQL_DRIVER` is `ffi` or unset; `native` and any other value are an
-## error of `open`.
+## Two drivers run the statements, with the same values and errors. The native one (`native.agc`, a native module built
+## from `native/db_mysql.c`) runs the non-blocking calls of the library and waits on the socket, so a query parks only
+## its task and takes no compute call; it keeps a cache of prepared statements per connection (`statement_cache`, 100
+## by default, 0 for none) and reads many rows per call (`batch_rows`, `batch_bytes`). The FFI one (`ffi.agc`) prepares
+## each statement again, waits on the compute pool and reads one value per call. `open` takes the native driver when
+## it runs here, else the FFI one; `AGENTICA_DB_MYSQL_DRIVER=native` or `ffi` chooses one (with `native`, a driver that
+## does not run here is an error).
 ##
 ## Every statement goes through the prepared statement API (`mysql_stmt_*`): the sql is sent as it is, with its `?`
 ## placeholders, and the values are bound, never spliced.
@@ -34,6 +37,7 @@
 ## `mysql error: <message>`. A message never holds the url or the password.
 
 import MysqlFfi from "ffi"
+import MysqlNative from "native"
 import MysqlUrl from "url"
 import {Row, Value} from "../support/value"
 
@@ -68,11 +72,12 @@ end
 def open(url: String) -> Result[Connection]
   target = try MysqlUrl.parse(url)
   link = try connect(target)
+  identity = identity_of(link)
   conn = Connection(
-    link: link,
+    link: with_kill(link, target, identity),
     flavor: flavor_of(server_version(link)),
     timeout_ms: target.timeout_ms,
-    identity: identity_of(link),
+    identity: identity,
   )
 
   limited = limit_session(conn)
@@ -86,9 +91,7 @@ end
 
 ## Closes the connection; closing it again does nothing.
 def close(conn: Connection) -> Void
-  case conn.link
-    Link.Ffi(handle) -> Native.close(handle)
-  end
+  close_link(conn.link)
 end
 
 ## Stops the statement that runs on the connection, if any: `KILL QUERY` from a connection of its own to `url`, the
@@ -96,18 +99,11 @@ end
 ## reached another server (a load balancer), one that restarted since, or the identity is not known. The pool sends
 ## it when a block runs past `lease_ms`. Not for `Db`.
 def interrupt(conn: Connection, url: String) -> Void
-  return if closed?(conn.link) or conn.identity.server.empty?
+  return if closed?(conn.link)
 
   case MysqlUrl.parse(url)
     error(_) -> return
-    ok(target) ->
-      case connect(target.with(timeout: killer_timeout(target.timeout)))
-        error(_) -> return
-        ok(killer) ->
-          # A cancel of this task leaves the killer to the end of the task, which frees it.
-          kill_query(killer, conn.identity)
-          close_link(killer)
-      end
+    ok(target) -> stop_statement(target, conn.identity)
   end
 end
 
@@ -130,6 +126,7 @@ end
 ## A closed connection is not in one.
 def in_transaction?(conn: Connection) -> Bool
   case conn.link
+    Link.Native(session) -> MysqlNative.in_transaction?(session)
     Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.in_transaction?(handle)
   end
 end
@@ -139,15 +136,32 @@ end
 ## shows here after the first call that fails on it; `healthy?` asks the server.
 def connected?(conn: Connection) -> Bool
   case conn.link
+    Link.Native(session) -> MysqlNative.connected?(session)
     Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.connected?(handle)
   end
 end
 
-## Whether the connection works: it is open and the server answers a ping.
+## Whether the connection works: it is open and the server answers (a ping, or `SELECT 1` on the native driver).
 def healthy?(conn: Connection) -> Bool
   case conn.link
+    Link.Native(session) -> not MysqlNative.closed?(session) and MysqlNative.query_once(session, "SELECT 1").ok?
     Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.healthy?(handle)
   end
+end
+
+## The statement cache of a connection of the native driver; none for the FFI driver, which has none, and for a closed
+## connection.
+def statement_cache(conn: Connection) -> Optional[MysqlNative.CacheStats]
+  case conn.link
+    Link.Native(session) -> MysqlNative.stats(session)
+    Link.Ffi(_) -> none
+  end
+end
+
+## Whether the identity `seen` by a new connection is of the server of `target`, the same run of it: a kill is sent
+## only then. An unknown identity (empty server) matches nothing.
+def same_server?(seen: Identity, target: Identity) -> Bool
+  not target.server.empty? and seen.server == target.server and (seen.started - target.started).abs <= START_SLACK_S
 end
 
 private
@@ -163,26 +177,29 @@ START_SLACK_S = 2
 UNKNOWN = Identity(id: 0, server: "", started: 0)
 KILLER_CONNECT_S = 5
 CLOSED = "mysql error: the connection is closed"
-NATIVE_OFF = (
-  "mysql error: the native MySQL driver needs an_blocking of Agentica's native API 1.3 (agentica-lang/agentica#1193)"
-)
 
-# The connection of the driver that runs it (one driver for now; the native one comes with agentica#1193).
+# The connection of the driver that runs it.
 enum Link
+  Native(MysqlNative.Session)
   Ffi(MysqlFfi.Handle)
 end
 
-# The driver that the variable names; unset is the FFI one, the only one for now.
+# The driver that the variable names, else the native one when it runs here, else the FFI one.
 def connect(target: MysqlUrl.Target) -> Result[Link]
   choice = System.env(DRIVER_VARIABLE).unwrap_or("")
-  return error(NATIVE_OFF) if choice == "native"
+  if choice == "ffi" or (choice == "" and not MysqlNative.available?())
+    handle = try MysqlFfi.open(target)
+    return ok(Link.Ffi(handle))
+  end
 
-  if choice != "" and choice != "ffi"
+  if choice != "" and choice != "native"
     return error("mysql error: #{DRIVER_VARIABLE} is #{choice}, expected native or ffi")
   end
 
-  handle = try MysqlFfi.open(target)
-  ok(Link.Ffi(handle))
+  return error(MysqlNative.UNAVAILABLE) if not MysqlNative.available?()
+
+  session = try MysqlNative.open(target)
+  ok(Link.Native(session))
 end
 
 def identity_of(link: Link) -> Identity
@@ -193,8 +210,8 @@ def identity_of(link: Link) -> Identity
 end
 
 def read_identity(link: Link) -> Result[Identity]
-  rows = try run_query(link, IDENTITY_SQL, [])
-  status = try run_query(link, UPTIME_SQL, [])
+  rows = try run_once(link, IDENTITY_SQL)
+  status = try run_once(link, UPTIME_SQL)
   return error("no identity") if rows.size != 1 or status.size != 1
 
   row = rows[0]
@@ -213,9 +230,33 @@ def text_of(value: Value) -> String
   end
 end
 
+# The native driver kills the statement that a cancelled task left before its next query drains it, with the same check
+# of the server as `interrupt`.
+def with_kill(link: Link, target: MysqlUrl.Target, identity: Identity) -> Link
+  case link
+    Link.Native(session) -> Link.Native(session.with(kill: some(-> { stop_statement(target, identity) })))
+    Link.Ffi(_) -> link
+  end
+end
+
+# `KILL QUERY` of the statement of `identity`, from a connection of its own that connects and answers within
+# KILLER_CONNECT_S seconds. Skipped when the identity is not known, or that connection reached another server (a load
+# balancer) or one that restarted since.
+def stop_statement(target: MysqlUrl.Target, identity: Identity) -> Void
+  return if identity.server.empty?
+
+  limits = target.with(timeout: killer_timeout(target.timeout), timeout_ms: KILLER_CONNECT_S * MS_PER_SECOND)
+  case connect(limits)
+    error(_) -> return
+    ok(killer) ->
+      # A cancel of this task leaves the killer to the end of the task, which frees it.
+      kill_query(killer, identity)
+      close_link(killer)
+  end
+end
+
 def kill_query(killer: Link, target: Identity) -> Void
-  seen = identity_of(killer)
-  return if seen.server != target.server or (seen.started - target.started).abs > START_SLACK_S
+  return if not same_server?(identity_of(killer), target)
 
   _ = run_execute(killer, "KILL QUERY #{target.id}", [])
 end
@@ -228,12 +269,14 @@ end
 
 def close_link(link: Link) -> Void
   case link
+    Link.Native(session) -> Native.close(session.conn)
     Link.Ffi(handle) -> Native.close(handle)
   end
 end
 
 def server_version(link: Link) -> String
   case link
+    Link.Native(session) -> MysqlNative.server_version(session)
     Link.Ffi(handle) -> MysqlFfi.server_info(handle)
   end
 end
@@ -247,6 +290,7 @@ end
 
 def closed?(link: Link) -> Bool
   case link
+    Link.Native(session) -> MysqlNative.closed?(session)
     Link.Ffi(handle) -> Native.closed?(handle)
   end
 end
@@ -256,7 +300,18 @@ def run_query(link: Link, sql: String, params: List[Value]) -> Result[List[Row]]
   return error(CLOSED) if closed?(link)
 
   case link
+    Link.Native(session) -> MysqlNative.query(session, sql, params)
     Link.Ffi(handle) -> MysqlFfi.query(handle, sql, params)
+  end
+end
+
+# A statement of the adapter itself, which the statement cache of the native driver neither keeps nor counts.
+def run_once(link: Link, sql: String) -> Result[List[Row]]
+  return error(CLOSED) if closed?(link)
+
+  case link
+    Link.Native(session) -> MysqlNative.query_once(session, sql)
+    Link.Ffi(handle) -> MysqlFfi.query(handle, sql, [])
   end
 end
 
@@ -264,6 +319,7 @@ def run_execute(link: Link, sql: String, params: List[Value]) -> Result[Int]
   return error(CLOSED) if closed?(link)
 
   case link
+    Link.Native(session) -> MysqlNative.execute(session, sql, params)
     Link.Ffi(handle) -> MysqlFfi.execute(handle, sql, params)
   end
 end

@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A native MySQL and MariaDB driver on Linux (`[native.db_mysql]`, optional like the others): a query waits on the socket with no compute call, prepared statements are cached per connection (`Db.statement_cache` gives its counters) and rows come many per call; the url parameters `statement_cache`, `batch_rows` and `batch_bytes` set it up, and `AGENTICA_DB_MYSQL_DRIVER=native` or `ffi` picks a driver. Elsewhere, and without a C compiler, the FFI driver runs.
+
 ### Changed
 
 - The native SQLite and PostgreSQL modules are optional: without a C compiler a program prints Agentica's warning and runs the FFI drivers, instead of failing with `PKG-NATIVE-BUILD` (this lifts the compiler requirement of 0.6.0).

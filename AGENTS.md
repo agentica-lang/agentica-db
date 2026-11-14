@@ -1,8 +1,8 @@
 # agentica-db
 
-One database API for Agentica and one adapter per database, through the C FFI, and for SQLite and PostgreSQL also a
-native module of ours (`src/db/native/`, the only C code of the repository, which Agentica builds at the first run; the
-FFI driver stays for a run without the built library). The repository
+One database API for Agentica and one adapter per database, through the C FFI, and for SQLite, PostgreSQL and MySQL
+also a native module of ours (`src/db/native/`, the only C code of the repository, which Agentica builds at the first
+run; the FFI driver stays for a run without the built library). The repository
 is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
 
 ```text
@@ -22,17 +22,19 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
   sqlite/      sqlite.agc (the adapter: picks a driver, the settings, timeouts), native.agc (the driver over the
                native module), ffi.agc (the driver over extern calls), wait.agc (the wait for a lock, shared),
                url.agc (the parameters of the url), lock.agc (the lock rule)
-  native/      db_sqlite.c and db_postgres.c, the native modules ([native.db_sqlite] and [native.db_postgres]
-               build, both `optional`: without a C compiler Agentica warns and the adapters run the FFI drivers):
-               each opens the system library itself (dlopen), so a build needs only a C compiler;
-               specs/statement_cache.feature, specs/sqlite_writes.feature (short writes, the checkpointer of a
-               pool) and specs/postgres_native.feature (tag @native)
+  native/      db_sqlite.c, db_postgres.c and db_mysql.c, the native modules ([native.db_sqlite],
+               [native.db_postgres] and [native.db_mysql] build, all `optional`: without a C compiler Agentica warns
+               and the adapters run the FFI drivers): each opens the system library itself (dlopen), so a build needs
+               only a C compiler; db_mysql.c runs the non-blocking calls of libmariadb under `an_blocking`, and only
+               on Linux; specs/statement_cache.feature, specs/sqlite_writes.feature (short writes, the checkpointer
+               of a pool), specs/postgres_native.feature and specs/mysql_native.feature (tag @native)
   postgres/    postgres.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module),
                ffi.agc (the driver over extern calls), statement.agc (the checks both drivers make), sql.agc (the
                placeholder scanner), url.agc (it takes the parameters of the adapter out of the url before libpq
                sees it)
-  mysql/       mysql.agc (the adapter: picks a driver, timeouts), ffi.agc (the driver over extern calls),
-               statement.agc (what a driver reads of a verb), sql.agc (the statement scanner), url.agc
+  mysql/       mysql.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module),
+               ffi.agc (the driver over extern calls), statement.agc (what both drivers read of a verb), sql.agc (the
+               statement scanner), url.agc
   orm/         build.agc (the sql of the query builder), codec.agc (row to JSON.Value for T.codec), dialect.agc
                (identifier names and quotes), errors.agc
   support/     value.agc (Value, Row; db.agc re-exports them), connection.agc (Connection, Driver, CacheStats and
@@ -67,12 +69,12 @@ new release of it, change the tag in both manifests and run `agentica update poo
   to the commit of the new tag.
 - SQLite runs on the native driver when its module builds; `AGENTICA_DB_SQLITE_DRIVER=ffi agentica test --only "on
   sqlite" --tags "not @native"` runs the SQLite scenarios on the FFI driver. PostgreSQL the same, with
-  `AGENTICA_DB_POSTGRES_DRIVER=ffi`. CI runs every scenario of both on both drivers (`native`, then `ffi` with `--tags
-  "not @native"`; MySQL and MariaDB have the FFI driver only until #77), naming the driver in the variable so that a
-  run cannot fall back to the other one; `specs/driver_choice.feature` fails when the connection runs another driver
-  than the variable names. A C change: C11, every return code of the library checked, every statement, result and
-  connection freed exactly once, also on the error paths; a free function never waits (no lock that a call holds, no
-  socket I/O that can block).
+  `AGENTICA_DB_POSTGRES_DRIVER=ffi`, and MySQL with `AGENTICA_DB_MYSQL_DRIVER=ffi` (its native driver runs on Linux
+  only). CI runs every scenario of the three on both drivers (`native`, then `ffi` with `--tags "not @native"`), naming
+  the driver in the variable so that a run cannot fall back to the other one; `specs/driver_choice.feature` fails when
+  the connection runs another driver than the variable names. A C change: C11, every return code of the library
+  checked, every statement, result and connection freed exactly once, also on the error paths; a free function never
+  waits (no lock that a call holds, no socket I/O that can block).
 - Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
   src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
   itself). `agentica install` first (it writes the pool package of the lock into `deps/`, gitignored). `make check`
@@ -163,7 +165,8 @@ new release of it, change the tag in both manifests and run `agentica update poo
 - `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would say
   badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url readers
   (`test/mysql_url_test.agc`, `test/postgres_url_test.agc`, `test/sqlite_url_test.agc`), the timeout messages
-  (`test/db_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`)
+  (`test/db_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`), the server check of a MySQL kill
+  (`test/mysql_identity_test.agc`)
   and the identifier check of the Orm (`test/orm_dialect_test.agc`), and `test/migrations_layout_test.agc` (it opens no
   connection: it checks the list of `examples/migrations.agc` against its folder, as the guide teaches). Anything that
   opens a connection is a scenario. A behavior is proven once: a common scenario is an outline with one row per
