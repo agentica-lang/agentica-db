@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `DbPool`: a block that runs past `lease_ms`, or whose caller is cancelled, stops its statement on PostgreSQL (a cancel request) and on MySQL and MariaDB (`KILL QUERY` from a connection of its own), as on SQLite; it no longer runs on the server until its end.
-- Native SQLite driver: a write on a connection while another write of it waits for a lock commits at once; the error of the waiting write could roll it back.
+- SQLite (native and FFI drivers): a write on a connection while another write of it waits for a lock commits at once; the error of the waiting write could roll it back.
 
 ## [0.11.0] - 2026-11-14
 

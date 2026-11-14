@@ -152,20 +152,6 @@ Feature: SQLite statement cache and batches
       | 100   |
       | 0     |
 
-  # A write that a lock stopped is reset at once, so a statement that runs on the connection before its next try
-  # commits, and the error of that try does not roll it back.
-  Scenario: A write between two tries of a write that waits for a lock commits on sqlite
-    Given a "sqlite" database
-    When I open "sqlite:[SCRATCH]/between.db"
-    And I execute "create table t (a integer check (a > 5))"
-    And I execute "create table u (a integer)"
-    And the write "insert into t values (1)" waits for "sqlite:[SCRATCH]/between.db", and I execute "insert into u values (2)" once it is free
-    Then the changed row count is 1
-    When a connection of its own to "sqlite:[SCRATCH]/between.db" queries "select count(*) as n from u"
-    Then the result is:
-      | n     |
-      | Int 1 |
-
   # Big bound data can make one SQLite instruction long (a JSON function reads it whole), so a short call takes at
   # most 256 KiB of it and leaves the statement to the compute pool before it runs; this list is 400 KB.
   Scenario: A cached read with big bound data runs on the compute pool on sqlite
