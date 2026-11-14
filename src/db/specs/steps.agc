@@ -159,6 +159,9 @@ def main() -> Void
     BDD.step("another task on {string} holds the write lock for {int} ms while I open it") do |ctx, args|
       send(ctx, Request(op: "open_while_locked", text: args[0], number: args[1].to_i!))
     end,
+    BDD.step("another task on {string} executes {string}") do |ctx, args|
+      send(ctx, Request(op: "execute_fresh", text: args[0], cells: [args[1]]))
+    end,
     BDD.step("another task on {string} executes {string} and waits {int} ms") do |ctx, args|
       send(ctx, Request(op: "execute_waiting", text: args[0], cells: [args[1]], number: args[2].to_i!))
     end,

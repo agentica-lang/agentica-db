@@ -44,6 +44,7 @@ def sqlite3_get_autocommit(db: Handle) -> Int = raw_get_autocommit(db)
 private
 
 SQLITE_OK = 0
+SQLITE_ERROR = 1
 SQLITE_ROW = 100
 SQLITE_DONE = 101
 SQLITE_INTEGER = 1
@@ -52,12 +53,14 @@ SQLITE_TEXT = 3
 SQLITE_BLOB = 4
 # The state of a connection with a read transaction open, for `sqlite3_txn_state`, which SQLite has since 3.34.0
 # (3034000 for `sqlite3_libversion_number`). A system library that is older never says it, and the write is waited for.
+SQLITE_TXN_NONE = 0
 SQLITE_TXN_READ = 1
 TXN_STATE_VERSION = 3_034_000
 # The length argument that means "up to the NUL" for the sql.
 NUL_TERMINATED = -1
 # The destructor argument SQLITE_TRANSIENT, which makes SQLite copy the bound value.
 TRANSIENT_DESTRUCTOR = -1
+SCHEMA_SQL = "SELECT 1 FROM main.sqlite_master LIMIT 1"
 
 # A connection and the wait of the call that runs on it.
 struct Conn
@@ -173,6 +176,20 @@ end
 # gives a NULL statement for sql that holds only whitespace and comments, which an out resource shows as a closed one.
 def prepare_buffer(conn: Conn, buf: C.Pointer) -> Result[Stmt]
   prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+  if prepared.result == SQLITE_ERROR and unchecked_schema?(conn)
+    started = Time.monotonic_ms()
+    checked = recheck_schema(conn)
+    while lock_wait?(conn, checked, started)
+      SqliteWait.pause(conn.wait, started)
+      checked = recheck_schema(conn)
+    end
+
+    return error(failure(conn, checked)) if checked == SqliteWait.SQLITE_INTERRUPT
+
+    # A wait that ended still locked prepares again too, and reports the error of the sql, not the lock.
+    prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+  end
+
   if SqliteWait.lock_code?(prepared.result)
     started = Time.monotonic_ms()
     while lock_wait?(conn, prepared.result, started)
@@ -193,6 +210,38 @@ def prepare_buffer(conn: Conn, buf: C.Pointer) -> Result[Stmt]
       Native.close(stmt)
       error(message)
   end
+end
+
+# With busy timeout 0, SQLite reports the parse error of a stale schema ("no such table") when the read lock that
+# checks the schema is refused. This read loads the current schema; its code, a lock for the caller to wait for.
+def recheck_schema(conn: Conn) -> Int
+  made: Result[Stmt] = Native.from_string(SCHEMA_SQL) do |buf| schema_statement(conn, buf) end
+  case made
+    error(e) -> e.code.unwrap_or(SQLITE_ERROR)
+    ok(stmt) ->
+      code = sqlite3_step(stmt)
+      Native.close(stmt)
+      return SQLITE_OK if code == SQLITE_ROW or code == SQLITE_DONE
+
+      code
+  end
+end
+
+def schema_statement(conn: Conn, buf: C.Pointer) -> Result[Stmt]
+  prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
+  return error("sqlite error #{prepared.result}", code: prepared.result) if prepared.result != SQLITE_OK
+
+  ok(prepared.stmt)
+end
+
+# Whether SQLite checked the schema under no lock of this connection: outside any transaction.
+def unchecked_schema?(conn: Conn) -> Bool
+  return false if sqlite3_get_autocommit(conn.handle) == 0
+
+  (
+    sqlite3_libversion_number() < TXN_STATE_VERSION or
+    sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_NONE
+  )
 end
 
 # The text after the first statement must hold none. It is tried with an out pointer, where NULL can be told, and the

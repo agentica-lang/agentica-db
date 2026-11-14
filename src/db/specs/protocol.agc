@@ -15,7 +15,8 @@ OK = "ok"
 ## table or empty, table: header and the version, name and sql of each migration), `write_together` (number: the tasks,
 ## text: a database url, table: statements; each task opens the url and runs the statements in a transaction),
 ## `execute_waiting` (text: a database url, cells: the sql, number: the least time in milliseconds that the failure of
-## the statement of a task with its own connection takes), `query_until_commit` (text: a database url, cells: the sql,
+## the statement of a task with its own connection takes), `execute_fresh` (text: a database url, cells: the sql that a
+## task with its own connection executes), `query_until_commit` (text: a database url, cells: the sql,
 ## number: milliseconds; a task with its own connection queries the sql while this connection commits after that time,
 ## and the query must be in the way of the commit), `write_while_blocked` (text: a database url, cells: the sql of a
 ## write and the sql that this connection runs; a task with its own connection writes it in a transaction and waits at

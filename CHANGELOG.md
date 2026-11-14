@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- SQLite: a statement on a table that another connection made waits for a lock held at its prepare, instead of failing at once with `no such table`.
 - SQLite native driver: a write whose plan grew between the two reads of its check (another connection changed the schema) runs in a normal call instead of reading past the check's arrays.
 
 ## [0.10.0] - 2026-11-13

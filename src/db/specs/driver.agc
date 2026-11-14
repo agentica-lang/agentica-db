@@ -336,6 +336,7 @@ def act(state: State, req: Request) -> Handled
     "pool_turn_after" -> reply_ok(pool_turn_after(state, req))
     "pool_nested_transaction" -> reply_ok(pool_nested_transaction(state, req))
     "execute_waiting" -> execute_waiting(state, req)
+    "execute_fresh" -> reply_ok(execute_fresh(state, req))
     "query_until_commit" -> query_until_commit(state, req)
     "write_while_blocked" -> write_while_blocked(state, req)
     "query_while_locked" -> query_while_locked(state, req)
@@ -1514,6 +1515,12 @@ def write_together(state: State, req: Request) -> State
   return recorded(state, Outcome.Done) if failures.empty?
 
   failed(state, failures[0])
+end
+
+# The statement runs in a task on a connection of its own at the url, and its count is recorded.
+def execute_fresh(state: State, req: Request) -> State
+  job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
+  counted(state, Task.await(Task.spawn(&fresh_execute, job)))
 end
 
 # The statement runs in a task on a connection of its own at the url, which fails: the failure is recorded for the next
