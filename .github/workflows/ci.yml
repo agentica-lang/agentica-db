@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  # The package needs Agentica 0.31.0: .github/actions/agentica
+  # The package needs Agentica 0.31.0 or later: .github/actions/agentica
   # builds the commit of the tag 0.31.2 of agentica-lang/agentica.
   AGENTICA_COMMIT: 857b15e04052b55b52c2dfad35c2ef733878ee1e
 
