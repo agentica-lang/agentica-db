@@ -1174,22 +1174,22 @@ static int step(conn *c, sqlite3_stmt *stmt, bool short_call, outcome *o) {
 
 /* ---- Preparing. ---- */
 
-/* A prepare that fails outside a read transaction checks the schema again under a read lock, and SQLite, whose busy
-   timeout is 0, reports the parse error of the schema it read before when that lock is refused: a table that another
-   connection made is "no such table". This reads the schema table, which loads a newer schema, and gives the code of
-   the read: a lock for the caller to wait for. Under SQLite's mutex. */
+/* With busy timeout 0, SQLite reports the parse error of a stale schema ("no such table") when the read lock that
+   checks the schema is refused. This read loads the current schema; its code, a lock for the caller to wait for. */
 static int recheck_schema(conn *c) {
   static const char SQL[] = "SELECT 1 FROM main.sqlite_master LIMIT 1";
-  bool unchecked = sq.txn_state && sq.libversion_number() >= TXN_STATE_VERSION
-                       ? sq.txn_state(c->db, NULL) == SQLITE_TXN_NONE
-                       : sq.get_autocommit(c->db) != 0;
-  if (!unchecked) return SQLITE_OK;
   sqlite3_stmt *stmt = NULL;
   int rc = sq.prepare_v2(c->db, SQL, (int)sizeof SQL - 1, &stmt, NULL);
   if (rc == SQLITE_OK && stmt) rc = sq.step(stmt);
-  /* finalize keeps the error of the step for errmsg and extended_errcode. */
+  /* finalize keeps the error of the step for extended_errcode. */
   if (stmt) (void)sq.finalize(stmt);
   return rc == SQLITE_ROW || rc == SQLITE_DONE ? SQLITE_OK : rc;
+}
+
+/* Whether SQLite checked the schema under no lock of this connection: outside any transaction. */
+static bool schema_unchecked(conn *c) {
+  if (sq.get_autocommit(c->db) == 0) return false;
+  return !sq.txn_state || sq.libversion_number() < TXN_STATE_VERSION || sq.txn_state(c->db, NULL) == SQLITE_TXN_NONE;
 }
 
 /* Prepares the one statement of SQL, refusing none or a second one; the statement, or NULL with the failure in O
@@ -1205,13 +1205,20 @@ static sqlite3_stmt *prepare(conn *c, const char *sql, size_t len, outcome *o) {
   sqlite3_mutex *m = sq.db_mutex(c->db);
   sq.mutex_enter(m);
   int rc = sq.prepare_v2(c->db, sql, (int)len, &stmt, &tail);
-  if (rc == SQLITE_ERROR) {
+  if (rc == SQLITE_ERROR && schema_unchecked(c)) {
+    failure parsed;
+    fail_code(&parsed, c, rc);
     int checked = recheck_schema(c);
-    /* Any other outcome prepares again, which also puts back the error of SQL for errmsg. */
-    if (lock_code(checked) || checked == SQLITE_INTERRUPT)
-      rc = checked;
-    else
-      rc = sq.prepare_v2(c->db, sql, (int)len, &stmt, &tail);
+    if (lock_code(checked)) {
+      /* The caller waits for the lock and fetches again; when the wait ends it reports the error of SQL, not the
+         lock. */
+      o->code = checked;
+      o->extended = sq.extended_errcode(c->db);
+      o->why = parsed;
+      sq.mutex_leave(m);
+      return NULL;
+    }
+    rc = checked == SQLITE_INTERRUPT ? checked : sq.prepare_v2(c->db, sql, (int)len, &stmt, &tail);
   }
   if (rc != SQLITE_OK) {
     o->code = rc;

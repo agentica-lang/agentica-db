@@ -1517,13 +1517,14 @@ def write_together(state: State, req: Request) -> State
   failed(state, failures[0])
 end
 
-# The statement runs in a task on a connection of its own at the url, which fails: the failure is recorded for the next
-# step, and the wait that came before it must last `req.number` milliseconds at least.
+# The statement runs in a task on a connection of its own at the url, and its count is recorded.
 def execute_fresh(state: State, req: Request) -> State
   job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
   counted(state, Task.await(Task.spawn(&fresh_execute, job)))
 end
 
+# The statement runs in a task on a connection of its own at the url, which fails: the failure is recorded for the next
+# step, and the wait that came before it must last `req.number` milliseconds at least.
 def execute_waiting(state: State, req: Request) -> Handled
   started = Time.monotonic_ms()
   job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))

@@ -176,11 +176,17 @@ end
 # gives a NULL statement for sql that holds only whitespace and comments, which an out resource shows as a closed one.
 def prepare_buffer(conn: Conn, buf: C.Pointer) -> Result[Stmt]
   prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-  if prepared.result == SQLITE_ERROR
+  if prepared.result == SQLITE_ERROR and unchecked_schema?(conn)
+    started = Time.monotonic_ms()
     checked = recheck_schema(conn)
-    return error(failure(conn, checked)) if SqliteWait.lock_code?(checked) or checked == SqliteWait.SQLITE_INTERRUPT
+    while lock_wait?(conn, checked, started)
+      SqliteWait.pause(conn.wait, started)
+      checked = recheck_schema(conn)
+    end
 
-    # Prepared again also when the read failed otherwise, which puts back the error of the sql for errmsg.
+    return error(failure(conn, checked)) if checked == SqliteWait.SQLITE_INTERRUPT
+
+    # A wait that ended still locked prepares again too, and reports the error of the sql, not the lock.
     prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
   end
 
@@ -206,22 +212,14 @@ def prepare_buffer(conn: Conn, buf: C.Pointer) -> Result[Stmt]
   end
 end
 
-# A prepare that fails outside a read transaction checks the schema again under a read lock, and SQLite, whose busy
-# timeout is 0, reports the parse error of the schema it read before when that lock is refused: a table that another
-# connection made is "no such table". This reads the schema table, waiting for a lock like a step does, which loads a
-# newer schema, and gives the code of the read (SQLITE_OK when it read).
+# With busy timeout 0, SQLite reports the parse error of a stale schema ("no such table") when the read lock that
+# checks the schema is refused. This read loads the current schema; its code, a lock for the caller to wait for.
 def recheck_schema(conn: Conn) -> Int
-  return SQLITE_OK if not unchecked_schema?(conn)
-
   made: Result[Stmt] = Native.from_string(SCHEMA_SQL) do |buf| schema_statement(conn, buf) end
   case made
-    error(_) -> SQLITE_ERROR
+    error(e) -> e.code.unwrap_or(SQLITE_ERROR)
     ok(stmt) ->
       code = sqlite3_step(stmt)
-      if SqliteWait.lock_code?(code)
-        code = step_after_lock(conn, stmt, code).code
-      end
-
       Native.close(stmt)
       return SQLITE_OK if code == SQLITE_ROW or code == SQLITE_DONE
 
@@ -231,15 +229,19 @@ end
 
 def schema_statement(conn: Conn, buf: C.Pointer) -> Result[Stmt]
   prepared = sqlite3_prepare_v2(conn.handle, buf, NUL_TERMINATED)
-  return error("sqlite error #{prepared.result}") if prepared.result != SQLITE_OK
+  return error("sqlite error #{prepared.result}", code: prepared.result) if prepared.result != SQLITE_OK
 
   ok(prepared.stmt)
 end
 
+# Whether SQLite checked the schema under no lock of this connection: outside any transaction.
 def unchecked_schema?(conn: Conn) -> Bool
-  return sqlite3_get_autocommit(conn.handle) != 0 if sqlite3_libversion_number() < TXN_STATE_VERSION
+  return false if sqlite3_get_autocommit(conn.handle) == 0
 
-  sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_NONE
+  (
+    sqlite3_libversion_number() < TXN_STATE_VERSION or
+    sqlite3_txn_state(conn.handle, Native.pointer(0)) == SQLITE_TXN_NONE
+  )
 end
 
 # The text after the first statement must hold none. It is tried with an out pointer, where NULL can be told, and the

@@ -336,10 +336,19 @@ Feature: SQLite
     When I open "sqlite:[SCRATCH]/stale.db?journal_mode=delete"
     And I query "select count(*) as n from sqlite_master"
     And another task on "sqlite:[SCRATCH]/stale.db?journal_mode=delete" executes "create table t (x integer)"
-    And another task on "sqlite:[SCRATCH]/stale.db?journal_mode=delete" holds the write lock for 300 ms while I query "select count(*) as n from t"
+    Then the changed row count is 0
+    When another task on "sqlite:[SCRATCH]/stale.db?journal_mode=delete" holds the write lock for 300 ms while I query "select count(*) as n from t"
     Then the result is:
       | n     |
       | Int 0 |
+
+  # The same check runs for any error of a prepare; a wait for the lock that ends while it is still held gives that
+  # error, not the lock.
+  Scenario: A syntax error under a lock is reported as such on sqlite
+    Given a "sqlite" database
+    When I open "sqlite:[SCRATCH]/syntax.db?journal_mode=delete&busy_timeout=50"
+    And another task on "sqlite:[SCRATCH]/syntax.db?journal_mode=delete" holds the write lock for 300 ms while I query "selec 1"
+    Then it fails with "sqlite error 1: near"
 
   # A deferred transaction that has read holds a read lock. A write that another connection blocks cannot be waited
   # for: that connection commits only after this one lets go of its read lock, so both would wait for the busy_timeout.
