@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- SQLite native driver: a write whose plan grew between the two reads of its check (another connection changed the schema) runs in a normal call instead of reading past the check's arrays.
+
 ## [0.10.0] - 2026-11-13
 
 Needs Agentica 0.31.0 or later.
