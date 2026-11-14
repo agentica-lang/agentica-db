@@ -4,7 +4,7 @@ Database package for [Agentica](https://github.com/agentica-lang/agentica): one 
 MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI; SQLite and
 PostgreSQL also have a native driver (a statement cache, many rows per call), the default.
 
-agentica-db 0.10.1 needs Agentica 0.31.0 or later (0.9.0 needs 0.30.0), and a C compiler (`cc`, or
+agentica-db 0.11.0 needs Agentica 0.31.0 or later (0.9.0 needs 0.30.0), and a C compiler (`cc`, or
 `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports its SQLite or PostgreSQL driver first runs or is
 compiled: Agentica then builds the native module of each driver the program imports into its package cache.
 Documentation: https://agentica-lang.github.io/agentica-db/
@@ -15,10 +15,10 @@ In your `agentica.toml`:
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.10.1", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.11.0", subdir = "src/db" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.10.1 --subdir src/db`. Both (and
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.11.0 --subdir src/db`. Both (and
 `agentica install` for a manifest you edited) write `agentica.lock` and `deps/db/`.
 
 The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release
