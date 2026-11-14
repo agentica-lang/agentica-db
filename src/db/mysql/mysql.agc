@@ -72,11 +72,12 @@ end
 def open(url: String) -> Result[Connection]
   target = try MysqlUrl.parse(url)
   link = try connect(target)
+  identity = identity_of(link)
   conn = Connection(
-    link: link,
+    link: with_kill(link, target, identity),
     flavor: flavor_of(server_version(link)),
     timeout_ms: target.timeout_ms,
-    identity: identity_of(link),
+    identity: identity,
   )
 
   limited = limit_session(conn)
@@ -98,18 +99,11 @@ end
 ## reached another server (a load balancer), one that restarted since, or the identity is not known. The pool sends
 ## it when a block runs past `lease_ms`. Not for `Db`.
 def interrupt(conn: Connection, url: String) -> Void
-  return if closed?(conn.link) or conn.identity.server.empty?
+  return if closed?(conn.link)
 
   case MysqlUrl.parse(url)
     error(_) -> return
-    ok(target) ->
-      case connect(target.with(timeout: killer_timeout(target.timeout)))
-        error(_) -> return
-        ok(killer) ->
-          # A cancel of this task leaves the killer to the end of the task, which frees it.
-          kill_query(killer, conn.identity)
-          close_link(killer)
-      end
+    ok(target) -> stop_statement(target, conn.identity)
   end
 end
 
@@ -150,7 +144,7 @@ end
 ## Whether the connection works: it is open and the server answers (a ping, or `SELECT 1` on the native driver).
 def healthy?(conn: Connection) -> Bool
   case conn.link
-    Link.Native(session) -> not MysqlNative.closed?(session) and MysqlNative.query(session, "SELECT 1", []).ok?
+    Link.Native(session) -> not MysqlNative.closed?(session) and MysqlNative.query_once(session, "SELECT 1").ok?
     Link.Ffi(handle) -> not Native.closed?(handle) and MysqlFfi.healthy?(handle)
   end
 end
@@ -162,6 +156,12 @@ def statement_cache(conn: Connection) -> Optional[MysqlNative.CacheStats]
     Link.Native(session) -> MysqlNative.stats(session)
     Link.Ffi(_) -> none
   end
+end
+
+## Whether the identity `seen` by a new connection is of the server of `target`, the same run of it: a kill is sent
+## only then. An unknown identity (empty server) matches nothing.
+def same_server?(seen: Identity, target: Identity) -> Bool
+  not target.server.empty? and seen.server == target.server and (seen.started - target.started).abs <= START_SLACK_S
 end
 
 private
@@ -230,9 +230,33 @@ def text_of(value: Value) -> String
   end
 end
 
+# The native driver kills the statement that a cancelled task left before its next query drains it, with the same check
+# of the server as `interrupt`.
+def with_kill(link: Link, target: MysqlUrl.Target, identity: Identity) -> Link
+  case link
+    Link.Native(session) -> Link.Native(session.with(kill: some(-> { stop_statement(target, identity) })))
+    Link.Ffi(_) -> link
+  end
+end
+
+# `KILL QUERY` of the statement of `identity`, from a connection of its own that connects and answers within
+# KILLER_CONNECT_S seconds. Skipped when the identity is not known, or that connection reached another server (a load
+# balancer) or one that restarted since.
+def stop_statement(target: MysqlUrl.Target, identity: Identity) -> Void
+  return if identity.server.empty?
+
+  limits = target.with(timeout: killer_timeout(target.timeout), timeout_ms: KILLER_CONNECT_S * MS_PER_SECOND)
+  case connect(limits)
+    error(_) -> return
+    ok(killer) ->
+      # A cancel of this task leaves the killer to the end of the task, which frees it.
+      kill_query(killer, identity)
+      close_link(killer)
+  end
+end
+
 def kill_query(killer: Link, target: Identity) -> Void
-  seen = identity_of(killer)
-  return if seen.server != target.server or (seen.started - target.started).abs > START_SLACK_S
+  return if not same_server?(identity_of(killer), target)
 
   _ = run_execute(killer, "KILL QUERY #{target.id}", [])
 end

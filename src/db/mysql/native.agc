@@ -35,10 +35,13 @@ struct CacheStats
 end
 
 ## A connection of the module, the mutex that keeps its queries apart, and the caps of a call.
+## `kill` stops the statement that a cancelled task left on the connection (a KILL QUERY that the adapter sends after
+## it checked the identity of the server); none skips the kill, and the drain then waits for the statement to end.
 struct Session
   conn: Conn
   lock: Native.Mutex
   options: Options
+  kill: Optional[Fn[Void]] = none
 end
 
 extern module "db_mysql"
@@ -180,7 +183,6 @@ extern module "db_mysql"
   def resume(conn: Conn, options: Options) -> Step
   compute def resume_big(conn: Conn, options: Options) -> Step
   def drain(conn: Conn) -> Step
-  compute def cancel(conn: Conn) -> Void
   def transaction_open?(conn: Conn) -> Bool
   def link_up?(conn: Conn) -> Bool
   def server_info(conn: Conn) -> String
@@ -300,7 +302,10 @@ def wait(session: Session, step: Step) -> Result[Void]
   elsif step.state == S_WRITE
     waited = Native.wait_writable(step.fd, WRITE_WAIT_MS)
   elsif step.state == S_CANCEL
-    cancel(session.conn)
+    case session.kill
+      some(kill) -> kill.call()
+      none -> nil
+    end
   end
 
   case waited

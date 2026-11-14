@@ -165,7 +165,8 @@ new release of it, change the tag in both manifests and run `agentica update poo
 - `test/*_test.agc` is only for the edge cases of a pure helper that needs no connection and that a scenario would say
   badly: the scanners (`test/postgres_sql_test.agc`, `test/mysql_sql_test.agc`), the url readers
   (`test/mysql_url_test.agc`, `test/postgres_url_test.agc`, `test/sqlite_url_test.agc`), the timeout messages
-  (`test/db_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`)
+  (`test/db_test.agc`), the lock rule of SQLite (`test/sqlite_lock_test.agc`), the server check of a MySQL kill
+  (`test/mysql_identity_test.agc`)
   and the identifier check of the Orm (`test/orm_dialect_test.agc`), and `test/migrations_layout_test.agc` (it opens no
   connection: it checks the list of `examples/migrations.agc` against its folder, as the guide teaches). Anything that
   opens a connection is a scenario. A behavior is proven once: a common scenario is an outline with one row per

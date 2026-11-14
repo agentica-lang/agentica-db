@@ -26,7 +26,7 @@
  * Calls on one connection are made one at a time: the adapter holds a Native.Mutex of the connection for the whole
  * query, and `enter` below only refuses a call that would break that rule. A task cancelled in the middle of a query
  * leaves it on the connection (`inflight`); the next query reads it to its end first (`drain`), after a KILL QUERY
- * sent on a connection of its own (CANCEL, a compute call with timeouts). The free function of the connection never
+ * that the adapter sends on a connection of its own (S_CANCEL) once it has checked the identity of the server. The free function of the connection never
  * waits: with a query left on it, it shuts the socket down before `mysql_close`, whose goodbye then fails at once.
  */
 #if defined(_WIN32)
@@ -474,7 +474,6 @@ typedef struct {
   int closing_size, closing_capacity;
   uint64_t tick, hits, misses, evictions;
   bool inflight;
-  login login;
   query q;
 } conn;
 
@@ -499,8 +498,6 @@ typedef struct {
 #define CLOSE_BATCH 32
 /* The room for closes that `connect` reserves besides the capacity of the cache (see close_later). */
 #define CLOSE_SPARE 8
-/* The seconds that the connection of `cancel` may take to connect, and to send its KILL QUERY and read the reply. */
-#define CANCEL_WAIT_S 5
 
 static uint64_t hash_text(const char *s, size_t n) {
   uint64_t h = 14695981039346656037ull;
@@ -631,7 +628,6 @@ static void conn_free(void *state) {
   if (own) (void)my.stmt_close(own);
   free(c->entries);
   free(c->closing);
-  free_login(&c->login);
   lock_destroy(&c->lock);
   free(c);
 }
@@ -1218,7 +1214,8 @@ static int op_resume(an_env *env, conn *c, query *q) {
   return op_settle(c, q, op_call(env, c, q, events));
 }
 
-/* What to wait for. A query that a cancelled task left asks for a KILL QUERY first, once. */
+/* What to wait for. A query that a cancelled task left asks the adapter for a KILL QUERY first, once (the adapter
+   checks the identity of the server before it kills). */
 static an_term wait_step(an_env *env, conn *c, query *q) {
   if (q->discard && !q->killed) {
     q->killed = true;
@@ -1680,7 +1677,7 @@ static an_term fn_connect(an_env *env, int argc, const an_term *argv) {
   c->capacity = (int)capacity;
   c->closing = closing;
   c->closing_capacity = (int)capacity + CLOSE_SPARE;
-  c->login = l;
+  free_login(&l);
   query_reset(&c->q);
   an_term out;
   conn_state *s = an_resource_new(env, CONN, &out);
@@ -1828,29 +1825,6 @@ static an_term fn_drain(an_env *env, int argc, const an_term *argv) {
   return out;
 }
 
-/* cancel(conn): stops the statement that runs on the connection with a KILL QUERY sent on a connection of its own (on
-   the compute pool), which gives up after CANCEL_WAIT_S seconds to connect and as many to send it and read the reply.
-   It fails silently: the drain then waits for the statement to end. The server resets the kill of a thread at its next
-   command, so a kill that comes after the statement ended stops nothing. */
-static an_term fn_cancel(an_env *env, int argc, const an_term *argv) {
-  char ignored[256], sql[64];
-  (void)argc;
-  conn *c = conn_of(env, argv[0]);
-  if (!c) return an_badarg(env, 0);
-  if (!enter(env, c)) return an_void(env);
-  MYSQL *k = my.init(NULL);
-  if (k) {
-    if (configure(k, &c->login, CANCEL_WAIT_S, CANCEL_WAIT_S, ignored, sizeof ignored) &&
-        my.real_connect(k, c->login.host, c->login.user, c->login.password, NULL, (unsigned)c->login.port, NULL, 0)) {
-      int n = snprintf(sql, sizeof sql, "KILL QUERY %lu", my.thread_id(c->my));
-      (void)my.real_query(k, sql, (unsigned long)n);
-    }
-    my.close(k);
-  }
-  lock_drop(&c->lock);
-  return an_void(env);
-}
-
 /* transaction_open?(conn): the server's flag of the last reply, as the FFI adapter reads it. */
 static an_term fn_in_transaction(an_env *env, int argc, const an_term *argv) {
   (void)argc;
@@ -1921,7 +1895,6 @@ static const an_function functions[] = {
   {"resume", "(Conn, Options) -> Step", fn_resume, AN_SHORT},
   {"resume_big", "(Conn, Options) -> Step", fn_resume_big, AN_DIRTY},
   {"drain", "(Conn) -> Step", fn_drain, AN_SHORT},
-  {"cancel", "(Conn) -> Void", fn_cancel, AN_DIRTY},
   {"transaction_open?", "(Conn) -> Bool", fn_in_transaction, AN_SHORT},
   {"link_up?", "(Conn) -> Bool", fn_connected, AN_SHORT},
   {"server_info", "(Conn) -> String", fn_server_info, AN_SHORT},
