@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-14
+
+Needs Agentica 0.31.0 or later.
+
 ### Changed
 
 - **Breaking:** `Db.open` and `DbPool.Options` take the drivers of the program, and a program builds the native modules of the drivers it imports only (an app on SQLite no longer builds the PostgreSQL one, about 1 s of its first run): `Db.open("sqlite:app.db", [Sqlite.driver()])` with `import Sqlite from "pkg/db/sqlite"` (also `pkg/db/postgres` and `pkg/db/mysql`), and `DbPool.Options(url: ..., drivers: [...])`.
@@ -257,7 +261,8 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...HEAD
+[0.11.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...0.11.0
 [0.10.1]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...0.10.1
 [0.10.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.0-alpha.1...0.10.0
 [0.10.0-alpha.1]: https://github.com/agentica-lang/agentica-db/compare/0.9.0...0.10.0-alpha.1
