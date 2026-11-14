@@ -5,13 +5,20 @@
 
 import {Row, Value} from "value"
 
-## An open connection, owned by the task that opened it. `adapter` names the database (`sqlite`, `postgres`,
-## `mysql`) and `begin_sql` is the statement that starts a transaction. Each function works on the connection that the
-## driver opened: `query` and `execute` take the sql, the parameters and `timeout_ms`; `interrupt`, `enter_gate` and
-## `leave_gate` serve the SQLite writers of a pool (`DbPool`) and do nothing elsewhere; `statement_cache` gives the
-## counters of the native driver's cache, none on a driver without one.
+## The database of a connection.
+enum Adapter
+  Sqlite
+  Postgres
+  Mysql
+end
+
+## An open connection, owned by the task that opened it. `adapter` names the database and `begin_sql` is the
+## statement that starts a transaction. Each function works on the connection that the driver opened: `query` and
+## `execute` take the sql, the parameters and `timeout_ms`; `interrupt`, `enter_gate` and `leave_gate` serve the
+## SQLite writers of a pool (`DbPool`) and do nothing elsewhere; `statement_cache` gives the counters of the native
+## driver's cache, none on a driver without one.
 struct Connection
-  adapter: String
+  adapter: Adapter
   begin_sql: String
   close: Fn[Void]
   query: Fn[String, List[Value], Int, Result[List[Row]]]
@@ -37,10 +44,9 @@ struct CacheStats
   fallbacks: Int = 0
 end
 
-## A database: its `name`, the url prefixes it takes (`schemes`), `open` of a whole url, and `pool`, which a pool of
-## its connections starts with.
+## A database: the url prefixes it takes (`schemes`), `open` of a whole url, and `pool`, which a pool of its
+## connections starts with.
 struct Driver
-  name: String
   schemes: List[String]
   open: Fn[String, Result[Connection]]
   pool: Fn[PoolSettings, Pooling]

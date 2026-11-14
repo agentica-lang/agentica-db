@@ -23,24 +23,31 @@ end
 def quote(conn: Db.Connection, name: String) -> Result[String]
   return error("the name #{name.inspect} is not a plain identifier") if not valid_name?(name)
 
-  return ok("\"#{name}\"") if conn.adapter == "postgres"
-
-  ok("`#{name}`")
+  case conn.adapter
+    Db.Adapter.Postgres -> ok("\"#{name}\"")
+    Db.Adapter.Sqlite -> ok("`#{name}`")
+    Db.Adapter.Mysql -> ok("`#{name}`")
+  end
 end
 
 ## Runs an insert whose key the database generates and gives that key. PostgreSQL says it with `returning`; SQLite and
 ## MySQL keep the key of the last insert of the connection, which the next statement reads. `key` is the quoted
 ## name of the key column. The errors are the ones of `Db`.
 def insert_generated(conn: Db.Connection, sql: String, params: List[Db.Value], key: String) -> Result[Int]
-  return generated(try Db.query(conn, "#{sql} returning #{key}", params)) if conn.adapter == "postgres"
-
-  try Db.execute(conn, sql, params)
-  return generated(try Db.query(conn, "select last_insert_rowid() as id", [])) if conn.adapter == "sqlite"
-
-  generated(try Db.query(conn, "select last_insert_id() as id", []))
+  case conn.adapter
+    Db.Adapter.Postgres -> generated(try Db.query(conn, "#{sql} returning #{key}", params))
+    Db.Adapter.Sqlite -> generated(try last_key(conn, sql, params, "last_insert_rowid()"))
+    Db.Adapter.Mysql -> generated(try last_key(conn, sql, params, "last_insert_id()"))
+  end
 end
 
 private
+
+# Runs the insert, then reads the key the connection kept with `function`.
+def last_key(conn: Db.Connection, sql: String, params: List[Db.Value], function: String) -> Result[List[Db.Row]]
+  try Db.execute(conn, sql, params)
+  Db.query(conn, "select #{function} as id", [])
+end
 
 def generated(rows: List[Db.Row]) -> Result[Int]
   return error(NO_KEY) if rows.empty? or rows[0].empty?

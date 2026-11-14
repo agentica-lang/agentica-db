@@ -5,7 +5,7 @@ import C from "support/connection"
 import MysqlAdapter from "mysql/mysql"
 
 ## The driver of `mysql://` and `mariadb://` urls.
-def driver() -> C.Driver = C.Driver(name: "mysql", schemes: ["mysql://", "mariadb://"], open: &open, pool: &pooling)
+def driver() -> C.Driver = C.Driver(schemes: ["mysql://", "mariadb://"], open: &open, pool: &pooling)
 
 ## Opens a MySQL or MariaDB database from a `mysql://user:password@host:3306/database` url (also `mariadb://`).
 ## `timeout_ms` is a parameter of the url (see `mysql/mysql.agc`).
@@ -18,7 +18,7 @@ private
 
 def connection(conn: MysqlAdapter.Connection) -> C.Connection
   C.Connection(
-    adapter: "mysql",
+    adapter: C.Adapter.Mysql,
     begin_sql: MysqlAdapter.BEGIN_SQL,
     close: -> { MysqlAdapter.close(conn) },
     query: ->(sql, params, timeout_ms) { MysqlAdapter.query(conn, sql, params, timeout_ms) },

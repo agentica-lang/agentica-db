@@ -6,9 +6,7 @@ import C from "support/connection"
 import PostgresAdapter from "postgres/postgres"
 
 ## The driver of `postgres://` and `postgresql://` urls, which libpq parses.
-def driver() -> C.Driver
-  C.Driver(name: "postgres", schemes: ["postgres://", "postgresql://"], open: &open, pool: &pooling)
-end
+def driver() -> C.Driver = C.Driver(schemes: ["postgres://", "postgresql://"], open: &open, pool: &pooling)
 
 ## Opens a PostgreSQL database from a libpq url, or from a conninfo string (`host=localhost dbname=app`), which libpq
 ## also takes and `Db.open` does not, since it has no scheme. `timeout_ms` is a parameter of the url, or a key of the
@@ -22,7 +20,7 @@ private
 
 def connection(conn: PostgresAdapter.Connection) -> C.Connection
   C.Connection(
-    adapter: "postgres",
+    adapter: C.Adapter.Postgres,
     begin_sql: PostgresAdapter.BEGIN_SQL,
     close: -> { PostgresAdapter.close(conn) },
     query: ->(sql, params, timeout_ms) { PostgresAdapter.query(conn, sql, params, timeout_ms) },

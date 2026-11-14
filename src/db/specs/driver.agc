@@ -798,7 +798,7 @@ def fallbacks(state: State) -> State
 end
 
 def stat_of(conn: Db.Connection, name: String) -> Optional[Int]
-  return none if conn.adapter != "sqlite"
+  return none if conn.adapter != Db.Adapter.Sqlite
 
   Db.statement_cache(conn).map do |c| pick_stat(c, name) end
 end
@@ -1884,7 +1884,9 @@ end
 # The counters of the statement cache of the connection, as one row.
 def statement_cache(state: State) -> State
   with_conn(state) do |conn|
-    return failed(state, "only a SQLite or PostgreSQL connection has a statement cache") if conn.adapter == "mysql"
+    if conn.adapter == Db.Adapter.Mysql
+      return failed(state, "only a SQLite or PostgreSQL connection has a statement cache")
+    end
 
     found = Db.statement_cache(conn).map do |c| [c.size, c.capacity, c.hits, c.misses, c.evictions] end
     cache_row(state, found)
@@ -1897,7 +1899,9 @@ end
 def driver_named(state: State, name: String) -> State
   wanted = System.env(name).unwrap_or("")
   with_conn(state) do |conn|
-    return failed(state, "only a SQLite or PostgreSQL connection has a driver to name") if conn.adapter == "mysql"
+    if conn.adapter == Db.Adapter.Mysql
+      return failed(state, "only a SQLite or PostgreSQL connection has a driver to name")
+    end
 
     case Db.statement_cache(conn)
       some(_) -> driver_ran(state, name, wanted, "native")
@@ -1973,7 +1977,7 @@ def cache_beside_big(state: State, req: Request) -> State
 end
 
 def read_cache(conn: Db.Connection) -> Result[Int]
-  return error("only a PostgreSQL connection is read here") if conn.adapter != "postgres"
+  return error("only a PostgreSQL connection is read here") if conn.adapter != Db.Adapter.Postgres
 
   for _ in 0...CACHE_READS
     _ = Db.statement_cache(conn)

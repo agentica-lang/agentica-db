@@ -309,9 +309,8 @@ def answers_with(ctx: BDD.Context, args: List[String]) -> BDD.Context
   BDD.assert(ctx, answer.start_with?(args[0]), "the program answered #{answer.inspect}")
 end
 
-# Compiles the program `args[0]` (a path from specs/) with a package cache of its own, empty, so that every
-# native module
-# it reaches is built, and keeps what agentica printed.
+# Compiles the program `args[0]` (a path from specs/) with a package cache of its own, empty, so that every native
+# module it reaches is built, and keeps what agentica printed.
 def compile_cold(ctx: BDD.Context, args: List[String]) -> BDD.Context
   cache = "#{Path.cwd().unwrap!}/tmp/cache-#{OpenSSL.Random.hex(8)}"
   cleaned = BDD.after(ctx) do |_|

@@ -9,7 +9,7 @@ import SqliteAdapter from "sqlite/sqlite"
 import SqliteUrl from "sqlite/url"
 
 ## The driver of `sqlite:PATH` urls (`sqlite::memory:` for a private in-memory database).
-def driver() -> C.Driver = C.Driver(name: "sqlite", schemes: [PREFIX], open: &open_url, pool: &pooling)
+def driver() -> C.Driver = C.Driver(schemes: [PREFIX], open: &open_url, pool: &pooling)
 
 ## Opens a SQLite database file, or `:memory:`, by its path: `sqlite:PATH` without the scheme. Parameters after a `?`
 ## set `journal_mode` (default `wal`), `foreign_keys` (default `on`), `busy_timeout` in milliseconds (default 5000),
@@ -38,17 +38,17 @@ struct Watch
   every_ms: Int
 end
 
-# Errors name the scheme only: a url can hold a password.
 def open_url(url: String) -> Result[C.Connection]
-  if url.start_with?("sqlite://")
-    return error("db error: unsupported database url with scheme sqlite://: write sqlite:PATH, without //")
-  end
-
   conn = try open_raw(url)
   ok(connection(conn))
 end
 
+# Errors name the scheme only: a url can hold a password.
 def open_raw(url: String) -> Result[SqliteAdapter.Connection]
+  if url.start_with?("sqlite://")
+    return error("db error: unsupported database url with scheme sqlite://: write sqlite:PATH, without //")
+  end
+
   path = url.slice(PREFIX.length, url.length - PREFIX.length)
   return error("db error: unsupported database url with scheme sqlite: the path is empty") if path.empty?
 
@@ -57,7 +57,7 @@ end
 
 def connection(conn: SqliteAdapter.Connection) -> C.Connection
   C.Connection(
-    adapter: "sqlite",
+    adapter: C.Adapter.Sqlite,
     begin_sql: SqliteAdapter.BEGIN_SQL,
     close: -> { SqliteAdapter.close(conn) },
     query: ->(sql, params, timeout_ms) { SqliteAdapter.query(conn, sql, params, timeout_ms) },

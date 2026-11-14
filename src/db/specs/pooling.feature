@@ -320,6 +320,14 @@ Feature: Pooling
       | n     |
       | Int 0 |
 
+  Scenario: A pool refuses a sqlite:// url as Db.open does, without the password, on sqlite
+    Given a "sqlite" database
+    When I start a pool on "sqlite://user:hunter2@h/x" with:
+      | option | value |
+      | size   | 1     |
+    Then it fails with "db error: unsupported database url with scheme sqlite://: write sqlite:PATH"
+    And the failure never shows "hunter2"
+
   Scenario: A pool whose connections do not open does not start on sqlite
     Given a "sqlite" database
     When I start a pool on "sqlite:[SCRATCH]/missing/pool.db" with:

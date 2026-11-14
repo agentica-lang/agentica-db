@@ -309,7 +309,7 @@ end
 # The statements that ran whole in a short call. Only the native driver counts them: a run on the FFI driver, which
 # CI makes with AGENTICA_DB_SQLITE_DRIVER=ffi, has nothing to check.
 def shorts_of(conn: Db.Connection) -> Result[Int]
-  return error("not a SQLite connection") if conn.adapter != "sqlite"
+  return error("not a SQLite connection") if conn.adapter != Db.Adapter.Sqlite
 
   case Db.statement_cache(conn)
     some(stats) -> ok(stats.shorts)

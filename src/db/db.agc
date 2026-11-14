@@ -23,6 +23,7 @@
 import C from "support/connection"
 import V from "support/value"
 
+export C.Adapter
 export C.CacheStats
 export C.Connection
 export C.Driver
@@ -40,11 +41,11 @@ NO_TIMEOUT = 0
 
 ## Opens the database a url names with the driver of `drivers` that takes its scheme: `sqlite:PATH`
 ## (`sqlite::memory:` for a private in-memory database; the SQLite parameters follow a `?`, as in
-## `sqlite:app.db?journal_mode=delete`) with `Sqlite.driver()`, `postgres://` and `postgresql://` urls (or a libpq
-## conninfo string, as `Postgres.open` takes) with `Postgres.driver()`, `mysql://` and `mariadb://` urls with
-## `Mysql.driver()`. The connection is owned by the task that opened it: close it with `close`, or the end of the task
-## closes it (the end of `main` closes one still open). Open it in the task that keeps it, usually `main`; a pool
-## (`DbPool`) shares connections between tasks.
+## `sqlite:app.db?journal_mode=delete`) with `Sqlite.driver()`, `postgres://` and `postgresql://` urls with
+## `Postgres.driver()` (a libpq conninfo string has no scheme: open it with `Postgres.open`), `mysql://` and
+## `mariadb://` urls with `Mysql.driver()`. The connection is owned by the task that opened it: close it with `close`,
+## or the end of the task closes it (the end of `main` closes one still open). Open it in the task that keeps it,
+## usually `main`; a pool (`DbPool`) shares connections between tasks.
 def open(url: String, drivers: List[C.Driver]) -> Result[C.Connection]
   driver = try driver_for(url, drivers)
   driver.open.call(url)
@@ -176,7 +177,7 @@ end
 def no_driver(url: String, drivers: List[C.Driver]) -> String
   for name in KNOWN_DRIVERS.keys
     if KNOWN_DRIVERS[name].any? do |prefix| url.start_with?(prefix) end
-      return "db error: no driver for the url scheme #{scheme(url)}: pass #{name} to Db.open"
+      return "db error: no driver for the url scheme #{scheme(url)}: pass #{name} to Db.open or DbPool.Options"
     end
   end
 
