@@ -279,7 +279,7 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.11.1...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.12.0...HEAD
 [0.12.0]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...0.11.0
 [0.10.1]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...0.10.1
