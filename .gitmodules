@@ -1,0 +1,3 @@
+[submodule "site/themes/docs-theme"]
+	path = site/themes/docs-theme
+	url = https://github.com/agentica-lang/docs-theme.git

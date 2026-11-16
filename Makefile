@@ -23,21 +23,24 @@ fmt-check:
 
 site site-serve site-sass: export PATH := $(DART_SASS):$(PATH)
 
+THEME := site/themes/docs-theme
+
 site-sass:
+	@test -e $(THEME)/hugo.toml || { echo "The site needs its theme: git submodule update --init $(THEME)" >&2; exit 1; }
 	@command -v sass >/dev/null || { \
 		echo "The site needs Dart Sass: put its sass on PATH or in $(DART_SASS)" \
 			"(pinned version in .github/workflows/pages.yml)" >&2; \
 		exit 1; \
 	}
 
-site/highlight/node_modules: site/highlight/package.json site/highlight/package-lock.json
-	npm ci --prefix site/highlight --ignore-scripts --no-audit --no-fund
+$(THEME)/highlight/node_modules: $(THEME)/highlight/package.json $(THEME)/highlight/package-lock.json
+	npm ci --prefix $(THEME)/highlight --ignore-scripts --no-audit --no-fund
 	touch $@
 
-# Builds the site into site/public. HUGO_FLAGS="--baseURL URL" sets the address.
-site: site-sass site/highlight/node_modules
+# Builds the site into site/public with the docs theme. HUGO_FLAGS="--baseURL URL" sets the address.
+site: site-sass $(THEME)/highlight/node_modules
 	hugo --cleanDestinationDir --source site --panicOnWarning $(HUGO_FLAGS)
-	node site/highlight/highlight.mjs site/public
+	node $(THEME)/highlight/highlight.mjs site/public
 	@# The layouts print the title of a home or a list page, so its content must not start with the same heading.
 	@# The redirect page of an alias has no heading, so it is skipped.
 	@bad=0; for f in $$(find site/public -name index.html); do \

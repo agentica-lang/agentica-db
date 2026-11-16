@@ -108,8 +108,9 @@ new release of it, change the tag in both manifests and run `agentica update poo
   too (CI does): `-e MYSQL_ROOT_PASSWORD=pw ... mysql:8.4` on another port. The two servers differ (MySQL does not
   prepare `START TRANSACTION`), so a MySQL change passes on both. Scenarios use temporary tables, so
   they leave nothing behind.
-- The documentation site is in `site/` (Hugo; `site/DESIGN.md` says how it differs from the Agentica site):
-  `make site` builds it (needs Hugo and Dart Sass, see `.github/workflows/pages.yml`), `make site-samples` checks
+- The documentation site is in `site/` (Hugo, with the docs theme submodule `site/themes/docs-theme`; `site/DESIGN.md`
+  says what differs): `make site` builds it (needs `git submodule update --init`, Hugo and Dart Sass, see
+  `.github/workflows/pages.yml`), `make site-samples` checks
   every `agentica` block of `site/content/` with `agentica check` (and runs the ones followed by an `output` block).
   A page of `site/content/` never starts with a `# ` heading (the layout prints the title) and keeps one line per
   paragraph or list item. A change to the API updates its page.
