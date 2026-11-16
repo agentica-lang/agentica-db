@@ -55,12 +55,12 @@ site/ tools/   the documentation site (Hugo) and the check of its samples
 A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `db.agc`, and the
 dependency takes no `subdir` (0.4.0 to 0.12.0 had the package in `src/db` and took `subdir = "src/db"`). Moving a file
 other than the modules at the root (`db`, `db_pool`, `orm`, `migrate`, `sqlite`, `postgres`, `mysql`) does not change
-the documented imports of users; moving one of those does. The package holds every file of the repository except
-the hidden folders and `deps/`, so the `.agc` files of `properties/` reach users too: keep them out of the imports of
-the package. The pool is not in this repository: the root and `properties/` depend on the `pool`
-package of agentica-lang/packages at a tag (`pool-X.Y.Z`, `subdir = "pool"`), and both name the same tag (one name
-stands for one source in a build). To move to a new release of it, change the tag in both manifests and run
-`agentica update pool` in both folders.
+the documented imports of users; moving one of those does. A user's `deps/db/` gets the `.agc` files of every
+folder (not hidden, not `deps/`), `native/*.c` and the root `agentica.toml`, nothing else; so the `.agc` files of
+`properties/` reach users too: keep them out of the imports of the package. The pool is not in this repository: the
+root and `properties/` depend on the `pool` package of agentica-lang/packages at a tag (`pool-X.Y.Z`,
+`subdir = "pool"`), and both name the same tag (one name stands for one source in a build). To move to a new release
+of it, change the tag in both manifests and run `agentica update pool` in both folders.
 
 ## Commands
 
