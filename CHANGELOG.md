@@ -4,13 +4,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-16
+
+Needs Agentica 0.31.0 or later; CI runs it on Agentica 0.33.0.
+
 ### Added
 
 - A native MySQL and MariaDB driver on Linux (`[native.db_mysql]`, optional like the others): a query waits on the socket with no compute call, prepared statements are cached per connection (`Db.statement_cache` gives its counters) and rows come many per call; the url parameters `statement_cache`, `batch_rows` and `batch_bytes` set it up, and `AGENTICA_DB_MYSQL_DRIVER=native` or `ffi` picks a driver. Elsewhere, and without a C compiler, the FFI driver runs.
 
 ### Changed
 
-- CI builds Agentica 0.31.2 (the minimum stays 0.31.0) and the property tests use prop 0.4.1.
+- CI builds Agentica 0.33.0 (the minimum stays 0.31.0), the package uses pool 0.1.3, and the property tests use prop 0.4.2.
 - The native SQLite and PostgreSQL modules are optional: without a C compiler a program prints Agentica's warning and runs the FFI drivers, instead of failing with `PKG-NATIVE-BUILD` (this lifts the compiler requirement of 0.6.0).
 
 ### Fixed
@@ -275,7 +279,8 @@ First release. Needs Agentica 0.16.0 or later.
 - The behavior is specified as Gherkin features in `specs/`, run by `agentica test`; `make check` checks every file.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
-[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...HEAD
+[unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.12.0...HEAD
+[0.12.0]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...0.11.0
 [0.10.1]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...0.10.1
 [0.10.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.0-alpha.1...0.10.0
