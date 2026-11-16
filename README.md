@@ -8,7 +8,7 @@ agentica-db 0.12.0 needs Agentica 0.31.0 or later (0.9.0 needs 0.30.0). Where a 
 PostgreSQL or MySQL driver first runs or is compiled, Agentica builds the native module of each driver the program
 imports into its package cache with the C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`). Without a
 compiler it prints a warning and the program runs the FFI drivers.
-Documentation: https://agentica-lang.github.io/agentica-db/
+Documentation: https://www.agentica-lang.com/agentica-db/
 
 ## Install
 
@@ -80,20 +80,20 @@ The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
 
 License: Apache-2.0.
 
-[getting-started]: https://agentica-lang.github.io/agentica-db/getting-started/
-[connecting]: https://agentica-lang.github.io/agentica-db/basics/connecting/
-[queries]: https://agentica-lang.github.io/agentica-db/basics/queries/
-[values]: https://agentica-lang.github.io/agentica-db/basics/values/
-[transactions]: https://agentica-lang.github.io/agentica-db/basics/transactions/
-[sqlite]: https://agentica-lang.github.io/agentica-db/databases/sqlite/
-[postgresql]: https://agentica-lang.github.io/agentica-db/databases/postgresql/
-[mysql]: https://agentica-lang.github.io/agentica-db/databases/mysql/
-[orm-schema]: https://agentica-lang.github.io/agentica-db/orm/schema/
-[orm-reads]: https://agentica-lang.github.io/agentica-db/orm/reads/
-[orm-builder]: https://agentica-lang.github.io/agentica-db/orm/builder/
-[orm-writes]: https://agentica-lang.github.io/agentica-db/orm/writes/
-[orm-errors]: https://agentica-lang.github.io/agentica-db/orm/errors/
-[timeouts]: https://agentica-lang.github.io/agentica-db/production/timeouts/
-[generic-pool]: https://agentica-lang.github.io/agentica-db/production/generic-pool/
-[migrations]: https://agentica-lang.github.io/agentica-db/tools/migrations/
-[testing]: https://agentica-lang.github.io/agentica-db/tools/testing/
+[getting-started]: https://www.agentica-lang.com/agentica-db/getting-started/
+[connecting]: https://www.agentica-lang.com/agentica-db/basics/connecting/
+[queries]: https://www.agentica-lang.com/agentica-db/basics/queries/
+[values]: https://www.agentica-lang.com/agentica-db/basics/values/
+[transactions]: https://www.agentica-lang.com/agentica-db/basics/transactions/
+[sqlite]: https://www.agentica-lang.com/agentica-db/databases/sqlite/
+[postgresql]: https://www.agentica-lang.com/agentica-db/databases/postgresql/
+[mysql]: https://www.agentica-lang.com/agentica-db/databases/mysql/
+[orm-schema]: https://www.agentica-lang.com/agentica-db/orm/schema/
+[orm-reads]: https://www.agentica-lang.com/agentica-db/orm/reads/
+[orm-builder]: https://www.agentica-lang.com/agentica-db/orm/builder/
+[orm-writes]: https://www.agentica-lang.com/agentica-db/orm/writes/
+[orm-errors]: https://www.agentica-lang.com/agentica-db/orm/errors/
+[timeouts]: https://www.agentica-lang.com/agentica-db/production/timeouts/
+[generic-pool]: https://www.agentica-lang.com/agentica-db/production/generic-pool/
+[migrations]: https://www.agentica-lang.com/agentica-db/tools/migrations/
+[testing]: https://www.agentica-lang.com/agentica-db/tools/testing/

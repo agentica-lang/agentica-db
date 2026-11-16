@@ -6,7 +6,7 @@ aliases:
   - /guide/pool/
 ---
 
-The pool that [`DbPool`](/production/pooling/) is built on is a package of its own, `pool`, in [agentica-lang/packages](https://github.com/agentica-lang/packages). It is for any resource that is made once and lent to one caller at a time: a database connection, an HTTP connection, a worker. Its documentation is on the [pool page](https://agentica-lang.github.io/packages/pool/): the `Spec`, its settings and defaults, the errors and their kinds, and how a caller that ends and a close are handled.
+The pool that [`DbPool`](/production/pooling/) is built on is a package of its own, `pool`, in [agentica-lang/packages](https://github.com/agentica-lang/packages). It is for any resource that is made once and lent to one caller at a time: a database connection, an HTTP connection, a worker. Its documentation is on the [pool page](https://www.agentica-lang.com/packages/pool/): the `Spec`, its settings and defaults, the errors and their kinds, and how a caller that ends and a close are handled.
 
 A project that needs only the pool installs it alone:
 

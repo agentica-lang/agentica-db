@@ -1,4 +1,4 @@
-baseURL = "https://agentica-lang.github.io/agentica-db/"
+baseURL = "https://www.agentica-lang.com/agentica-db/"
 locale = "en"
 title = "agentica-db"
 disableKinds = ["taxonomy", "term", "rss"]

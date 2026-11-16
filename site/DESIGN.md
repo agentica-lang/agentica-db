@@ -12,7 +12,7 @@ right: fix this file in the same change.
 
 - Title and voice: "agentica-db", the docs of a database package for
   Agentica. `site/hugo.toml` has the title, the description and the base URL
-  (`https://agentica-lang.github.io/agentica-db/`).
+  (`https://www.agentica-lang.com/agentica-db/`).
 - Icon: the favicon is a "D" cut out of an accent-colored rounded square. It
   has the same light and dark mechanism as Agentica (the colors are `--accent`
   of both themes), but its own shape. It is in `site/layouts/baseof.html`.
