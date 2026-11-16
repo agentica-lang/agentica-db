@@ -104,7 +104,7 @@ def main() -> Void
 end
 ```
 
-With timestamp versions (see "What `up` refuses") the versions are not 1 to N, so keep only the count check: `up` itself refuses a list whose versions do not strictly ascend, which catches a file listed twice. A runnable copy of this layout is in `src/db/examples/` of the repository (`migrations.agc`, `migrations/` and `migrate_layout.agc`, which the specs run).
+With timestamp versions (see "What `up` refuses") the versions are not 1 to N, so keep only the count check: `up` itself refuses a list whose versions do not strictly ascend, which catches a file listed twice. A runnable copy of this layout is in `examples/` of the repository (`migrations.agc`, `migrations/` and `migrate_layout.agc`, which the specs run).
 
 ## What `up` does
 

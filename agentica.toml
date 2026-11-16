@@ -1,7 +1,66 @@
-# The root of the repository only names the workspace; the packages are in src/. A package that is installed from
-# this repository declares its folder with `subdir` (`subdir = "src/db"`), and the members below
-# are read from their folders by the packages of this repository, so an edit there is seen by the next build.
-# src/properties holds the property tests; it is a member only to read db from its folder.
-[workspace]
-repository = "https://github.com/agentica-lang/agentica-db"
-members = ["src/db", "src/properties"]
+name = "db"
+
+# db_pool.agc is a pool of connections on the generic pool, the `pool` package of agentica-lang/packages (its own tag,
+# `pool-X.Y.Z`; its releases are in that repository).
+[dependencies]
+pool = { git = "https://github.com/agentica-lang/packages", tag = "pool-0.1.3", subdir = "pool" }
+
+# The system SQLite; `extern "sqlite3"` in sqlite/sqlite.agc opens the entry of the running system.
+[native.sqlite3]
+linux = { system = "libsqlite3.so.0" }
+macos = { system = "libsqlite3.dylib" }
+windows = { system = "winsqlite3.dll" }
+
+# The native SQLite driver (sqlite/native.agc), built from native/db_sqlite.c with the system C compiler into the
+# package cache by the first run or compile of a program that imports the SQLite driver (sqlite.agc), a fetched package
+# too. It opens the system SQLite itself (the library of [native.sqlite3]), so the build needs no SQLite headers. It is
+# optional: when it cannot be built (no C compiler), Agentica warns once and the adapter runs the FFI driver
+# (sqlite/ffi.agc), as it does when the library does not load.
+[native.db_sqlite]
+build = { sources = ["native/db_sqlite.c"] }
+optional = true
+linux = { system = "libdb_sqlite.so" }
+macos = { system = "libdb_sqlite.dylib" }
+windows = { system = "db_sqlite.dll" }
+
+# The system libpq (PostgreSQL client); `extern "pq"` in postgres/ffi.agc opens the entry of the running system. A
+# macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH only: with Homebrew's libpq, run with
+# DYLD_LIBRARY_PATH="$(brew --prefix libpq)/lib".
+[native.pq]
+linux = { system = "libpq.so.5" }
+macos = { system = "libpq.5.dylib" }
+windows = { system = "libpq.dll" }
+
+# The native PostgreSQL driver (postgres/native.agc), built from native/db_postgres.c like db_sqlite, by a program that
+# imports the PostgreSQL driver (postgres.agc). It opens the system libpq itself (the library of [native.pq]; on macOS
+# from DYLD_LIBRARY_PATH, Homebrew or Postgres.app), so the build needs no libpq headers. Optional like db_sqlite: when
+# it cannot be built or does not load, the adapter runs the FFI driver (postgres/ffi.agc).
+[native.db_postgres]
+build = { sources = ["native/db_postgres.c"] }
+optional = true
+linux = { system = "libdb_postgres.so" }
+macos = { system = "libdb_postgres.dylib" }
+windows = { system = "db_postgres.dll" }
+
+# The system MariaDB Connector/C (`libmariadb.so.3`), which speaks to MySQL and MariaDB servers; `extern "mariadb"`
+# in mysql/ffi.agc opens the entry of the running system. A macOS name is looked up in /usr/lib and DYLD_LIBRARY_PATH
+# only: with Homebrew's mariadb-connector-c, run with DYLD_LIBRARY_PATH="$(brew --prefix mariadb-connector-c)/lib".
+[native.mariadb]
+linux = { system = "libmariadb.so.3" }
+macos = { system = "libmariadb.3.dylib" }
+windows = { system = "libmariadb.dll" }
+
+# The native MySQL driver (mysql/native.agc), built from native/db_mysql.c like db_sqlite, by a program that imports
+# the MySQL driver (mysql.agc). It opens the system libmariadb itself (the library of [native.mariadb]), so the build
+# needs no client headers. It runs on Linux only; elsewhere, and when it cannot be built or does not load, the adapter
+# runs the FFI driver (mysql/ffi.agc).
+[native.db_mysql]
+build = { sources = ["native/db_mysql.c"] }
+optional = true
+linux = { system = "libdb_mysql.so" }
+macos = { system = "libdb_mysql.dylib" }
+windows = { system = "db_mysql.dll" }
+
+# Every bare `end` is followed by an empty line (AGENTS.md).
+[style]
+blank_line_after_end = true

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** the package is the root of the repository again, so a dependency on db takes no `subdir`: `db = { git = "https://github.com/agentica-lang/agentica-db", tag = "TAG" }` (or `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG`), with `TAG` 0.13.0 or later. The tags 0.4.0 to 0.12.0 keep the package in `src/db` and still need `subdir = "src/db"`. The imports and the API do not change. The root `agentica.toml` is no longer a workspace, and the property tests moved to `properties/`.
+- The install docs: after a hand edit of the dependencies, `agentica update` writes `agentica.lock` and `deps/`; `agentica install` only restores `deps/` from an existing lock.
 - The docs moved to https://www.agentica-lang.com/agentica-db/; the old agentica-lang.github.io links redirect there.
 - The docs site takes the shared Agentica docs theme: the org icon, breadcrumbs, search tags and a sitemap with dates.
 - The docs footer links all releases and the source of each page.

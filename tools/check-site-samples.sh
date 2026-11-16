@@ -4,8 +4,8 @@
 # A block is a whole program, and must not start a server when it has an output block. A fence that starts with
 # `agentica` but has other words, and an output block that no agentica block precedes, are failures too.
 # The package is imported as `pkg/db/...`, which this script sets up in a temporary project from the files of this
-# checkout (the folder src/db, the `subdir` of the package): a manifest, a lock with the hash that the build verifies,
-# and deps/db/. The pool package that db depends on is installed from its tag, as for any user.
+# checkout (the package is the root of the repository): a manifest, a lock with the hash that the build verifies, and
+# deps/db/. The pool package that db depends on is installed from its tag, as for any user.
 # Needs `agentica` on PATH. Usage: tools/check-site-samples.sh [CONTENT_DIR]
 set -euo pipefail
 
@@ -16,13 +16,13 @@ trap 'rm -rf "$work"' EXIT
 
 command -v agentica >/dev/null || { echo "check-site-samples: agentica is not on PATH" >&2; exit 2; }
 
-# The files of the package (src/db): the library modules, not the specs, examples or tests.
-db_root="$root/src/db"
+# The files of the package: the library modules, not the specs, examples, tests, property tests or the site.
+db_root="$root"
 mkdir -p "$work/deps/db"
 cp "$db_root/agentica.toml" "$db_root"/*.agc "$work/deps/db/"
 for folder in "$db_root"/*/; do
   case "$(basename "$folder")" in
-    specs|test|examples|deps|build|tmp) continue ;;
+    specs|test|examples|properties|site|tools|deps|build|tmp) continue ;;
   esac
   cp -r "$folder" "$work/deps/db/$(basename "$folder")"
 done
@@ -40,7 +40,7 @@ hash="$(
 )"
 
 # The pool is the package `pool` of agentica-lang/packages, which the db package declares at a tag
-# (src/db/agentica.toml): the project names the same dependency and the lock entry that src/db/agentica.lock has for
+# (agentica.toml): the project names the same dependency and the lock entry that agentica.lock has for
 # it (its commit and hash), and it is installed from git below. One name stands for one source in a build.
 commit="0000000000000000000000000000000000000000"
 pool_dependency="$(sed -n 's/^pool = //p' "$db_root/agentica.toml")"
@@ -52,7 +52,7 @@ cat > "$work/agentica.toml" <<TOML
 name = "site_samples"
 
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", ref = "$commit" }
 pool = $pool_dependency
 TOML
 cat > "$work/agentica.lock" <<LOCK
@@ -61,7 +61,6 @@ version = 1
 [[package]]
 name = "db"
 git = "https://github.com/agentica-lang/agentica-db"
-subdir = "src/db"
 ref = "$commit"
 commit = "$commit"
 hash = "sha256:$hash"
