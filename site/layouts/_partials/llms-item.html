@@ -1,3 +1,0 @@
-{{- $item := printf "- [%s](%s)" .LinkTitle (.OutputFormats.Get "markdown").Permalink -}}
-{{- with .Description }}{{ $item = printf "%s: %s" $item . }}{{ end -}}
-{{- return $item -}}
