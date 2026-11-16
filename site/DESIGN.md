@@ -13,13 +13,16 @@ code is right: fix this file in the same change.
   Agentica. `site/hugo.toml` has the title, the tagline, the description and
   the base URL (`https://www.agentica-lang.com/agentica-db/`).
 - Trimmed features, which agentica-db does not need:
-  - no version in the header or footer, and no release links (agentica-db
-    has no release yet);
+  - no version in the header or footer;
   - no `llms.txt` or `llms-full.txt` output (`[outputs]` of `site/hugo.toml`).
     Every page is still published as Markdown for the page actions, and
     search stays.
-- Footer: `site/layouts/_partials/footer.html` links the repository, the
-  changelog and the Agentica site. It is the only layout of the site's own.
+- Footer: `site/layouts/_partials/footer.html` is the theme's (all releases,
+  page source, the repository) plus the changelog and the Agentica site. It is
+  the only layout of the site's own.
+- Links between pages name the `.md` file: with `repoPublic`, a relative link
+  that Hugo cannot resolve becomes a link to the source on GitHub, and `make
+  site` fails on one.
 - Samples: every `agentica` block of `site/content/` is a whole program, run
   through `agentica check` by `tools/check-site-samples.sh` (`make
   site-samples`), and run when an `output` block follows it. The blocks take

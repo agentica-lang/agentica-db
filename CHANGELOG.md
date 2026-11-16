@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The docs moved to https://www.agentica-lang.com/agentica-db/; the old agentica-lang.github.io links redirect there.
 - The docs site takes the shared Agentica docs theme: the org icon, breadcrumbs, search tags and a sitemap with dates.
+- The docs footer links all releases and the source of each page.
 
 ## [0.12.0] - 2026-11-16
 
