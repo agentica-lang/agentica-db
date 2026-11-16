@@ -1,12 +1,12 @@
 # agentica-db
 
 One database API for Agentica and one adapter per database, through the C FFI, and for SQLite, PostgreSQL and MySQL
-also a native module of ours (`src/db/native/`, the only C code of the repository, which Agentica builds at the first
-run; the FFI driver stays for a run without the built library). The repository
-is a workspace (`[workspace]` in the root `agentica.toml`, which only names the members) with two packages in `src/`:
+also a native module of ours (`native/`, the only C code of the repository, which Agentica builds at the first
+run; the FFI driver stays for a run without the built library). The package `db` is the root of the repository; the
+property tests are a project of their own in `properties/`:
 
 ```text
-src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the dependency on pool; agentica.lock)
+agentica.toml  package "db": the [native.*] tables, [style], the dependency on pool (agentica.lock beside it)
   db.agc       Db: the one API, calls the functions of a Connection (support/connection.agc: a record of the
                functions of one open connection, made by a Driver)
   sqlite.agc, postgres.agc, mysql.agc
@@ -44,21 +44,23 @@ src/db/        package "db" (agentica.toml: the [native.*] tables, [style], the 
                and migrations/ (one file per migration), the layout of the Migrations guide;
                specs/examples.feature runs both
   specs/ test/ the features and the unit tests of the package
-src/properties/ package "properties": the property-based tests (prop), not published. It depends on db as a
-               workspace member, so what users of `pkg/db/db` download does not include prop.
+properties/    project "properties": the property-based tests (prop), not published. It depends on db by
+               `path = ".."` (read in place), so the manifest of db does not name prop and its users never fetch it.
                value_gens.agc (generators of the typed cells), store.agc (a row through SQLite, PostgreSQL or MySQL
                against what the database holds), pool_model.agc (random sequences on a pool of fake resources),
                sqlite_scanners.agc (the statement scanners of the native SQLite driver); test/ has the properties
 site/ tools/   the documentation site (Hugo) and the check of its samples
 ```
 
-A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `src/db/db.agc`: the
-dependency says `subdir = "src/db"`. Moving a file other than the modules at the root of `src/db` (`db`, `db_pool`,
-`orm`, `migrate`, `sqlite`, `postgres`, `mysql`) does not change the documented imports of users; moving one of those
-does. The pool is not in
-this repository: `src/db` and `src/properties` depend on the `pool` package of agentica-lang/packages at a tag
-(`pool-X.Y.Z`, `subdir = "pool"`), and both name the same tag (one name stands for one source in a build). To move to a
-new release of it, change the tag in both manifests and run `agentica update pool` in both folders.
+A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `db.agc`, and the
+dependency takes no `subdir` (0.4.0 to 0.12.0 had the package in `src/db` and took `subdir = "src/db"`). Moving a file
+other than the modules at the root (`db`, `db_pool`, `orm`, `migrate`, `sqlite`, `postgres`, `mysql`) does not change
+the documented imports of users; moving one of those does. The package holds every file of the repository except
+the hidden folders and `deps/`, so the `.agc` files of `properties/` reach users too: keep them out of the imports of
+the package. The pool is not in this repository: the root and `properties/` depend on the `pool`
+package of agentica-lang/packages at a tag (`pool-X.Y.Z`, `subdir = "pool"`), and both name the same tag (one name
+stands for one source in a build). To move to a new release of it, change the tag in both manifests and run
+`agentica update pool` in both folders.
 
 ## Commands
 
@@ -75,17 +77,16 @@ new release of it, change the tag in both manifests and run `agentica update poo
   the connection runs another driver than the variable names. A C change: C11, every return code of the library
   checked, every statement, result and connection freed exactly once, also on the error paths; a free function never
   waits (no lock that a call holds, no socket I/O that can block).
-- Run these in `src/db` (the package folder; at the root only `make check`, `agentica check` and `agentica fmt --check
-  src` work, and `agentica test` there fails with `CHECK-BDD-EMPTY`; `agentica test` finds `specs/steps.agc` by
-  itself). `agentica install` first (it writes the pool package of the lock into `deps/`, gitignored). `make check`
-  (from the root) runs it and `agentica check *.agc sqlite postgres mysql support orm examples specs test` there, which
-  is every `.agc` file of the package. `make fmt-check` (from the root, as CI) runs `agentica fmt --check` on the same
-  paths (`agentica fmt` fixes them), then `agentica test`: the features of `specs/` and the unit tests of `test/`.
+- Run these at the root (`agentica test` finds `specs/steps.agc` by itself). `agentica install` first (it writes the
+  pool package of the lock into `deps/`, gitignored). `make check` runs it and `agentica check *.agc sqlite postgres
+  mysql support orm examples specs test`, which is every `.agc` file of the package. `make fmt-check` (as CI) runs
+  `agentica fmt --check` on the same paths (`agentica fmt` fixes them), then `agentica test`: the features of `specs/`
+  and the unit tests of `test/` (not `properties/`).
   SQLite needs no server. `--only TEXT` keeps the scenarios and tests whose name contains `TEXT`. CI runs
   `agentica test --jobs 4` (four scenarios at once, also of one file), so a scenario must not share a path, a port or a
   table with another: `[SCRATCH]` is a folder of its own for each scenario, and a scenario on a server names its own
   tables or makes them temporary.
-- The properties package has the same commands in `src/properties` (`agentica install` first, which fetches prop and
+- The properties project has the same commands in `properties/` (`agentica install` first, which fetches prop and
   pool into `deps/`; then `agentica check *.agc test`, `agentica fmt --check *.agc test` and `agentica test`). A
   property is a `test_` function of `test/*_test.agc` that calls `Prop.check` or one of its laws (`Prop.oracle`, ...)
   with 100 runs (the pool ones 40, since a case takes real time); a failure prints the seed and the shrunk case, and
@@ -94,7 +95,7 @@ new release of it, change the tag in both manifests and run `agentica update poo
   they run on the native run only. Names of the SQLite properties have "on sqlite" like the scenarios. A test has a
   budget of about 2.5 million VM steps and 30 seconds, and a generated value costs about 200 steps for each item, so
   keep sizes small and split a property before raising its runs. A counterexample that a property finds becomes a
-  scenario of `src/db/specs` (the cells it prints are the cells of the tables) before the fix.
+  scenario of `specs/` (the cells it prints are the cells of the tables) before the fix.
 - The PostgreSQL scenarios need a server and libpq (`libpq5`) and read `AGENTICA_DB_POSTGRES_URL`; the MySQL ones need
   a server and libmariadb (`libmariadb3`) and read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail, locally
   and in CI: there is no skipped scenario. Without a server run only the SQLite ones:
@@ -137,7 +138,7 @@ new release of it, change the tag in both manifests and run `agentica update poo
   bad input `<adapter> error: <message>`; the module's own `db error: <message>`. A bad input is an error, not a
   halt.
 - An adapter exports its own `BEGIN_SQL`; its driver puts it in `Connection.begin_sql`, which `transaction` uses.
-- Tests are BDD-first (the paths below are in `src/db`): behavior is a Gherkin scenario in `specs/*.feature`, run by
+- Tests are BDD-first: behavior is a Gherkin scenario in `specs/*.feature`, run by
   `agentica test`, not a test file. The contract every adapter must meet is in the common features (`opening`,
   `values`, `queries`, `errors`, `transactions`) and by `orm*.feature` for the Orm (its driver ops build the struct
   `Person` of `specs/driver.agc`, with an `Optional` age, or `Partial`, the same with a `JSON.Field` age), each scenario

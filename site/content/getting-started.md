@@ -6,16 +6,16 @@ description: Install the package, get the system library of your database and ru
 
 ## Install
 
-Install [Agentica](https://www.agentica-lang.com/agentica/getting-started/) 0.31.0 or later for the tag `0.12.0`, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports a driver of the package first runs or is compiled: Agentica builds the native SQLite, PostgreSQL or MySQL module of each driver the program imports then (see [SQLite](/databases/sqlite/#drivers)). Without a compiler Agentica prints a warning (`warning: native module db_sqlite not built: ...`) and the program runs the FFI drivers, which are slower. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
+Install [Agentica](https://www.agentica-lang.com/agentica/getting-started/) 0.31.0 or later for the tag `0.13.0`, and a C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`) where a program that imports a driver of the package first runs or is compiled: Agentica builds the native SQLite, PostgreSQL or MySQL module of each driver the program imports then (see [SQLite](/databases/sqlite/#drivers)). Without a compiler Agentica prints a warning (`warning: native module db_sqlite not built: ...`) and the program runs the FFI drivers, which are slower. agentica-db is a package: you add it to the `agentica.toml` of your project as a dependency on its git repository.
 
 ```toml
 [dependencies]
-db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.12.0", subdir = "src/db" }
+db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.13.0" }
 ```
 
-Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.12.0 --subdir src/db`. Both (and `agentica install` for a manifest you edited) write `agentica.lock` and put the files in `deps/db/`.
+Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.13.0`, which writes that line and `agentica.lock` and puts the files in `deps/db/`. After you write or edit the dependencies by hand, run `agentica update`; `agentica install` puts back `deps/` from the `agentica.lock` you have, as in a fresh clone.
 
-The package is the `src/db` folder of the repository, so the dependency needs `subdir = "src/db"`, for every release after 0.3.0 and for `ref = "COMMIT"` (a commit of `main`). The releases up to 0.3.0 have the package at the root of the repository: with those tags leave `subdir` out. The imports are the same in both.
+The package is the root of the repository from 0.13.0 on (and for `ref = "COMMIT"`, a commit of `main`), so the dependency takes no `subdir`. The releases 0.4.0 to 0.12.0 have it in the `src/db` folder: with those tags add `subdir = "src/db"`. The imports are the same in all of them.
 
 Import the modules with `pkg/db/...`. `Db` is the API, `Orm` the typed layer, and `Sqlite`, `Postgres` and `Mysql` the drivers that `Db.open` takes: import only the ones the program uses (see [Connecting](/basics/connecting/#drivers)).
 

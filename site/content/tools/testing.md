@@ -36,15 +36,14 @@ SQLite is not PostgreSQL or MySQL, so keep the sql portable (`?` placeholders, `
 
 ## The tests of agentica-db
 
-The behavior of the API is written as Gherkin scenarios in `src/db/specs/`, and `agentica test` runs them. Read them as the specification. The features hold the contract that every adapter meets (opening, values, queries, errors, transactions) as outlines with one row per database, and the Orm has its own features. Only the edge cases of the pure helpers, the sql scanners, the url reader and the identifier check, have unit tests in `src/db/test/`.
+The behavior of the API is written as Gherkin scenarios in `specs/`, and `agentica test` runs them. Read them as the specification. The features hold the contract that every adapter meets (opening, values, queries, errors, transactions) as outlines with one row per database, and the Orm has its own features. Only the edge cases of the pure helpers, the sql scanners, the url reader and the identifier check, have unit tests in `test/`.
 
 ```sh
 make check
-cd src/db
 agentica test
 ```
 
-`make check` runs `agentica check` on every `.agc` file. `agentica test`, run in `src/db`, the package folder, runs the features and the unit tests.
+`make check` runs `agentica check` on every `.agc` file. `agentica test`, run at the root of the repository (the package), runs the features and the unit tests.
 
 Developing the package needs Agentica 0.31.0 or later and a C compiler, and CI runs `agentica test --jobs 4` (four scenarios at once, which the specs allow); using the package still needs only the version in the README.
 
@@ -52,7 +51,7 @@ Developing the package needs Agentica 0.31.0 or later and a C compiler, and CI r
 - The PostgreSQL scenarios read `AGENTICA_DB_POSTGRES_URL`, and the MySQL ones read `AGENTICA_DB_MYSQL_URL`. Without the variable they fail: no scenario is skipped.
 - The scenarios use temporary tables, so they leave nothing behind.
 
-A local server for each, with Docker (run `agentica test` in `src/db`):
+A local server for each, with Docker (run `agentica test` at the root of the repository):
 
 ```sh
 docker run -d --rm --name agentica-db-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:17

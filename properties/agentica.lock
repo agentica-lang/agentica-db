@@ -2,10 +2,7 @@ version = 1
 
 [[package]]
 name = "db"
-git = "https://github.com/agentica-lang/agentica-db"
-subdir = "src/db"
-ref = "6ed767b557afe9d10bcbe020e58c5ed3f661d8ae"
-workspace = true
+path = ".."
 
 [[package]]
 name = "pool"

@@ -1,0 +1,17 @@
+name = "properties"
+
+# The property-based tests of the repository (AGENTS.md). This folder is a project of its own, not published: a project
+# that installs db never needs prop, which is why prop lives here and not in the root agentica.toml. db is the package
+# at the root of the repository, read in place (`path`); pool is the package of agentica-lang/packages that db depends
+# on (one name stands for one source in a build).
+#
+# prop is a normal dependency: a test-only one (`group = "test"`) in the root agentica.toml would need Agentica 0.32.0
+# from every project that uses db.
+[dependencies]
+prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.4.2", subdir = "prop" }
+db = { path = ".." }
+pool = { git = "https://github.com/agentica-lang/packages", tag = "pool-0.1.3", subdir = "pool" }
+
+# Every bare `end` is followed by an empty line (AGENTS.md of the repository).
+[style]
+blank_line_after_end = true
