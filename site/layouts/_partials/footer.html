@@ -1,3 +1,8 @@
+{{- /* The theme's footer (all releases, page source, the repository) plus the changelog and the Agentica site. */ -}}
 <footer class="site-footer">
-  <a href="{{ site.Params.repo }}">agentica-db on GitHub</a> · <a href="{{ site.Params.repo }}/blob/main/CHANGELOG.md">Changelog</a> · <a href="https://www.agentica-lang.com/agentica/">Agentica</a>
+  <p class="release-links"><a href="{{ site.Params.repo }}/releases">All releases</a> · <a href="{{ site.Params.repo }}/blob/{{ site.Params.branch }}/CHANGELOG.md">Changelog</a> · <a href="https://www.agentica-lang.com/agentica/">Agentica</a></p>
+  {{- with partial "source-path.html" . }}
+  <a href="{{ site.Params.repo }}/blob/{{ site.Params.branch }}/{{ . }}">Page source</a> ·
+  {{- end }}
+  <a href="{{ site.Params.repo }}">{{ site.Title }} on GitHub</a>
 </footer>
