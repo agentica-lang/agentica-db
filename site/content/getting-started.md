@@ -15,7 +15,7 @@ db = { git = "https://github.com/agentica-lang/agentica-db", tag = "0.13.0" }
 
 Or run `agentica add db https://github.com/agentica-lang/agentica-db --tag 0.13.0`, which writes that line and `agentica.lock` and puts the files in `deps/db/`. After you write or edit the dependencies by hand, run `agentica update`; `agentica install` puts back `deps/` from the `agentica.lock` you have, as in a fresh clone.
 
-The package is the root of the repository from 0.13.0 on (and for `ref = "COMMIT"`, a commit of `main`), so the dependency takes no `subdir`. The releases 0.4.0 to 0.12.0 have it in the `src/db` folder: with those tags add `subdir = "src/db"`. The imports are the same in all of them.
+The package is the root of the repository from 0.13.0 on, so the dependency takes no `subdir`. The releases 0.4.0 to 0.12.0 have it in the `src/db` folder: with those tags, and with a `ref = "COMMIT"` of `main` older than 0.13.0, add `subdir = "src/db"`. The imports are the same in all of them.
 
 Import the modules with `pkg/db/...`. `Db` is the API, `Orm` the typed layer, and `Sqlite`, `Postgres` and `Mysql` the drivers that `Db.open` takes: import only the ones the program uses (see [Connecting](/basics/connecting/#drivers)).
 

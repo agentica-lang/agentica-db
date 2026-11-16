@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-16
+
+Needs Agentica 0.31.0 or later; CI runs it on Agentica 0.33.0.
+
 ### Changed
 
 - **Breaking:** the package is the root of the repository again, so a dependency on db takes no `subdir`: `db = { git = "https://github.com/agentica-lang/agentica-db", tag = "TAG" }` (or `agentica add db https://github.com/agentica-lang/agentica-db --tag TAG`), with `TAG` 0.13.0 or later. The tags 0.4.0 to 0.12.0 keep the package in `src/db` and still need `subdir = "src/db"`. The imports and the API do not change. The root `agentica.toml` is no longer a workspace, and the property tests moved to `properties/`.
@@ -288,6 +292,7 @@ First release. Needs Agentica 0.16.0 or later.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
 [unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.12.0...HEAD
+[0.13.0]: https://github.com/agentica-lang/agentica-db/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...0.11.0
 [0.10.1]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...0.10.1
