@@ -4,7 +4,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.11.1] - 2026-11-16
+## [0.12.0] - 2026-11-16
 
 Needs Agentica 0.31.0 or later; CI runs it on Agentica 0.33.0.
 
@@ -280,7 +280,7 @@ First release. Needs Agentica 0.16.0 or later.
 - A documentation site: https://agentica-lang.github.io/agentica-db/.
 
 [unreleased]: https://github.com/agentica-lang/agentica-db/compare/0.11.1...HEAD
-[0.11.1]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...0.11.1
+[0.12.0]: https://github.com/agentica-lang/agentica-db/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.1...0.11.0
 [0.10.1]: https://github.com/agentica-lang/agentica-db/compare/0.10.0...0.10.1
 [0.10.0]: https://github.com/agentica-lang/agentica-db/compare/0.10.0-alpha.1...0.10.0
