@@ -108,6 +108,11 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The SQLite scenarios on db_sqlite built as its prebuilt files are, with the SQLite of native/sqlite_static.c
+      # linked in (the script says how).
+      - name: Test (static SQLite)
+        run: tools/test-static-sqlite.sh
+
   # No C compiler: the native modules are optional, so a program warns that db_sqlite is not built and runs the FFI
   # driver. The job removes `cc` and `gcc` from the runner after building Agentica, checks the warning on the users
   # example, and runs the SQLite scenarios with the driver variable unset, so they pass on the fallback.
@@ -205,3 +210,7 @@ jobs:
             [ "$driver" = native ] || paths=(test/values_test.agc)
             agentica test --jobs 4 --only "on sqlite" "${paths[@]}"
           done
+
+      - name: Test (static SQLite)
+        shell: bash
+        run: bash tools/test-static-sqlite.sh
