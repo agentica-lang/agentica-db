@@ -3,7 +3,9 @@
  *
  * It opens libsqlite3 itself at the first `open` (libsqlite3.so.0, libsqlite3.dylib or winsqlite3.dll, the libraries
  * that the FFI adapter names), so building it needs only a C compiler: no SQLite headers, no import library, and one
- * `build` table for every system. The prototypes below are the stable C API of SQLite 3.
+ * `build` table for every system. The prototypes below are the stable C API of SQLite 3. Built with DB_SQLITE_STATIC
+ * (the prebuilt files, with native/sqlite_static.c), it calls the SQLite linked into it instead, through sqlite3.h,
+ * and opens no library.
  *
  * A connection (resource Conn) keeps a bounded cache of prepared statements keyed by the sql text, finalized when they
  * are evicted and when the connection closes. A query runs in one call where it can:
@@ -52,12 +54,15 @@
 #include "agentica_native.h"
 
 /* The SQLite C API that the driver uses. */
+typedef void (*sqlite3_destructor)(void *);
+#if defined(DB_SQLITE_STATIC)
+#include "sqlite3.h"
+#else
 typedef struct sqlite3 sqlite3;
 typedef struct sqlite3_stmt sqlite3_stmt;
 typedef struct sqlite3_mutex sqlite3_mutex;
 typedef long long sqlite3_int64;
 typedef unsigned long long sqlite3_uint64;
-typedef void (*sqlite3_destructor)(void *);
 
 enum {
   SQLITE_OK = 0,
@@ -83,12 +88,14 @@ enum {
   SQLITE_OPEN_NOMUTEX = 0x8000,
   SQLITE_OPEN_FULLMUTEX = 0x10000,
 };
-/* sqlite3_txn_state came in 3.34.0; an older library does not have it, and a write is then waited for. */
-#define TXN_STATE_VERSION 3034000
 /* sqlite3_limit's id of the longest string, blob or row; sqlite3_wal_checkpoint_v2's mode that waits for nobody. */
 #define SQLITE_LIMIT_LENGTH 0
 #define SQLITE_CHECKPOINT_PASSIVE 0
 #define SQLITE_TRANSIENT ((sqlite3_destructor)-1)
+#endif
+
+/* sqlite3_txn_state came in 3.34.0; an older library does not have it, and a write is then waited for. */
+#define TXN_STATE_VERSION 3034000
 
 typedef struct {
   int (*libversion_number)(void);
@@ -138,56 +145,61 @@ typedef struct {
 
 static sqlite_api sq;
 
-/* The symbols of sqlite_api in its order, each with the offset of its field; the last one is optional. */
-#define SYM(NAME, FIELD) {"sqlite3_" NAME, offsetof(sqlite_api, FIELD)}
+/* The functions of sqlite_api in its order; the last one is optional. */
+#define SQLITE_FUNCTIONS(X) \
+  X(libversion_number) \
+  X(open_v2) \
+  X(close_v2) \
+  X(errstr) \
+  X(errmsg) \
+  X(extended_errcode) \
+  X(interrupt) \
+  X(get_autocommit) \
+  X(changes) \
+  X(total_changes) \
+  X(prepare_v2) \
+  X(finalize) \
+  X(reset) \
+  X(clear_bindings) \
+  X(step) \
+  X(stmt_readonly) \
+  X(bind_parameter_count) \
+  X(bind_null) \
+  X(bind_int64) \
+  X(bind_double) \
+  X(bind_text64) \
+  X(bind_blob64) \
+  X(bind_zeroblob) \
+  X(column_count) \
+  X(column_name) \
+  X(column_type) \
+  X(column_int64) \
+  X(column_double) \
+  X(column_text) \
+  X(column_blob) \
+  X(column_bytes) \
+  X(progress_handler) \
+  X(db_mutex) \
+  X(mutex_enter) \
+  X(mutex_leave) \
+  X(mutex_try) \
+  X(stmt_status) \
+  X(wal_hook) \
+  X(wal_checkpoint_v2) \
+  X(limit) \
+  X(db_status) \
+  X(txn_state)
+
+#if !defined(DB_SQLITE_STATIC)
+/* The symbol of each function, with the offset of its field. */
+#define SYM(NAME) {"sqlite3_" #NAME, offsetof(sqlite_api, NAME)},
 static const struct {
   const char *name;
   size_t offset;
-} SYMBOLS[] = {
-  SYM("libversion_number", libversion_number),
-  SYM("open_v2", open_v2),
-  SYM("close_v2", close_v2),
-  SYM("errstr", errstr),
-  SYM("errmsg", errmsg),
-  SYM("extended_errcode", extended_errcode),
-  SYM("interrupt", interrupt),
-  SYM("get_autocommit", get_autocommit),
-  SYM("changes", changes),
-  SYM("total_changes", total_changes),
-  SYM("prepare_v2", prepare_v2),
-  SYM("finalize", finalize),
-  SYM("reset", reset),
-  SYM("clear_bindings", clear_bindings),
-  SYM("step", step),
-  SYM("stmt_readonly", stmt_readonly),
-  SYM("bind_parameter_count", bind_parameter_count),
-  SYM("bind_null", bind_null),
-  SYM("bind_int64", bind_int64),
-  SYM("bind_double", bind_double),
-  SYM("bind_text64", bind_text64),
-  SYM("bind_blob64", bind_blob64),
-  SYM("bind_zeroblob", bind_zeroblob),
-  SYM("column_count", column_count),
-  SYM("column_name", column_name),
-  SYM("column_type", column_type),
-  SYM("column_int64", column_int64),
-  SYM("column_double", column_double),
-  SYM("column_text", column_text),
-  SYM("column_blob", column_blob),
-  SYM("column_bytes", column_bytes),
-  SYM("progress_handler", progress_handler),
-  SYM("db_mutex", db_mutex),
-  SYM("mutex_enter", mutex_enter),
-  SYM("mutex_leave", mutex_leave),
-  SYM("mutex_try", mutex_try),
-  SYM("stmt_status", stmt_status),
-  SYM("wal_hook", wal_hook),
-  SYM("wal_checkpoint_v2", wal_checkpoint_v2),
-  SYM("limit", limit),
-  SYM("db_status", db_status),
-  SYM("txn_state", txn_state),
-};
+} SYMBOLS[] = {SQLITE_FUNCTIONS(SYM)};
+#undef SYM
 #define SYMBOL_COUNT (sizeof SYMBOLS / sizeof SYMBOLS[0])
+#endif
 
 /* ---- The system: the library loader and a mutex. ---- */
 
@@ -202,8 +214,10 @@ static bool lock_try(lock_t *l) { return TryAcquireSRWLockExclusive(l) != 0; }
 static void lock_drop(lock_t *l) { ReleaseSRWLockExclusive(l); }
 
 
-static void *library;
 static INIT_ONCE load_once = INIT_ONCE_STATIC_INIT;
+
+#if !defined(DB_SQLITE_STATIC)
+static void *library;
 
 static void *symbol(const char *name) {
   FARPROC p = GetProcAddress((HMODULE)library, name);
@@ -218,6 +232,7 @@ static bool open_library(void) {
   if (!library) snprintf(load_error, sizeof load_error, "winsqlite3.dll: error %lu", (unsigned long)GetLastError());
   return library != NULL;
 }
+#endif
 
 static bool load_symbols(void);
 static BOOL CALLBACK load_callback(PINIT_ONCE once, PVOID parameter, PVOID *context) {
@@ -244,8 +259,10 @@ static void lock_drop(lock_t *l) {
 }
 
 
-static void *library;
 static pthread_once_t load_once = PTHREAD_ONCE_INIT;
+
+#if !defined(DB_SQLITE_STATIC)
+static void *library;
 
 static void *symbol(const char *name) { return dlsym(library, name); }
 
@@ -265,6 +282,7 @@ static bool open_library(void) {
   }
   return library != NULL;
 }
+#endif
 
 static bool load_symbols(void);
 static void load_callback(void) { (void)load_symbols(); }
@@ -273,6 +291,15 @@ static void load_library_once(void) {
 }
 #endif
 
+#if defined(DB_SQLITE_STATIC)
+/* Fills `sq` with the functions of the linked SQLite: sqlite3.h checks each one against its field. */
+static bool load_symbols(void) {
+#define FILL(NAME) sq.NAME = sqlite3_##NAME;
+  SQLITE_FUNCTIONS(FILL)
+#undef FILL
+  return true;
+}
+#else
 /* Opens the library and fills `sq`, once per run; load_error says why when it failed. */
 static bool load_symbols(void) {
   if (!open_library()) return false;
@@ -288,6 +315,7 @@ static bool load_symbols(void) {
   }
   return true;
 }
+#endif
 
 static bool library_ready(void) {
   load_library_once();

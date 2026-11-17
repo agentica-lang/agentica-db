@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `db_sqlite` also builds with SQLite 3.54.1 linked in (`-DDB_SQLITE_STATIC` and `native/sqlite_static.c`), on the five targets by `.github/workflows/native-prebuilt.yml`, for prebuilt files; a build from source still opens the system SQLite. The linked SQLite is thread-safe and has FTS3, FTS4 and FTS5, R*Tree, `dbstat`, the column metadata and math functions, and up to 250000 parameters, but cannot load extensions.
+
 ## [0.13.0] - 2026-11-16
 
 Needs Agentica 0.31.0 or later; CI runs it on Agentica 0.33.0.

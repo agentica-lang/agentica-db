@@ -27,7 +27,10 @@ agentica.toml  package "db": the [native.*] tables, [style], the dependency on p
                and the adapters run the FFI drivers): each opens the system library itself (dlopen), so a build needs
                only a C compiler; db_mysql.c runs the non-blocking calls of libmariadb under `an_blocking`, and only
                on Linux; specs/statement_cache.feature, specs/sqlite_writes.feature (short writes, the checkpointer
-               of a pool), specs/postgres_native.feature and specs/mysql_native.feature (tag @native)
+               of a pool), specs/postgres_native.feature and specs/mysql_native.feature (tag @native);
+               sqlite_static.c pins the SQLite amalgamation (URL, SHA3-256, options) that the prebuilt db_sqlite
+               links with -DDB_SQLITE_STATIC (.github/workflows/native-prebuilt.yml); a build from source never
+               compiles it
   postgres/    postgres.agc (the adapter: picks a driver, timeouts), native.agc (the driver over the native module),
                ffi.agc (the driver over extern calls), statement.agc (the checks both drivers make), sql.agc (the
                placeholder scanner), url.agc (it takes the parameters of the adapter out of the url before libpq
@@ -49,7 +52,8 @@ properties/    project "properties": the property-based tests (prop), not publis
                value_gens.agc (generators of the typed cells), store.agc (a row through SQLite, PostgreSQL or MySQL
                against what the database holds), pool_model.agc (random sequences on a pool of fake resources),
                sqlite_scanners.agc (the statement scanners of the native SQLite driver); test/ has the properties
-site/ tools/   the documentation site (Hugo) and the check of its samples
+site/ tools/   the documentation site (Hugo) and the check of its samples; tools/sqlite_amalgamation.py fetches
+               the pinned SQLite, tools/test-static-sqlite.sh runs the SQLite scenarios on a static db_sqlite (CI)
 ```
 
 A user's import path is the file path inside the package, so `import Db from "pkg/db/db"` loads `db.agc`, and the
