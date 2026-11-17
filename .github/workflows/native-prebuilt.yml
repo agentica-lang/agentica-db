@@ -23,7 +23,7 @@ permissions:
 jobs:
   check:
     if: github.event_name == 'pull_request'
-    uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@8a65f13d7178ed675304a89897f5a61ef994fd2d
+    uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@ed805750db83fb8ee7c6b8eb645d179b2dbc55a7
     with:
       module: db_sqlite
       # agentica master with `agentica native source` (agentica#1786); a release once 0.34.0 ships.
@@ -36,7 +36,7 @@ jobs:
     if: github.event_name != 'pull_request'
     permissions:
       contents: write
-    uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@8a65f13d7178ed675304a89897f5a61ef994fd2d
+    uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@ed805750db83fb8ee7c6b8eb645d179b2dbc55a7
     with:
       module: db_sqlite
       agentica-commit: 45e6c4a8d0b71954da19c9c03b49fadc46fedc02
