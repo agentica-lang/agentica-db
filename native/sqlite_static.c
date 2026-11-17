@@ -8,10 +8,18 @@
 #define DB_SQLITE_AMALGAMATION_URL "https://sqlite.org/2026/sqlite-amalgamation-3540100.zip"
 #define DB_SQLITE_AMALGAMATION_SHA3_256 "92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30"
 
+/* Serialized threading, which the driver needs (it opens with SQLITE_OPEN_NOMUTEX or FULLMUTEX). */
+#define SQLITE_THREADSAFE 1
 /* No extension loading: the driver never loads one, and the library then needs no dlopen. */
 #define SQLITE_OMIT_LOAD_EXTENSION 1
-/* FTS5 and the math functions, which the system SQLite of Debian has too. */
+/* What the system SQLite of Debian also has: FTS3, FTS4 and FTS5, R*Tree, the dbstat table, the column metadata
+   functions, the math functions, and up to 250000 parameters in a statement. */
+#define SQLITE_ENABLE_FTS4 1
 #define SQLITE_ENABLE_FTS5 1
+#define SQLITE_ENABLE_RTREE 1
+#define SQLITE_ENABLE_DBSTAT_VTAB 1
+#define SQLITE_ENABLE_COLUMN_METADATA 1
 #define SQLITE_ENABLE_MATH_FUNCTIONS 1
+#define SQLITE_MAX_VARIABLE_NUMBER 250000
 
 #include "sqlite3.c"

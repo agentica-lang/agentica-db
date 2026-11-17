@@ -4,14 +4,15 @@ name: Native prebuilt
 # native/sqlite_static.c, which tools/sqlite_amalgamation.py fetches, by the reusable workflow of agentica-lang/packages
 # (https://www.agentica-lang.com/packages/native-prebuilt/). A push of the tag native-<source> (`agentica native source
 # db_sqlite` prints the key) or a run by hand uploads the five files to the release native-<source> and prints the
-# `prebuilt` row of [native.db_sqlite] in its summary; a pull request that changes them builds the files without
-# uploading.
+# `prebuilt` row of [native.db_sqlite] in its summary; a pull request that changes what they are built from builds
+# them without uploading, with a read-only token.
 on:
   push:
     tags: ['native-*']
   pull_request:
     paths:
       - 'native/**'
+      - 'agentica.toml'
       - 'tools/sqlite_amalgamation.py'
       - '.github/workflows/native-prebuilt.yml'
   workflow_dispatch:
@@ -20,9 +21,8 @@ permissions:
   contents: read
 
 jobs:
-  db_sqlite:
-    permissions:
-      contents: write
+  check:
+    if: github.event_name == 'pull_request'
     uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@8a65f13d7178ed675304a89897f5a61ef994fd2d
     with:
       module: db_sqlite
@@ -30,4 +30,15 @@ jobs:
       agentica-commit: 45e6c4a8d0b71954da19c9c03b49fadc46fedc02
       prepare: $PYTHON -I tools/sqlite_amalgamation.py build/sqlite
       extra-args: -DDB_SQLITE_STATIC -Ibuild/sqlite native/sqlite_static.c -lm
-      dry-run: ${{ github.event_name == 'pull_request' }}
+      dry-run: true
+
+  upload:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@8a65f13d7178ed675304a89897f5a61ef994fd2d
+    with:
+      module: db_sqlite
+      agentica-commit: 45e6c4a8d0b71954da19c9c03b49fadc46fedc02
+      prepare: $PYTHON -I tools/sqlite_amalgamation.py build/sqlite
+      extra-args: -DDB_SQLITE_STATIC -Ibuild/sqlite native/sqlite_static.c -lm

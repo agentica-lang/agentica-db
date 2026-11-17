@@ -44,10 +44,12 @@ def main() -> None:
     folder = url.rsplit("/", 1)[1].removesuffix(".zip")
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         files = {name: archive.read(f"{folder}/{name}") for name in MEMBERS}
+    version = re.search(rb'^#define SQLITE_VERSION +"([0-9.]+)"', files["sqlite3.h"], re.MULTILINE)
+    if not version:
+        sys.exit(f"{url}: sqlite3.h has no SQLITE_VERSION line")
     out.mkdir(parents=True)
     for name, content in files.items():
         (out / name).write_bytes(content)
-    version = re.search(rb'^#define SQLITE_VERSION +"([0-9.]+)"', files["sqlite3.h"], re.MULTILINE)
     print(version.group(1).decode())
 
 

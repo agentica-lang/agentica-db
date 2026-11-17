@@ -4,7 +4,7 @@
 # (.github/workflows/native-prebuilt.yml). CI runs it on Linux, macOS and Windows (Git Bash, with the UCRT64 gcc first
 # on PATH). SQLite is compiled once, here, and CC carries the object into each build of the module, so a scenario that
 # builds the module with an empty cache does not compile SQLite again. First it checks that the native driver runs
-# the linked SQLite, by its version.
+# the linked SQLite, by its version, and that it has the options OMIT_LOAD_EXTENSION and THREADSAFE=1.
 set -eo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,13 +28,24 @@ import Sqlite from "../sqlite"
 def main() -> Void
   conn = Db.open("sqlite::memory:", [Sqlite.driver()]).unwrap!
   puts(Db.query(conn, "select sqlite_version() as v", []).unwrap![0]["v"])
+  for row in Db.query(conn, "pragma compile_options", []).unwrap!
+    puts(row["compile_options"])
+  end
+
 end
 EOF
 got=$(agentica build/sqlite_version.agc)
-if [ "$got" != "Value.Text(\"$version\")" ]; then
-  echo "the native driver runs SQLite $got, not the linked $version" >&2
+first=$(head -n 1 <<< "$got")
+if [ "$first" != "Value.Text(\"$version\")" ]; then
+  echo "the native driver runs SQLite $first, not the linked $version" >&2
   exit 1
 fi
+for option in OMIT_LOAD_EXTENSION THREADSAFE=1; do
+  if ! grep -qxF "Value.Text(\"$option\")" <<< "$got"; then
+    echo "the linked SQLite lacks $option; its options: $got" >&2
+    exit 1
+  fi
+done
 
 agentica test --jobs 4 --only "on sqlite"
 agentica test --jobs 4 --only "users example"
