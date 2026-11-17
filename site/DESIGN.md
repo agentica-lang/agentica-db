@@ -18,8 +18,8 @@ code is right: fix this file in the same change.
     Every page is still published as Markdown for the page actions, and
     search stays.
 - Footer: `site/layouts/_partials/footer.html` is the theme's (all releases,
-  page source, the repository) plus the changelog and the Agentica site. It is
-  the only layout of the site's own.
+  page source, the repository, the org home) plus the changelog and the
+  Agentica site. It is the only layout of the site's own.
 - Links between pages name the `.md` file: with `repoPublic`, a relative link
   that Hugo cannot resolve becomes a link to the source on GitHub, and `make
   site` fails on one.
