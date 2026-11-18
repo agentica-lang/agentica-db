@@ -11,7 +11,7 @@ import Orm from "../orm"
 import Mysql from "../mysql"
 import Postgres from "../postgres"
 import Protocol from "protocol"
-import {Request} from "protocol"
+import {Expectation, Request} from "protocol"
 import Sqlite from "../sqlite"
 
 private
@@ -82,8 +82,6 @@ CANCEL_AFTER_MS = 5
 WRITER_END_MS = 10_000
 # `execute_beside_waiting` lets the lock go once the write has waited this long: it then sleeps 25 ms between tries.
 WRITER_WAITS_MS = 150
-# The `number` of an `on_other` request that queries; any other executes.
-OTHER_QUERY = 1
 # `cache_beside_big` reads the statement cache this many times, a millisecond apart, while the big query runs.
 CACHE_READS = 200
 # `close_beside_queries`: the time the first statement needs to start, so that the second waits for it.
@@ -285,101 +283,135 @@ def handle(state: State, line: String) -> Handled
 end
 
 def dispatch(state: State, req: Request) -> Handled
-  return expect(state, req) if req.op.start_with?("expect_")
-
   case state.last
-    Outcome.Failed(message) if not state.checked ->
-      reply = "the previous statement failed with #{message.inspect}, and no step checked it"
-      Handled(state: state, reply: reply)
+    Outcome.Failed(message) if not state.checked -> checking(state, req, message)
     _ -> act(state, req)
   end
 end
 
+# After a failure that no step has checked, only an expectation may come: any other request is refused.
+def checking(state: State, req: Request, message: String) -> Handled
+  case req
+    Request.Expect(expectation) -> act_expecting(state, expectation)
+    _ ->
+      reply = "the previous statement failed with #{message.inspect}, and no step checked it"
+      Handled(state: state, reply: reply)
+  end
+end
+
 def act(state: State, req: Request) -> Handled
-  case req.op
-    "open" -> opened(state, req.text)
-    "open_url" -> reply_ok(open_at(state, state.adapter, expand(state, req.text)))
-    "execute" -> reply_ok(with_params(state, req, &execute))
-    "query" -> reply_ok(with_params(state, req, &query))
-    "query_within" -> reply_ok(query_within(state, sql_of(state, req.text), [], req.number))
-    "execute_within" -> reply_ok(execute_within(state, sql_of(state, req.text), [], req.number))
-    "pool_start" -> reply_ok(pool_start(state, req))
-    "pool_query" -> reply_ok(pool_query(state, req))
-    "pool_execute" -> reply_ok(pool_execute(state, req))
-    "pool_script" -> reply_ok(pool_script(state, req.table.drop(1)))
-    "pool_close_connection" -> reply_ok(pool_close_connection(state))
-    "pool_crash" -> reply_ok(pool_crash(state))
-    "pool_hold" -> reply_ok(pool_hold(state, req.number))
-    "pool_cancel_holder" -> reply_ok(pool_cancel_holder(state, req))
-    "pool_write_within" -> reply_ok(pool_write_within(state, req))
-    "pool_runs_in" -> reply_ok(pool_runs_in(state, req.text))
-    "pool_query_while_held" -> reply_ok(pool_query_while_held(state, req))
-    "pool_transaction" -> reply_ok(pool_transaction(state, req))
-    "pool_commits" -> reply_ok(pool_commits(state, req))
-    "pool_writers_readers" -> reply_ok(pool_writers_readers(state, req))
-    "pool_short_calls" -> reply_ok(pool_short_calls(state))
-    "pool_fallbacks" -> reply_ok(pool_fallbacks(state))
-    "pool_repeat" -> reply_ok(pool_repeat(state, req))
-    "pool_close" -> reply_ok(pool_close(state))
-    "short_calls" -> reply_ok(short_calls(state))
-    "fallbacks" -> reply_ok(fallbacks(state))
-    "file_size" -> file_size(state, req)
-    "pool_short_calls_at_most" -> short_calls_at_most(pool_short_calls(state), req.number)
-    "transaction_while_locked" -> transaction_while_locked(state, req)
-    "in_transaction" -> check_connection(state, req.op)
-    "not_in_transaction" -> check_connection(state, req.op)
-    "healthy" -> check_connection(state, req.op)
-    "not_healthy" -> check_connection(state, req.op)
-    "transaction" -> reply_ok(transaction(state, req))
-    "orm_query" if req.partial -> reply_ok(with_params(state, req, &partial_query))
-    "orm_query" -> reply_ok(with_params(state, req, &orm_query))
-    "orm_query_as" -> reply_ok(orm_query_as(state, Cells.expand(req.text)))
-    "orm_decode" -> reply_ok(orm_decode(state, req.text))
-    "orm_decode_tagged" -> reply_ok(orm_decode_tagged(state, req.text))
-    "orm_check" -> reply_ok(orm_check(state, req.text))
-    "orm_insert" -> reply_ok(orm_insert(state, req))
-    "orm_builder" -> reply_ok(orm_builder(state, req.text, req.table))
-    "orm_find" -> reply_ok(orm_find(state, req.text))
-    "orm_marker" -> reply_ok(orm_marker(state, req.text))
-    "orm_update" -> reply_ok(orm_update(state, req))
-    "orm_patch" -> reply_ok(orm_patch(state, req.number, req.text))
-    "orm_delete" -> reply_ok(orm_delete(state, req))
-    "close" -> reply_ok(close(state))
-    "migrate" -> reply_ok(migrate(state, req))
-    "read_only" -> reply_ok(set_access(state, expand(state, req.text), false))
-    "writable" -> reply_ok(set_access(state, expand(state, req.text), true))
-    "write_together" -> reply_ok(write_together(state, req))
-    "pool_writers_in_turn" -> reply_ok(pool_writers_in_turn(state, req))
-    "pool_turn_after" -> reply_ok(pool_turn_after(state, req))
-    "pool_nested_transaction" -> reply_ok(pool_nested_transaction(state, req))
-    "execute_waiting" -> execute_waiting(state, req)
-    "execute_fresh" -> reply_ok(execute_fresh(state, req))
-    "query_until_commit" -> query_until_commit(state, req)
-    "write_while_blocked" -> write_while_blocked(state, req)
-    "query_while_locked" -> query_while_locked(state, req)
-    "open_while_locked" -> open_while_locked(state, req)
-    "execute_in_task" -> reply_ok(execute_in_task(state, req.text))
-    "query_together" -> reply_ok(query_together(state, req))
-    "query_beside_long" -> reply_ok(query_beside_long(state, req))
-    "cancel_beside_long" -> reply_ok(cancel_beside_long(state, req))
-    "execute_beside_waiting" -> reply_ok(execute_beside_waiting(state, req))
-    "on_other" -> reply_ok(on_other(state, req))
-    "query_big_json" -> reply_ok(query_big_json(state, req))
-    "query_json_list" -> reply_ok(query_json_list(state, req))
-    "statement_cache" -> reply_ok(statement_cache(state))
-    "mysql_flavor" -> Handled(state: state, reply: mysql_flavor(state))
-    "driver_named" -> reply_ok(driver_named(state, req.text))
-    "cancel_task" -> reply_ok(cancel_task(state, req))
-    "query_each" -> reply_ok(query_each(state, req))
-    "cache_beside_big" -> reply_ok(cache_beside_big(state, req))
-    "close_beside_queries" -> reply_ok(close_beside_queries(state, req))
-    "query_in_new_task" -> reply_ok(query_in_new_task(state, req.text))
-    "round_trips" -> round_trips(state, req.table)
-    "float_oracle" -> float_oracle(state, req.text)
-    "keep_running" -> keep_running(state, req.text, req.number)
-    "leave_open" -> leave_open(state, req.number)
-    "none_running" -> none_running(state, req.text, req.number)
-    _ -> Handled(state: state, reply: "unknown op #{req.op.inspect}")
+  case req
+    Request.Open(a) -> opened(state, a.adapter)
+    Request.OpenUrl(a) -> reply_ok(open_at(state, state.adapter, expand(state, a.url)))
+    Request.Execute(a) -> reply_ok(with_params(state, a.sql, a.params, &execute))
+    Request.Query(a) -> reply_ok(with_params(state, a.sql, a.params, &query))
+    Request.QueryWithin(a) -> reply_ok(query_within(state, sql_of(state, a.sql), [], a.timeout_ms))
+    Request.ExecuteWithin(a) -> reply_ok(execute_within(state, sql_of(state, a.sql), [], a.timeout_ms))
+    Request.PoolStart(a) -> reply_ok(pool_start(state, a))
+    Request.PoolQuery(a) -> reply_ok(pool_query(state, a))
+    Request.PoolExecute(a) -> reply_ok(pool_execute(state, a))
+    Request.PoolScript(a) -> reply_ok(pool_script(state, a.statements.drop(1)))
+    Request.PoolCloseConnection(_) -> reply_ok(pool_close_connection(state))
+    Request.PoolCrash(_) -> reply_ok(pool_crash(state))
+    Request.PoolHold(a) -> reply_ok(pool_hold(state, a.ms))
+    Request.PoolCancelHolder(a) -> reply_ok(pool_cancel_holder(state, a))
+    Request.PoolWriteWithin(a) -> reply_ok(pool_write_within(state, a))
+    Request.PoolRunsIn(a) -> reply_ok(pool_runs_in(state, a.place))
+    Request.PoolQueryWhileHeld(a) -> reply_ok(pool_query_while_held(state, a))
+    Request.PoolTransaction(a) -> reply_ok(pool_transaction(state, a))
+    Request.PoolCommits(a) -> reply_ok(pool_commits(state, a))
+    Request.PoolWritersReaders(a) -> reply_ok(pool_writers_readers(state, a))
+    Request.PoolShortCalls(_) -> reply_ok(pool_short_calls(state))
+    Request.PoolFallbacks(_) -> reply_ok(pool_fallbacks(state))
+    Request.PoolRepeat(a) -> reply_ok(pool_repeat(state, a))
+    Request.PoolClose(_) -> reply_ok(pool_close(state))
+    Request.ShortCalls(_) -> reply_ok(short_calls(state))
+    Request.Fallbacks(_) -> reply_ok(fallbacks(state))
+    Request.FileSize(a) -> file_size(state, a)
+    Request.PoolShortCallsAtMost(a) -> short_calls_at_most(pool_short_calls(state), a.most)
+    Request.TransactionWhileLocked(a) -> transaction_while_locked(state, a)
+    Request.InTransaction(_) -> check_connection(state, "in_transaction") do |conn| Db.in_transaction?(conn) end
+    Request.NotInTransaction(_) ->
+      check_connection(state, "not_in_transaction") do |conn| not Db.in_transaction?(conn) end
+    Request.Healthy(_) -> check_connection(state, "healthy") do |conn| Db.healthy?(conn) end
+    Request.NotHealthy(_) -> check_connection(state, "not_healthy") do |conn| not Db.healthy?(conn) end
+    Request.Transaction(a) -> reply_ok(transaction(state, a))
+    Request.OrmQuery(a) -> reply_ok(with_params(state, a.sql, a.params, &orm_query))
+    Request.OrmPartialQuery(a) -> reply_ok(with_params(state, a.sql, a.params, &partial_query))
+    Request.OrmQueryAs(a) -> reply_ok(orm_query_as(state, Cells.expand(a.sql)))
+    Request.OrmDecode(a) -> reply_ok(orm_decode(state, a.sql))
+    Request.OrmCheck(a) -> reply_ok(orm_check(state, a.schema))
+    Request.OrmInsert(a) -> reply_ok(orm_insert(state, a))
+    Request.OrmInsertPartial(a) -> reply_ok(orm_insert_partial(state, a))
+    Request.OrmBuilder(a) -> reply_ok(orm_builder(state, a.ending, a.steps))
+    Request.OrmFind(a) -> reply_ok(orm_find(state, a.key))
+    Request.OrmMarker(a) -> reply_ok(orm_marker(state, a.action))
+    Request.OrmUpdate(a) -> reply_ok(orm_update(state, people(), person_of(a.rows)))
+    Request.OrmUpdatePartial(a) -> reply_ok(orm_update(state, partials(), partial_of(a.rows)))
+    Request.OrmPatch(a) -> reply_ok(orm_patch(state, a.key, a.changes))
+    Request.OrmDelete(a) -> reply_ok(orm_delete(state, a))
+    Request.OrmDeleteTyped(a) -> reply_ok(orm_delete_typed(state, a.key))
+    Request.Close(_) -> reply_ok(close(state))
+    Request.Migrate(a) -> reply_ok(migrate(state, a))
+    Request.ReadOnly(a) -> reply_ok(set_access(state, expand(state, a.path), false))
+    Request.Writable(a) -> reply_ok(set_access(state, expand(state, a.path), true))
+    Request.WriteTogether(a) -> reply_ok(write_together(state, a))
+    Request.PoolWritersInTurn(a) -> reply_ok(pool_writers_in_turn(state, a))
+    Request.PoolTurnAfter(a) -> reply_ok(pool_turn_after(state, a))
+    Request.PoolNestedTransaction(a) -> reply_ok(pool_nested_transaction(state, a))
+    Request.ExecuteWaiting(a) -> execute_waiting(state, a)
+    Request.ExecuteFresh(a) -> reply_ok(execute_fresh(state, a))
+    Request.QueryUntilCommit(a) -> query_until_commit(state, a)
+    Request.WriteWhileBlocked(a) -> write_while_blocked(state, a)
+    Request.QueryWhileLocked(a) -> query_while_locked(state, a)
+    Request.OpenWhileLocked(a) -> open_while_locked(state, a)
+    Request.ExecuteInTask(a) -> reply_ok(execute_in_task(state, a.sql))
+    Request.QueryTogether(a) -> reply_ok(query_together(state, a))
+    Request.QueryBesideLong(a) -> reply_ok(query_beside_long(state, a))
+    Request.CancelBesideLong(a) -> reply_ok(cancel_beside_long(state, a))
+    Request.ExecuteBesideWaiting(a) -> reply_ok(execute_beside_waiting(state, a))
+    Request.OnOther(a) -> reply_ok(on_other(state, a))
+    Request.QueryBigJson(a) -> reply_ok(query_big_json(state, a))
+    Request.QueryJsonList(a) -> reply_ok(query_json_list(state, a))
+    Request.StatementCache(_) -> reply_ok(statement_cache(state))
+    Request.MysqlFlavor(_) -> Handled(state: state, reply: mysql_flavor(state))
+    Request.DriverNamed(a) -> reply_ok(driver_named(state, a.variable))
+    Request.CancelTask(a) -> reply_ok(cancel_task(state, a))
+    Request.QueryEach(a) -> reply_ok(query_each(state, a))
+    Request.CacheBesideBig(a) -> reply_ok(cache_beside_big(state, a))
+    Request.CloseBesideQueries(a) -> reply_ok(close_beside_queries(state, a))
+    Request.QueryInNewTask(a) -> reply_ok(query_in_new_task(state, a.sql))
+    Request.RoundTrips(a) -> round_trips(state, a.rows)
+    Request.FloatOracle(a) -> float_oracle(state, a.literal)
+    Request.KeepRunning(a) -> keep_running(state, a.sql, a.gap_ms)
+    Request.LeaveOpen(a) -> leave_open(state, a.limit_ms)
+    Request.NoneRunning(a) -> none_running(state, a.marker, a.limit_ms)
+    Request.Expect(expectation) -> act_expecting(state, expectation)
+    Request.OrmDecodeTagged(a) -> reply_ok(orm_decode_tagged(state, a.sql))
+  end
+end
+
+def act_expecting(state: State, expectation: Expectation) -> Handled
+  case expectation
+    Expectation.ExpectOk(_) -> expect(state, judge_ok(state.last))
+    Expectation.ExpectTimeout(_) ->
+      expect(state, judge_failure(state.last, "that is a timeout", "") do |message| Db.timeout?(message) end)
+    Expectation.ExpectCount(a) -> expect(state, judge_count(state.last, a.count))
+    Expectation.ExpectRows(a) -> expect(state, judge_rows(state.last, a.rows))
+    Expectation.ExpectLast(a) -> expect(state, judge_last(state.last, a.count, a.rows))
+    Expectation.ExpectPrefix(a) ->
+      wanted = Cells.expand(a.text)
+      expect(state, judge_failure(state.last, "starting with", wanted) do |message| message.start_with?(wanted) end)
+    Expectation.ExpectExact(a) ->
+      wanted = Cells.expand(a.text)
+      expect(state, judge_failure(state.last, "exactly", wanted) do |message| message == wanted end)
+    Expectation.ExpectMentions(a) ->
+      wanted = Cells.expand(a.text)
+      expect(state, judge_failure(state.last, "mentioning", wanted) do |message| message.include?(wanted) end)
+    Expectation.ExpectHides(a) ->
+      wanted = Cells.expand(a.text)
+      expect(state, judge_failure(state.last, "never showing", wanted) do |message| not message.include?(wanted) end)
+    Expectation.ExpectKind(a) -> expect(state, judge_kind(state.last, Cells.expand(a.kind)))
   end
 end
 
@@ -465,15 +497,15 @@ end
 
 # Closes the pool of the scenario, if any, and starts the one the request names: the url (with its markers) and a table
 # of options, a header and a name and value per row. A pool that does not start is the outcome of the step.
-def pool_start(state: State, req: Request) -> State
+def pool_start(state: State, req: Protocol.PoolStart) -> State
   state.pools.each do |old| DbPool.close(old, POOL_DRAIN_MS) end
-  url = expand(state, req.text)
+  url = expand(state, req.url)
   if url.include?(scratch_dir())
     _ = Dir.mkdir(scratch_dir(), IO_TIMEOUT_MS)
   end
 
   stopped = State(conns: state.conns, pools: [], adapter: state.adapter, last: Outcome.Done, checked: false)
-  case pool_options(url, req.table.drop(1))
+  case pool_options(url, req.options.drop(1))
     error(message) -> failed(stopped, message.message)
     ok(options) ->
       case DbPool.start(options)
@@ -515,12 +547,12 @@ def with_pool(state: State, run: Fn[DbPool.Pool, State]) -> State
   run.call(state.pools[0])
 end
 
-# One block of the pool runs the statement, and the pool checks the connection in after it. The `number` of the request
-# is the `timeout_ms` of the call (`CONNECTION_DEFAULT` for none).
-def pool_query(state: State, req: Request) -> State
+# One block of the pool runs the statement, and the pool checks the connection in after it. The `timeout_ms` of the
+# request is the one of the call (`CONNECTION_DEFAULT` for none).
+def pool_query(state: State, req: Protocol.PoolQuery) -> State
   with_pool(state) do |pool|
-    sql = sql_of(state, req.text)
-    found = DbPool.with(pool) do |conn| Db.query(conn, sql, [], req.number) end
+    sql = sql_of(state, req.sql)
+    found = DbPool.with(pool) do |conn| Db.query(conn, sql, [], req.timeout_ms) end
     case found
       error(message) -> return failed(state, message.message)
       ok(rows) -> return recorded(state, Outcome.Rows(rows))
@@ -528,10 +560,10 @@ def pool_query(state: State, req: Request) -> State
   end
 end
 
-def pool_execute(state: State, req: Request) -> State
+def pool_execute(state: State, req: Protocol.PoolExecute) -> State
   with_pool(state) do |pool|
-    sql = sql_of(state, req.text)
-    found = DbPool.with(pool) do |conn| Db.execute(conn, sql, [], req.number) end
+    sql = sql_of(state, req.sql)
+    found = DbPool.with(pool) do |conn| Db.execute(conn, sql, [], req.timeout_ms) end
     case found
       error(message) -> return failed(state, message.message)
       ok(count) -> return recorded(state, Outcome.Counted(count))
@@ -588,13 +620,13 @@ def pool_hold(state: State, ms: Int) -> State
   end
 end
 
-# A task takes a connection, runs `req.text` in a transaction when it is not empty, keeps the connection for
-# `req.number` milliseconds and is cancelled once it has the connection (it says so on a channel), and this one waits
+# A task takes a connection, runs `req.sql` in a transaction when it is not empty, keeps the connection for
+# `req.hold_ms` milliseconds and is cancelled once it has the connection (it says so on a channel), and this one waits
 # until the task has ended. The outcome is Done: what the pool does with the connection shows in the next steps.
-def pool_cancel_holder(state: State, req: Request) -> State
+def pool_cancel_holder(state: State, req: Protocol.PoolCancelHolder) -> State
   with_pool(state) do |pool|
     got: Channel[Int] = Channel.new(1)
-    holder = Task.spawn(&hold_signalling, Holder(pool: pool, ms: req.number, sql: sql_of(state, req.text), got: got))
+    holder = Task.spawn(&hold_signalling, Holder(pool: pool, ms: req.hold_ms, sql: sql_of(state, req.sql), got: got))
     return failed(state, "the task never held a connection") if not got.recv(HOLDER_WAIT_MS).ok?
 
     Task.cancel(holder)
@@ -620,20 +652,20 @@ def hold_signalling(job: Holder) -> Result[Void]
   end
 end
 
-# One write in a block of the pool, which fails when it took `req.number` ms or more: a connection left in a
+# One write in a block of the pool, which fails when it took `req.limit_ms` ms or more: a connection left in a
 # transaction would hold SQLite's lock for the wait of `busy_timeout`.
-def pool_write_within(state: State, req: Request) -> State
+def pool_write_within(state: State, req: Protocol.PoolWriteWithin) -> State
   with_pool(state) do |pool|
     started = Time.monotonic_ms()
-    done = DbPool.with(pool) do |conn| Db.execute(conn, sql_of(state, req.text), []) end
+    done = DbPool.with(pool) do |conn| Db.execute(conn, sql_of(state, req.sql), []) end
     took = Time.monotonic_ms() - started
-    return failed(state, "the write took #{took} ms") if took >= req.number
+    return failed(state, "the write took #{took} ms") if took >= req.limit_ms
 
     return counted(state, done)
   end
 end
 
-# Whether a block of the pool runs in the task of its caller (`lease_ms` 0) or in a task of the pool, as `req.text`
+# Whether a block of the pool runs in the task of its caller (`lease_ms` 0) or in a task of the pool, as `place`
 # says: `caller` or `pool`.
 def pool_runs_in(state: State, expected: String) -> State
   with_pool(state) do |pool|
@@ -654,25 +686,26 @@ def hold(job: Held) -> Result[Void]
   end
 end
 
-# A task takes a connection and keeps it for `req.number` milliseconds while this one asks for a connection too. The
+# A task takes a connection and keeps it for `req.hold_ms` milliseconds while this one asks for a connection too. The
 # outcome is the one of this query; the task is awaited, so nothing runs on after the step.
-def pool_query_while_held(state: State, req: Request) -> State
+def pool_query_while_held(state: State, req: Protocol.PoolQueryWhileHeld) -> State
   with_pool(state) do |pool|
-    holder = Task.spawn(&hold, Held(pool: pool, ms: req.number))
+    holder = Task.spawn(&hold, Held(pool: pool, ms: req.hold_ms))
     Task.sleep(HOLD_START_MS)
-    asked = pool_query(state, req.with(number: Db.CONNECTION_DEFAULT))
+    asked = pool_query(state, Protocol.PoolQuery(sql: req.sql, timeout_ms: Db.CONNECTION_DEFAULT))
     _ = Task.await(holder)
     return asked
   end
 end
 
 # The statements of the table (the header row is skipped) run in one transaction in one block of the pool. With a
-# `number` above 0, a ticker task runs meanwhile, and the outcome is a failure when the scheduler stopped for that many
+# `stop_ms` above 0, a ticker task runs meanwhile, and the outcome is a failure when the scheduler stopped for
+# that many
 # milliseconds or more: a write that runs long must not run in a short call.
-def pool_transaction(state: State, req: Request) -> State
+def pool_transaction(state: State, req: Protocol.PoolTransaction) -> State
   with_pool(state) do |pool|
-    rows = req.table.drop(1)
-    if req.number <= 0
+    rows = req.statements.drop(1)
+    if req.stop_ms <= 0
       return checked(state, DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, rows) end end)
     end
 
@@ -681,17 +714,17 @@ def pool_transaction(state: State, req: Request) -> State
     done = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| run_rows(tx, rows) end end
     case Task.await(ticker)
       error(message) -> return failed(state, message.message)
-      ok(ms) if ms >= req.number -> return failed(state, "the scheduler stopped for #{ms} ms")
+      ok(ms) if ms >= req.stop_ms -> return failed(state, "the scheduler stopped for #{ms} ms")
       ok(_) -> return checked(state, done)
     end
   end
 end
 
-# `req.number` transactions, one after the other, each in a block of the pool, each running the statement `req.text`.
-def pool_commits(state: State, req: Request) -> State
+# `req.count` transactions, one after the other, each in a block of the pool, each running the statement `req.sql`.
+def pool_commits(state: State, req: Protocol.PoolCommits) -> State
   with_pool(state) do |pool|
-    sql = sql_of(state, req.text)
-    for _ in 0...req.number
+    sql = sql_of(state, req.sql)
+    for _ in 0...req.count
       done = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| Db.execute(tx, sql, []) end end
       return failed(state, done.message) if not done.ok?
     end
@@ -700,21 +733,21 @@ def pool_commits(state: State, req: Request) -> State
   end
 end
 
-# `req.number` writers of the pool commit `req.cells[0]` transactions each, of two rows, into the table `req.text`,
+# `req.writers` writers of the pool commit `req.commits` transactions each, of two rows, into the table `req.table`,
 # while READERS readers count its rows in other blocks of the pool: a reader that sees an odd count saw half of a
 # transaction. The outcome is the first failure, if any.
-def pool_writers_readers(state: State, req: Request) -> State
+def pool_writers_readers(state: State, req: Protocol.PoolWritersReaders) -> State
   with_pool(state) do |pool|
-    count = req.cells[0].to_i!
+    count = req.commits
     done: Channel[Int] = Channel.new(1)
     readers: List[Task[Result[Int]]] = []
     for _ in 0...READERS
-      readers = readers.push(Task.spawn(&count_rows, PoolReader(pool: pool, table: req.text, done: done)))
+      readers = readers.push(Task.spawn(&count_rows, PoolReader(pool: pool, table: req.table, done: done)))
     end
 
     writers: List[Task[Result[Void]]] = []
-    for writer in 1..req.number
-      job = PoolWriter(pool: pool, table: req.text, writer: writer, count: count)
+    for writer in 1..req.writers
+      job = PoolWriter(pool: pool, table: req.table, writer: writer, count: count)
       writers = writers.push(Task.spawn(&write_rows, job))
     end
 
@@ -834,13 +867,13 @@ def stat_row(state: State, name: String, found: Optional[Int]) -> State
   end
 end
 
-# One transaction in a block of the pool that runs the statement `req.text` `req.number` times.
-def pool_repeat(state: State, req: Request) -> State
+# One transaction in a block of the pool that runs the statement `req.sql` `req.times` times.
+def pool_repeat(state: State, req: Protocol.PoolRepeat) -> State
   with_pool(state) do |pool|
-    sql = sql_of(state, req.text)
+    sql = sql_of(state, req.sql)
     done = DbPool.with(pool) do |conn|
       Db.transaction(conn) do |tx|
-        for _ in 0...req.number
+        for _ in 0...req.times
           try Db.execute(tx, sql, [])
         end
 
@@ -852,13 +885,13 @@ def pool_repeat(state: State, req: Request) -> State
   end
 end
 
-# A connection of its own to `req.text` takes the write lock, and a task gives it back after `req.number` ms, while
+# A connection of its own to `req.url` takes the write lock, and a task gives it back after `req.hold_ms` ms, while
 # the statements of the table run in a transaction on the connection of the scenario: its BEGIN must wait for the lock,
 # for at least half of that time, and then work.
-def transaction_while_locked(state: State, req: Request) -> Handled
+def transaction_while_locked(state: State, req: Protocol.TransactionWhileLocked) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
-  case Db.open(expand(state, req.text), drivers())
+  case Db.open(expand(state, req.url), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(other) ->
       taken = Db.execute(other, "BEGIN IMMEDIATE", [])
@@ -867,13 +900,13 @@ def transaction_while_locked(state: State, req: Request) -> Handled
         return Handled(state: state, reply: taken.message)
       end
 
-      holder = Task.spawn(&unlock_after, Locked(conn: other, ms: req.number))
+      holder = Task.spawn(&unlock_after, Locked(conn: other, ms: req.hold_ms))
       started = Time.monotonic_ms()
-      done = Db.transaction(state.conns[0]) do |tx| run_rows(tx, req.table.drop(1)) end
+      done = Db.transaction(state.conns[0]) do |tx| run_rows(tx, req.statements.drop(1)) end
       waited = Time.monotonic_ms() - started
       _ = Task.await(holder)
       Db.close(other)
-      if waited < req.number / 2
+      if waited < req.hold_ms / 2
         return Handled(state: state, reply: "the transaction took #{waited} ms, it did not wait for the lock")
       end
 
@@ -886,24 +919,24 @@ def unlock_after(job: Locked) -> Result[Int]
   Db.execute(job.conn, "COMMIT", [])
 end
 
-# An expectation: the file `req.text` (with its markers) exists and holds at most `req.number` bytes.
-def file_size(state: State, req: Request) -> Handled
-  path = expand(state, req.text)
+# An expectation: the file `req.path` (with its markers) exists and holds at most `req.most_bytes` bytes.
+def file_size(state: State, req: Protocol.FileSize) -> Handled
+  path = expand(state, req.path)
   case File.stat(path, IO_TIMEOUT_MS)
     error(message) -> Handled(state: state, reply: message.message)
-    ok(info) if info.size_bytes > req.number -> Handled(state: state, reply: "it holds #{info.size_bytes} bytes")
+    ok(info) if info.size_bytes > req.most_bytes -> Handled(state: state, reply: "it holds #{info.size_bytes} bytes")
     ok(_) -> reply_ok(state)
   end
 end
 
 # Runs `Migrate.up` with the rows of the table (`version`, `name`, `sql`; the header row is skipped). The sql cell
 # holds statements separated by `;` (no `;` inside a literal), or `code:` and one statement that a function migration
-# runs. The outcome is the versions applied, one row each, so a re-run shows no row. `text` is the history table, or
+# runs. The outcome is the versions applied, one row each, so a re-run shows no row. `history` is the history table, or
 # empty for the default.
-def migrate(state: State, req: Request) -> State
+def migrate(state: State, req: Protocol.MigrateRun) -> State
   with_conn(state) do |conn|
-    list = req.table.drop(1).map do |row| migration_of(row) end
-    done = migrate_run(conn, list, req.text)
+    list = req.migrations.drop(1).map do |row| migration_of(row) end
+    done = migrate_run(conn, list, req.history)
     case done
       error(message) -> return failed(state, message.message)
       ok(versions) -> return recorded(state, Outcome.Rows(versions.map do |v| {"version": Db.Value.Int(v)} end))
@@ -981,10 +1014,10 @@ def with_conn(state: State, run: Fn[Db.Connection, State]) -> State
   run.call(state.conns[0])
 end
 
-def with_params(state: State, req: Request, run: Fn[State, String, List[Db.Value], State]) -> State
-  case Cells.parse_all(req.cells)
+def with_params(state: State, sql: String, cells: List[String], run: Fn[State, String, List[Db.Value], State]) -> State
+  case Cells.parse_all(cells)
     error(message) -> failed(state, message.message)
-    ok(params) -> run.call(state, sql_of(state, req.text), params)
+    ok(params) -> run.call(state, sql_of(state, sql), params)
   end
 end
 
@@ -1014,23 +1047,14 @@ def query_within(state: State, sql: String, params: List[Db.Value], timeout_ms: 
   end
 end
 
-# The answer of `Db.in_transaction?` or `Db.healthy?` is the one the op names. A closed connection is still the
-# connection of the state, which is how a step asks about it.
-def check_connection(state: State, op: String) -> Handled
+# The answer of `Db.in_transaction?` or `Db.healthy?`, as `answer` reads it, must be true. A closed connection is still
+# the connection of the state, which is how a step asks about it.
+def check_connection(state: State, name: String, answer: Fn[Db.Connection, Bool]) -> Handled
   return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
 
-  return reply_ok(state) if connection_answer(state.conns[0], op)
+  return reply_ok(state) if answer.call(state.conns[0])
 
-  Handled(state: state, reply: "the connection did not answer for #{op}")
-end
-
-def connection_answer(conn: Db.Connection, op: String) -> Bool
-  case op
-    "in_transaction" -> Db.in_transaction?(conn)
-    "not_in_transaction" -> not Db.in_transaction?(conn)
-    "healthy" -> Db.healthy?(conn)
-    _ -> not Db.healthy?(conn)
-  end
+  Handled(state: state, reply: "the connection did not answer for #{name}")
 end
 
 # The query of the table of steps (the header row is skipped), then its end: the rows of the persons read, or the
@@ -1294,11 +1318,12 @@ def age_cell(cell: String) -> Result[JSON.Field[Int]]
 end
 
 # The schema `manual` is `people` with a key the value gives.
-def orm_insert(state: State, req: Request) -> State
-  generated = req.text != "manual"
-  return inserted(state, partials().with(generated: generated), partial_of(req.table), &partial_row) if req.partial
+def orm_insert(state: State, req: Protocol.OrmInsert) -> State
+  inserted(state, people().with(generated: not req.manual), person_of(req.rows), &person_row)
+end
 
-  inserted(state, people().with(generated: generated), person_of(req.table), &person_row)
+def orm_insert_partial(state: State, req: Protocol.OrmInsertPartial) -> State
+  inserted(state, partials().with(generated: true), partial_of(req.rows), &partial_row)
 end
 
 def inserted[T](state: State, schema: Orm.Schema[T], value: Result[T], row: Fn[T, Db.Row]) -> State
@@ -1314,13 +1339,7 @@ def inserted[T](state: State, schema: Orm.Schema[T], value: Result[T], row: Fn[T
   end
 end
 
-def orm_update(state: State, req: Request) -> State
-  return updated(state, partials(), partial_of(req.table)) if req.partial
-
-  updated(state, people(), person_of(req.table))
-end
-
-def updated[T](state: State, schema: Orm.Schema[T], value: Result[T]) -> State
+def orm_update[T](state: State, schema: Orm.Schema[T], value: Result[T]) -> State
   with_conn(state) do |conn|
     case value
       error(message) -> return failed(state, message.message)
@@ -1338,20 +1357,22 @@ def orm_patch(state: State, id: Int, changes: String) -> State
   end
 end
 
-# The key is the number, or the one typed cell when there is one.
-def orm_delete(state: State, req: Request) -> State
+def orm_delete(state: State, req: Protocol.OrmDelete) -> State
   with_conn(state) do |conn|
-    id = Db.Value.Int(req.number)
-    if not req.cells.empty?
-      case Cells.parse(req.cells[0])
-        error(message) -> return failed(state, message.message)
-        ok(value) -> id = value
-      end
-    end
-
-    return counted(state, Orm.delete(conn, injected(), id)) if req.text == "injection"
+    id = Db.Value.Int(req.key)
+    return counted(state, Orm.delete(conn, injected(), id)) if req.schema == "injection"
 
     return counted(state, Orm.delete(conn, people(), id))
+  end
+end
+
+# The key is a typed cell.
+def orm_delete_typed(state: State, key: String) -> State
+  with_conn(state) do |conn|
+    case Cells.parse(key)
+      error(message) -> return failed(state, message.message)
+      ok(id) -> return counted(state, Orm.delete(conn, people(), id))
+    end
   end
 end
 
@@ -1395,8 +1416,8 @@ end
 # ends with the failure message of the request, or gives the rows changed by its last statement: the transaction
 # gives that count when the request asks for it (`gives`), else it is a Void transaction that records only that it
 # worked.
-def transaction(state: State, req: Request) -> State
-  rows = req.table.drop(1)
+def transaction(state: State, req: Protocol.Transaction) -> State
+  rows = req.statements.drop(1)
   with_conn(state) do |conn|
     if req.gives
       counted = Db.transaction(conn) do |tx| run_body(tx, rows, req) end
@@ -1416,19 +1437,19 @@ end
 
 # The text of a failed transaction: its message, or, for a block that fails with a kind and a code, `kind code:
 # message`, so a scenario sees what the call gave back, not only the text.
-def described(e: Error, req: Request) -> String
+def described(e: Error, req: Protocol.Transaction) -> String
   return e.message if req.kind.empty?
 
   "#{e.kind} #{e.code.unwrap_or(-1)}: #{e.message}"
 end
 
 # The same body for a transaction whose value is Void, so both forms of `Db.transaction` run in CI.
-def run_void(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Void]
+def run_void(tx: Db.Connection, rows: List[List[String]], req: Protocol.Transaction) -> Result[Void]
   try run_body(tx, rows, req)
   ok()
 end
 
-def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Result[Int]
+def run_body(tx: Db.Connection, rows: List[List[String]], req: Protocol.Transaction) -> Result[Int]
   last = 0
   for row in rows
     done = Db.execute(tx, Cells.expand(row[0]), [])
@@ -1442,9 +1463,9 @@ def run_body(tx: Db.Connection, rows: List[List[String]], req: Request) -> Resul
     try Db.transaction(tx) do |_inner| ok() end
   end
 
-  return error(req.text, kind: req.kind, code: req.number) if not req.text.empty? and not req.kind.empty?
+  return error(req.failure, kind: req.kind, code: req.code) if not req.failure.empty? and not req.kind.empty?
 
-  return error(req.text) if not req.text.empty?
+  return error(req.failure) if not req.failure.empty?
 
   ok(last)
 end
@@ -1456,12 +1477,12 @@ def write_in_task(job: Writer) -> Result[Void]
   done
 end
 
-# `req.number` writers come to the line of the pool one after another, ARRIVAL_MS apart; each writes its number into
+# `req.writers` writers come to the line of the pool one after another, ARRIVAL_MS apart; each writes its number into
 # `notes` and holds its transaction TURN_HOLD_MS.
-def pool_writers_in_turn(state: State, req: Request) -> State
+def pool_writers_in_turn(state: State, req: Protocol.PoolWritersInTurn) -> State
   with_pool(state) do |pool|
     tasks: List[Task[Result[Void]]] = []
-    for writer in 1..req.number
+    for writer in 1..req.writers
       tasks = tasks.push(Task.spawn(&write_in_turn, TurnWriter(pool: pool, writer: writer)))
       Task.sleep(ARRIVAL_MS)
     end
@@ -1485,17 +1506,17 @@ def hold_turn(tx: Db.Connection, writer: Int) -> Result[Void]
   ok()
 end
 
-# A block of the pool that crashes (`req.text` "crashes") or sleeps past its lease in its transaction, then a writer of
-# the pool; it fails when the writer took `req.number` ms or more, the wait of a turn that was not given back.
-def pool_turn_after(state: State, req: Request) -> State
+# A block of the pool that crashes (`req.mode` "crashes") or sleeps past its lease in its transaction, then a writer of
+# the pool; it fails when the writer took `req.limit_ms` ms or more, the wait of a turn that was not given back.
+def pool_turn_after(state: State, req: Protocol.PoolTurnAfter) -> State
   with_pool(state) do |pool|
-    first = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| stall(req.text) end end
+    first = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| stall(req.mode) end end
     return failed(state, "the first block succeeded") if first.ok?
 
     started = Time.monotonic_ms()
     second = DbPool.with(pool) do |conn| Db.transaction(conn) do |tx| write_note(tx) end end
     took = Time.monotonic_ms() - started
-    return failed(state, "the next writer waited #{took} ms") if took >= req.number
+    return failed(state, "the next writer waited #{took} ms") if took >= req.limit_ms
 
     return counted(state, second)
   end
@@ -1512,13 +1533,13 @@ end
 def write_note(tx: Db.Connection) -> Result[Int] = Db.execute(tx, "insert into notes (writer) values (1)", [])
 
 # A block of the pool that checks out a second connection inside its transaction and starts a transaction there; it
-# fails when that took `req.number` ms or more.
-def pool_nested_transaction(state: State, req: Request) -> State
+# fails when that took `req.limit_ms` ms or more.
+def pool_nested_transaction(state: State, req: Protocol.PoolNestedTransaction) -> State
   with_pool(state) do |pool|
     started = Time.monotonic_ms()
     done = DbPool.with(pool) do |conn| Db.transaction(conn) do |_tx| inner_write(pool) end end
     took = Time.monotonic_ms() - started
-    return failed(state, "the nested transaction took #{took} ms") if took >= req.number
+    return failed(state, "the nested transaction took #{took} ms") if took >= req.limit_ms
 
     return counted(state, done)
   end
@@ -1538,10 +1559,10 @@ end
 
 # Every task starts before the first is awaited, so they all want the write lock together. The outcome is the first
 # failure, if any.
-def write_together(state: State, req: Request) -> State
-  job = Writer(url: expand(state, req.text), rows: req.table.drop(1))
+def write_together(state: State, req: Protocol.WriteTogether) -> State
+  job = Writer(url: expand(state, req.url), rows: req.statements.drop(1))
   tasks: List[Task[Result[Void]]] = []
-  for _ in 0...req.number
+  for _ in 0...req.tasks
     tasks = tasks.push(Task.spawn(&write_in_task, job))
   end
 
@@ -1559,22 +1580,22 @@ def write_together(state: State, req: Request) -> State
 end
 
 # The statement runs in a task on a connection of its own at the url, and its count is recorded.
-def execute_fresh(state: State, req: Request) -> State
-  job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
+def execute_fresh(state: State, req: Protocol.ExecuteFresh) -> State
+  job = Fresh(url: expand(state, req.url), sql: Cells.expand(req.sql))
   counted(state, Task.await(Task.spawn(&fresh_execute, job)))
 end
 
 # The statement runs in a task on a connection of its own at the url, which fails: the failure is recorded for the next
-# step, and the wait that came before it must last `req.number` milliseconds at least.
-def execute_waiting(state: State, req: Request) -> Handled
+# step, and the wait that came before it must last `req.least_ms` milliseconds at least.
+def execute_waiting(state: State, req: Protocol.ExecuteWaiting) -> Handled
   started = Time.monotonic_ms()
-  job = Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0]))
+  job = Fresh(url: expand(state, req.url), sql: Cells.expand(req.sql))
   case Task.await(Task.spawn(&fresh_execute, job))
     ok(_) -> Handled(state: state, reply: "the statement did not fail")
     error(message) ->
       waited = Time.monotonic_ms() - started
-      if waited < req.number
-        return Handled(state: state, reply: "it failed after #{waited} ms, less than #{req.number} ms: #{message}")
+      if waited < req.least_ms
+        return Handled(state: state, reply: "it failed after #{waited} ms, less than #{req.least_ms} ms: #{message}")
       end
 
       reply_ok(failed(state, message.message))
@@ -1608,21 +1629,22 @@ def timed_query(job: Fresh) -> Timed
 end
 
 # The query runs in a task on a connection of its own while this connection, which holds a read lock, commits after
-# `req.number` milliseconds: the query waits for the lock, then its rows or its failure are the outcome. A statement
-# that writes in autocommit mode is rolled back by SQLite while it waits, so no lock shows that the task waits; the
+# `req.commit_after_ms` milliseconds: the query waits for the lock, then its rows or its failure are the outcome.
+# A statement that writes in autocommit mode is rolled back by SQLite while it waits, so no lock shows that the task
+# waits; the
 # times do: the task must have started before the commit (by a tenth of the delay, so a slow start does not fail the
 # step) and have ended after it, and nothing but the lock of this connection keeps a statement that long.
-def query_until_commit(state: State, req: Request) -> Handled
+def query_until_commit(state: State, req: Protocol.QueryUntilCommit) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
-  task = Task.spawn(&timed_query, Fresh(url: expand(state, req.text), sql: Cells.expand(req.cells[0])))
-  Task.sleep(req.number)
+  task = Task.spawn(&timed_query, Fresh(url: expand(state, req.url), sql: Cells.expand(req.sql)))
+  Task.sleep(req.commit_after_ms)
   committed_at = Time.monotonic_ms()
   committed = Db.execute(state.conns[0], "COMMIT", [])
   timed = Task.await(task)
   return reply_ok(failed(state, committed.message)) if not committed.ok?
 
-  if timed.started > committed_at - req.number / 10 or timed.ended < committed_at
+  if timed.started > committed_at - req.commit_after_ms / 10 or timed.ended < committed_at
     return Handled(state: state, reply: "the query did not wait for the commit: #{timed_range(timed, committed_at)}")
   end
 
@@ -1639,18 +1661,18 @@ end
 # A task writes in a transaction and waits at its COMMIT for this connection, which holds a read lock. This connection
 # then runs its own write, which cannot get the lock of the task, and must be refused at once. It rolls back to let the
 # task commit. The outcome is the result of the write.
-def write_while_blocked(state: State, req: Request) -> Handled
+def write_while_blocked(state: State, req: Protocol.WriteWhileBlocked) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
-  url = expand(state, req.text)
+  url = expand(state, req.url)
   case Db.open(probe_url(url), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
-      task = Task.spawn(&commit_write, Fresh(url: url, sql: Cells.expand(req.cells[0])))
+      task = Task.spawn(&commit_write, Fresh(url: url, sql: Cells.expand(req.write)))
       seen = blocked?(probe)
       Db.close(probe)
       started = Time.monotonic_ms()
-      tried = Db.execute(state.conns[0], Cells.expand(req.cells[1]), [])
+      tried = Db.execute(state.conns[0], Cells.expand(req.sql), [])
       waited = Time.monotonic_ms() - started
       _ = Db.execute(state.conns[0], "ROLLBACK", [])
       committed = Task.await(task)
@@ -1678,25 +1700,25 @@ def commit_write(job: Fresh) -> Result[Int]
   done
 end
 
-# A task holds the write lock (EXCLUSIVE, which refuses readers too) for `req.number` milliseconds while this
+# A task holds the write lock (EXCLUSIVE, which refuses readers too) for `req.hold_ms` milliseconds while this
 # connection queries: the query must wait for it, then give its rows.
-def query_while_locked(state: State, req: Request) -> Handled
+def query_while_locked(state: State, req: Protocol.QueryWhileLocked) -> Handled
   return reply_ok(failed(state, NO_DATABASE)) if state.conns.empty?
 
-  url = expand(state, req.text)
+  url = expand(state, req.url)
   case Db.open(probe_url(url), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
-      task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
+      task = Task.spawn(&hold_lock, Hold(url: url, ms: req.hold_ms))
       seen = blocked?(probe)
       Db.close(probe)
       started = Time.monotonic_ms()
-      found = Db.query(state.conns[0], Cells.expand(req.cells[0]), [])
+      found = Db.query(state.conns[0], Cells.expand(req.sql), [])
       waited = Time.monotonic_ms() - started
       _ = Task.await(task)
       return Handled(state: state, reply: never_blocked()) if not seen
 
-      if waited < req.number / 10
+      if waited < req.hold_ms / 10
         return Handled(state: state, reply: "the query took #{waited} ms, it did not wait for the lock")
       end
 
@@ -1707,15 +1729,15 @@ def query_while_locked(state: State, req: Request) -> Handled
   end
 end
 
-# A task holds the write lock (EXCLUSIVE, which refuses readers too) for `req.number` milliseconds while this
+# A task holds the write lock (EXCLUSIVE, which refuses readers too) for `req.hold_ms` milliseconds while this
 # connection is opened again at the same url. A new connection has not read the schema, so the statements that `open`
 # runs must wait at their prepare, not at a step; the open must give a connection that works.
-def open_while_locked(state: State, req: Request) -> Handled
-  url = expand(state, req.text)
+def open_while_locked(state: State, req: Protocol.OpenWhileLocked) -> Handled
+  url = expand(state, req.url)
   case Db.open(probe_url(url), drivers())
     error(message) -> Handled(state: state, reply: message.message)
     ok(probe) ->
-      task = Task.spawn(&hold_lock, Hold(url: url, ms: req.number))
+      task = Task.spawn(&hold_lock, Hold(url: url, ms: req.hold_ms))
       seen = blocked?(probe)
       Db.close(probe)
       started = Time.monotonic_ms()
@@ -1724,7 +1746,7 @@ def open_while_locked(state: State, req: Request) -> Handled
       _ = Task.await(task)
       return Handled(state: state, reply: never_blocked()) if not seen
 
-      if waited < req.number / 10
+      if waited < req.hold_ms / 10
         return Handled(state: reopened, reply: "the open took #{waited} ms, it did not wait for the lock")
       end
 
@@ -1760,46 +1782,46 @@ def execute_in_task(state: State, sql: String) -> State
   end
 end
 
-# `req.number` tasks each run the query QUERY_REPEATS times on the one connection, at once; the rows when every run
+# `req.tasks` tasks each run the query QUERY_REPEATS times on the one connection, at once; the rows when every run
 # gave the same.
-def query_together(state: State, req: Request) -> State
+def query_together(state: State, req: Protocol.QueryTogether) -> State
   with_conn(state) do |conn|
-    job = Job(conn: conn, sql: Cells.expand(req.text))
-    tasks = (0...req.number).to_a.map do |_| Task.spawn(&query_repeated, job) end
+    job = Job(conn: conn, sql: Cells.expand(req.sql))
+    tasks = (0...req.tasks).to_a.map do |_| Task.spawn(&query_repeated, job) end
     results = tasks.map do |task| Task.await(task) end
     return same_rows(state, results)
   end
 end
 
 # The rows of a query on the connection while another task runs a long statement there, unless the scheduler stopped
-# meanwhile for `req.number` ms or more: a short call that waited for the other task's statement stops it.
-def query_beside_long(state: State, req: Request) -> State
+# meanwhile for `req.limit_ms` ms or more: a short call that waited for the other task's statement stops it.
+def query_beside_long(state: State, req: Protocol.QueryBesideLong) -> State
   with_conn(state) do |conn|
-    long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.long)))
     Task.sleep(LONG_START_MS)
     ticker = Task.spawn(&longest_pause, TICKER_MS)
     Task.sleep(TICKER_START_MS)
-    rows = Db.query(conn, Cells.expand(req.cells[0]), [])
+    rows = Db.query(conn, Cells.expand(req.sql), [])
     pause = Task.await(ticker)
     _ = Task.await(long)
-    return beside_rows(state, rows, pause, req.number)
+    return beside_rows(state, rows, pause, req.limit_ms)
   end
 end
 
-# A write on the connection that waits for the lock of another connection (at `req.text`) is cancelled while another
-# task runs a long statement there. It fails when the scheduler stopped for `req.number` ms or more: the cancel frees
+# A write on the connection that waits for the lock of another connection (at `req.url`) is cancelled while another
+# task runs a long statement there. It fails when the scheduler stopped for `req.limit_ms` ms or more: the cancel frees
 # the write's cursor, which must not wait for the long statement.
-def cancel_beside_long(state: State, req: Request) -> State
+def cancel_beside_long(state: State, req: Protocol.CancelBesideLong) -> State
   with_conn(state) do |conn|
-    case Db.open(expand(state, req.text), drivers())
+    case Db.open(expand(state, req.url), drivers())
       error(message) -> return failed(state, message.message)
       ok(other) -> return cancel_with_lock(state, conn, other, req)
     end
   end
 end
 
-def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, req: Request) -> State
-  write = Cells.expand(req.cells[0])
+def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, req: Protocol.CancelBesideLong) -> State
+  write = Cells.expand(req.write)
   _ = Db.execute(other, "begin immediate", [])
   writer = Task.spawn(&run_job, Job(conn: conn, sql: write))
   writer_down: Channel[TaskDown] = Channel.new(1)
@@ -1807,7 +1829,7 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
   Task.sleep(LONG_START_MS)
   ticker = Task.spawn(&longest_pause, TICKER_MS)
   Task.sleep(TICKER_START_MS)
-  long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[1])))
+  long = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.long)))
   Task.sleep(CANCEL_AFTER_MS)
   Task.cancel(writer)
   pause = Task.await(ticker)
@@ -1821,38 +1843,38 @@ def cancel_with_lock(state: State, conn: Db.Connection, other: Db.Connection, re
 
   case pause
     error(message) -> failed(state, message.message)
-    ok(ms) if ms >= req.number -> failed(state, "the scheduler stopped for #{ms} ms")
+    ok(ms) if ms >= req.limit_ms -> failed(state, "the scheduler stopped for #{ms} ms")
     ok(_) -> recorded(state, Outcome.Done)
   end
 end
 
-# A write on the connection (`req.cells[0]`) waits for the lock of another connection to `req.text`; once that lock
-# goes, the statement `req.cells[1]` runs on the connection between two tries of the write, and its count is recorded
+# A write on the connection (`req.write`) waits for the lock of another connection to `req.url`; once that lock
+# goes, the statement `req.sql` runs on the connection between two tries of the write, and its count is recorded
 # after the write has ended.
-def execute_beside_waiting(state: State, req: Request) -> State
+def execute_beside_waiting(state: State, req: Protocol.ExecuteBesideWaiting) -> State
   with_conn(state) do |conn|
-    case Db.open(expand(state, req.text), drivers())
+    case Db.open(expand(state, req.url), drivers())
       error(message) -> return failed(state, message.message)
       ok(other) ->
         _ = Db.execute(other, "begin immediate", [])
-        writer = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
+        writer = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.write)))
         Task.sleep(WRITER_WAITS_MS)
         _ = Db.execute(other, "rollback", [])
         Db.close(other)
-        count = Db.execute(conn, Cells.expand(req.cells[1]), [])
+        count = Db.execute(conn, Cells.expand(req.sql), [])
         _ = Task.await(writer)
         return counted(state, count)
     end
   end
 end
 
-# A statement on a connection of its own to `req.text`, closed after it: its rows, or its count for `execute`.
-def on_other(state: State, req: Request) -> State
-  case Db.open(expand(state, req.text), drivers())
+# A statement on a connection of its own to `req.url`, closed after it: its rows, or its count for `execute`.
+def on_other(state: State, req: Protocol.OnOther) -> State
+  case Db.open(expand(state, req.url), drivers())
     error(message) -> failed(state, message.message)
     ok(other) ->
-      sql = Cells.expand(req.cells[0])
-      if req.number == OTHER_QUERY
+      sql = Cells.expand(req.sql)
+      if req.query
         rows = Db.query(other, sql, [])
         Db.close(other)
         return recorded_rows(state, rows)
@@ -1864,23 +1886,23 @@ def on_other(state: State, req: Request) -> State
   end
 end
 
-# The rows of `req.text` with one parameter, a JSON list of `req.number` ones, unless the scheduler stopped for
-# `req.cells[0]` ms or more meanwhile: a short call must not take big bound data.
-def query_big_json(state: State, req: Request) -> State
+# The rows of `req.sql` with one parameter, a JSON list of `req.items` ones, unless the scheduler stopped for
+# `req.limit_ms` ms or more meanwhile: a short call must not take big bound data.
+def query_big_json(state: State, req: Protocol.QueryBigJson) -> State
   with_conn(state) do |conn|
-    list = "[#{"1," * (req.number - 1)}1]"
+    list = "[#{"1," * (req.items - 1)}1]"
     ticker = Task.spawn(&longest_pause, TICKER_MS)
     Task.sleep(TICKER_START_MS)
-    rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text(list)])
+    rows = Db.query(conn, Cells.expand(req.sql), [Db.Value.Text(list)])
     pause = Task.await(ticker)
-    return beside_rows(state, rows, pause, req.cells[0].to_i!)
+    return beside_rows(state, rows, pause, req.limit_ms)
   end
 end
 
-def query_json_list(state: State, req: Request) -> State
+def query_json_list(state: State, req: Protocol.QueryJsonList) -> State
   with_conn(state) do |conn|
-    list = "[#{"1," * (req.number - 1)}1]"
-    return recorded_rows(state, Db.query(conn, Cells.expand(req.text), [Db.Value.Text(list)]))
+    list = "[#{"1," * (req.items - 1)}1]"
+    return recorded_rows(state, Db.query(conn, Cells.expand(req.sql), [Db.Value.Text(list)]))
   end
 end
 
@@ -2002,30 +2024,30 @@ def cache_row(state: State, found: Optional[List[Int]]) -> State
   end
 end
 
-# A task runs `req.text` on the connection and is cancelled after `req.number` ms. With a query in `req.cells`, then
-# its rows, unless it took `req.cells[1]` ms or more: the cancelled statement must not hold it up.
-def cancel_task(state: State, req: Request) -> State
+# A task runs `req.sql` on the connection and is cancelled after `req.cancel_after_ms` ms. With a `req.query`, then
+# its rows, unless it took `req.limit_ms` ms or more: the cancelled statement must not hold it up.
+def cancel_task(state: State, req: Protocol.CancelTask) -> State
   with_conn(state) do |conn|
-    task = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
-    Task.sleep(req.number)
+    task = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.sql)))
+    Task.sleep(req.cancel_after_ms)
     Task.cancel(task)
-    return recorded(state, Outcome.Done) if req.cells.empty?
+    return recorded(state, Outcome.Done) if req.query.empty?
 
     started = Time.monotonic_ms()
-    rows = Db.query(conn, Cells.expand(req.cells[0]), [])
+    rows = Db.query(conn, Cells.expand(req.query), [])
     took = Time.monotonic_ms() - started
-    return failed(state, "the query took #{took} ms after the cancel") if took >= req.cells[1].to_i!
+    return failed(state, "the query took #{took} ms after the cancel") if took >= req.limit_ms
 
     return recorded_rows(state, rows)
   end
 end
 
-# Queries `req.text` with `[N]` replaced by each number from `req.cells[0]` to `req.number`; the rows of the last.
-def query_each(state: State, req: Request) -> State
+# Queries `req.sql` with `[N]` replaced by each number from `req.from` to `req.to`; the rows of the last.
+def query_each(state: State, req: Protocol.QueryEach) -> State
   with_conn(state) do |conn|
     rows: Result[List[Db.Row]] = ok([])
-    for n in req.cells[0].to_i!..req.number
-      rows = Db.query(conn, Cells.expand(req.text.replace("[N]", n.to_s)), [])
+    for n in req.from..req.to
+      rows = Db.query(conn, Cells.expand(req.sql.replace("[N]", n.to_s)), [])
       return recorded_rows(state, rows) if not rows.ok?
     end
 
@@ -2033,12 +2055,12 @@ def query_each(state: State, req: Request) -> State
   end
 end
 
-# Queries `req.text` with a text of `req.number` characters while another task reads the statement cache of the
+# Queries `req.sql` with a text of `req.size` characters while another task reads the statement cache of the
 # connection: the reads wait for the query instead of failing its calls.
-def cache_beside_big(state: State, req: Request) -> State
+def cache_beside_big(state: State, req: Protocol.CacheBesideBig) -> State
   with_conn(state) do |conn|
     reader = Task.spawn(&read_cache, conn)
-    rows = Db.query(conn, Cells.expand(req.text), [Db.Value.Text("x" * req.number)])
+    rows = Db.query(conn, Cells.expand(req.sql), [Db.Value.Text("x" * req.size)])
     case Task.await(reader)
       error(message) -> return failed(state, message.message)
       ok(_) -> return recorded_rows(state, rows)
@@ -2059,14 +2081,14 @@ def read_cache(conn: Db.Connection) -> Result[Int]
   ok(CACHE_READS)
 end
 
-# A task executes `req.text` on the connection, a second one executes `req.cells[0]` there, which waits for the first,
-# and this task closes the connection after `req.number` ms: the outcome of the second.
-def close_beside_queries(state: State, req: Request) -> State
+# A task executes `req.first` on the connection, a second one executes `req.second` there, which waits for the first,
+# and this task closes the connection after `req.close_after_ms` ms: the outcome of the second.
+def close_beside_queries(state: State, req: Protocol.CloseBesideQueries) -> State
   with_conn(state) do |conn|
-    first = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.text)))
+    first = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.first)))
     Task.sleep(QUEUE_START_MS)
-    second = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.cells[0])))
-    Task.sleep(req.number)
+    second = Task.spawn(&run_job, Job(conn: conn, sql: Cells.expand(req.second)))
+    Task.sleep(req.close_after_ms)
     Db.close(conn)
     _ = Task.await(first)
     case Task.await(second)
@@ -2247,30 +2269,13 @@ def float_oracle(state: State, literal: String) -> Handled
   end
 end
 
-def expect(state: State, req: Request) -> Handled
+# Marks the last outcome as checked, and replies with the verdict: the empty string when it is what the request
+# expects, else what went wrong.
+def expect(state: State, verdict: String) -> Handled
   checked = State(conns: state.conns, pools: state.pools, adapter: state.adapter, last: state.last, checked: true)
-  verdict = judge(state.last, req)
   return reply_ok(checked) if verdict.empty?
 
   Handled(state: checked, reply: verdict)
-end
-
-# The empty string when the last outcome is what the request expects, else what went wrong.
-def judge(last: Outcome, req: Request) -> String
-  wanted = Cells.expand(req.text)
-  case req.op
-    "expect_ok" -> judge_ok(last)
-    "expect_timeout" -> judge_failure(last, "that is a timeout", "") do |message| Db.timeout?(message) end
-    "expect_count" -> judge_count(last, req.number)
-    "expect_rows" -> judge_rows(last, req.table)
-    "expect_last" -> judge_last(last, req.number, req.table)
-    "expect_prefix" -> judge_failure(last, "starting with", wanted) do |message| message.start_with?(wanted) end
-    "expect_exact" -> judge_failure(last, "exactly", wanted) do |message| message == wanted end
-    "expect_mentions" -> judge_failure(last, "mentioning", wanted) do |message| message.include?(wanted) end
-    "expect_kind" -> judge_kind(last, wanted)
-    "expect_hides" -> judge_failure(last, "never showing", wanted) do |message| not message.include?(wanted) end
-    _ -> "unknown op #{req.op.inspect}"
-  end
 end
 
 # The failure must be of the kind that `Orm.classify` gives its message.
