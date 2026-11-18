@@ -7,18 +7,18 @@
 import BDD from "std/bdd"
 import Protocol from "protocol"
 import {
-  Request, CacheBesideBig, CancelBesideLong, CancelTask, Close, CloseBesideQueries, DriverNamed, Execute,
-  ExecuteBesideWaiting, ExecuteFresh, ExecuteInTask, ExecuteWaiting, ExecuteWithin, ExpectCount, ExpectExact,
-  ExpectHides, ExpectKind, ExpectLast, ExpectMentions, ExpectOk, ExpectPrefix, ExpectRows, ExpectTimeout, Fallbacks,
-  FileSize, FloatOracle, Healthy, InTransaction, KeepRunning, LeaveOpen, MigrateRun, MysqlFlavor, NoneRunning,
-  NotHealthy, NotInTransaction, OnOther, Open, OpenUrl, OpenWhileLocked, OrmBuilder, OrmCheck, OrmDecode, OrmDelete,
-  OrmDeleteTyped, OrmFind, OrmInsert, OrmInsertPartial, OrmMarker, OrmPartialQuery, OrmPatch, OrmQuery, OrmQueryAs,
-  OrmUpdate, OrmUpdatePartial, PoolCancelHolder, PoolClose, PoolCloseConnection, PoolCommits, PoolCrash, PoolExecute,
-  PoolFallbacks, PoolHold, PoolNestedTransaction, PoolQuery, PoolQueryWhileHeld, PoolRepeat, PoolRunsIn, PoolScript,
-  PoolShortCalls, PoolShortCallsAtMost, PoolStart, PoolTransaction, PoolTurnAfter, PoolWriteWithin, PoolWritersInTurn,
-  PoolWritersReaders, Query, QueryBesideLong, QueryBigJson, QueryEach, QueryInNewTask, QueryJsonList, QueryTogether,
-  QueryUntilCommit, QueryWhileLocked, QueryWithin, ReadOnly, RoundTrips, ShortCalls, StatementCache, Transaction,
-  TransactionWhileLocked, Writable, WriteTogether, WriteWhileBlocked,
+  Request, Expectation, OrmDecodeTagged, CacheBesideBig, CancelBesideLong, CancelTask, Close, CloseBesideQueries,
+  DriverNamed, Execute, ExecuteBesideWaiting, ExecuteFresh, ExecuteInTask, ExecuteWaiting, ExecuteWithin, ExpectCount,
+  ExpectExact, ExpectHides, ExpectKind, ExpectLast, ExpectMentions, ExpectOk, ExpectPrefix, ExpectRows, ExpectTimeout,
+  Fallbacks, FileSize, FloatOracle, Healthy, InTransaction, KeepRunning, LeaveOpen, MigrateRun, MysqlFlavor,
+  NoneRunning, NotHealthy, NotInTransaction, OnOther, Open, OpenUrl, OpenWhileLocked, OrmBuilder, OrmCheck, OrmDecode,
+  OrmDelete, OrmDeleteTyped, OrmFind, OrmInsert, OrmInsertPartial, OrmMarker, OrmPartialQuery, OrmPatch, OrmQuery,
+  OrmQueryAs, OrmUpdate, OrmUpdatePartial, PoolCancelHolder, PoolClose, PoolCloseConnection, PoolCommits, PoolCrash,
+  PoolExecute, PoolFallbacks, PoolHold, PoolNestedTransaction, PoolQuery, PoolQueryWhileHeld, PoolRepeat, PoolRunsIn,
+  PoolScript, PoolShortCalls, PoolShortCallsAtMost, PoolStart, PoolTransaction, PoolTurnAfter, PoolWriteWithin,
+  PoolWritersInTurn, PoolWritersReaders, Query, QueryBesideLong, QueryBigJson, QueryEach, QueryInNewTask,
+  QueryJsonList, QueryTogether, QueryUntilCommit, QueryWhileLocked, QueryWithin, ReadOnly, RoundTrips, ShortCalls,
+  StatementCache, Transaction, TransactionWhileLocked, Writable, WriteTogether, WriteWhileBlocked,
 } from "protocol"
 
 private
@@ -294,6 +294,9 @@ def main() -> Void
     end,
     text_step("I read the names with {string}") do |text| Request.OrmQueryAs(OrmQueryAs(sql: text)) end,
     text_step("I decode people with {string}") do |text| Request.OrmDecode(OrmDecode(sql: text)) end,
+    text_step("I decode tagged people with {string}") do |text|
+      Request.OrmDecodeTagged(OrmDecodeTagged(sql: text))
+    end,
     text_step("I check the {string} schema") do |text| Request.OrmCheck(OrmCheck(schema: text)) end,
     BDD.step("I insert the person:") do |ctx, _args| send(ctx, Request.OrmInsert(OrmInsert(rows: BDD.table(ctx)))) end,
     BDD.step("I insert the partial person:") do |ctx, _args|
@@ -339,19 +342,29 @@ def main() -> Void
       Request.FloatOracle(FloatOracle(literal: text))
     end,
     BDD.step("the result has {int} rows, the last being:") do |ctx, args|
-      send(ctx, Request.ExpectLast(ExpectLast(count: args[0].to_i!, rows: BDD.table(ctx))))
+      send(ctx, Request.Expect(Expectation.ExpectLast(ExpectLast(count: args[0].to_i!, rows: BDD.table(ctx)))))
     end,
     BDD.step("the result is:") do |ctx, _args| send(ctx, rows_request(ctx)) end,
     BDD.step("the changed row count is {int}") do |ctx, args|
-      send(ctx, Request.ExpectCount(ExpectCount(count: args[0].to_i!)))
+      send(ctx, Request.Expect(Expectation.ExpectCount(ExpectCount(count: args[0].to_i!))))
     end,
-    plain_step("it succeeds", Request.ExpectOk(ExpectOk())),
-    plain_step("it fails with a timeout", Request.ExpectTimeout(ExpectTimeout())),
-    text_step("it fails with {string}") do |text| Request.ExpectPrefix(ExpectPrefix(text: text)) end,
-    text_step("the failure is a {string} error") do |text| Request.ExpectKind(ExpectKind(kind: text)) end,
-    text_step("it fails with exactly {string}") do |text| Request.ExpectExact(ExpectExact(text: text)) end,
-    text_step("it fails mentioning {string}") do |text| Request.ExpectMentions(ExpectMentions(text: text)) end,
-    text_step("the failure never shows {string}") do |text| Request.ExpectHides(ExpectHides(text: text)) end,
+    plain_step("it succeeds", Request.Expect(Expectation.ExpectOk(ExpectOk()))),
+    plain_step("it fails with a timeout", Request.Expect(Expectation.ExpectTimeout(ExpectTimeout()))),
+    text_step("it fails with {string}") do |text|
+      Request.Expect(Expectation.ExpectPrefix(ExpectPrefix(text: text)))
+    end,
+    text_step("the failure is a {string} error") do |text|
+      Request.Expect(Expectation.ExpectKind(ExpectKind(kind: text)))
+    end,
+    text_step("it fails with exactly {string}") do |text|
+      Request.Expect(Expectation.ExpectExact(ExpectExact(text: text)))
+    end,
+    text_step("it fails mentioning {string}") do |text|
+      Request.Expect(Expectation.ExpectMentions(ExpectMentions(text: text)))
+    end,
+    text_step("the failure never shows {string}") do |text|
+      Request.Expect(Expectation.ExpectHides(ExpectHides(text: text)))
+    end,
     BDD.step("a task leaves a connection open, and the server drops its session within {int} ms", &left_open),
     BDD.step("no other session runs a statement with {string} within {int} ms") do |ctx, args|
       send(ctx, Request.NoneRunning(NoneRunning(marker: args[0], limit_ms: args[1].to_i!)))
@@ -508,4 +521,6 @@ def body(ctx: BDD.Context) -> List[List[String]] = BDD.table(ctx).drop(1)
 
 def params_of(ctx: BDD.Context) -> List[String] = body(ctx).map do |row| row[0] end
 
-def rows_request(ctx: BDD.Context) -> Request = Request.ExpectRows(ExpectRows(rows: BDD.table(ctx)))
+def rows_request(ctx: BDD.Context) -> Request
+  Request.Expect(Expectation.ExpectRows(ExpectRows(rows: BDD.table(ctx))))
+end

@@ -377,6 +377,11 @@ struct OrmDecode
   sql: String
 end
 
+## The same, into a struct that no column can hold.
+struct OrmDecodeTagged
+  sql: String
+end
+
 struct OrmCheck
   schema: String
 end
@@ -545,6 +550,7 @@ enum Request
   OrmPartialQuery(OrmPartialQuery)
   OrmQueryAs(OrmQueryAs)
   OrmDecode(OrmDecode)
+  OrmDecodeTagged(OrmDecodeTagged)
   OrmCheck(OrmCheck)
   OrmInsert(OrmInsert)
   OrmInsertPartial(OrmInsertPartial)
@@ -556,6 +562,11 @@ enum Request
   OrmFind(OrmFind)
   OrmMarker(OrmMarker)
   OrmBuilder(OrmBuilder)
+  Expect(Expectation)
+end
+
+## What the last outcome must be.
+enum Expectation
   ExpectOk(ExpectOk)
   ExpectTimeout(ExpectTimeout)
   ExpectCount(ExpectCount)

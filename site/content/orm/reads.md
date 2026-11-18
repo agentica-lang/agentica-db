@@ -144,4 +144,9 @@ orm error decode: id: missing column
 done
 ```
 
-A field with no column, or of another type, is `error("orm error decode: <field>: <what is wrong>")`, so the message names the column, and `Orm.classify` gives `NotDecodable`.
+A field with no column, of another type, or of a type no column holds (a `List`, say) is `error("orm error decode: <field>: <what is wrong>")`, so the message names the column, and `Orm.classify` gives `NotDecodable`.
+
+- PostgreSQL `numeric` and MySQL `decimal`, so `sum` and `avg`, come back as text: cast to `double precision` or `bigint` (`signed` or `double` in MySQL) for an `Int` or `Float` field.
+- Column names match exactly: PostgreSQL folds an unquoted alias to lower case, so give an alias in lower case, or quote it.
+- A join that gives two columns the same name must alias them, since `Db.query` refuses a repeated name.
+- An `Optional` field still needs its column, NULL or not (see [the mapping](/orm/schema/#fields-and-columns)).

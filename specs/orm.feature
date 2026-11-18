@@ -68,7 +68,7 @@ Feature: Orm
       | id    | name     | age    | admin     | score     |
       | Int 1 | Text ana | Int 31 | Bool true | Float 2.0 |
     When I read people with "select id, name, age, admin, 9007199254740993 as score from people"
-    Then it fails with exactly "orm error decode: people: score: 9007199254740993 does not fit a Float exactly"
+    Then it fails with exactly "orm error decode: people: score: an Int too large for a Float"
 
     Examples:
       | adapter  |
@@ -111,6 +111,9 @@ Feature: Orm
     Then it fails with exactly "orm error decode: name: NULL in a field that is not Optional or JsonField"
     When I decode people with "select id, name, age, admin, 'x' as score from people"
     Then it fails with "orm error decode: score: "
+    And the failure is a "NotDecodable" error
+    When I decode tagged people with "select id, name from people"
+    Then it fails with exactly "orm error decode: tags: not a column type"
 
     Examples:
       | adapter  |

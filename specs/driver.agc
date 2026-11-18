@@ -11,7 +11,7 @@ import Orm from "../orm"
 import Mysql from "../mysql"
 import Postgres from "../postgres"
 import Protocol from "protocol"
-import {Request} from "protocol"
+import {Expectation, Request} from "protocol"
 import Sqlite from "../sqlite"
 
 private
@@ -284,27 +284,18 @@ end
 
 def dispatch(state: State, req: Request) -> Handled
   case state.last
-    Outcome.Failed(message) if not state.checked and not expectation?(req) ->
-      reply = "the previous statement failed with #{message.inspect}, and no step checked it"
-      Handled(state: state, reply: reply)
+    Outcome.Failed(message) if not state.checked -> checking(state, req, message)
     _ -> act(state, req)
   end
 end
 
-# The requests that check the last outcome: they are the ones that may follow an unchecked failure.
-def expectation?(req: Request) -> Bool
+# After a failure that no step has checked, only an expectation may come: any other request is refused.
+def checking(state: State, req: Request, message: String) -> Handled
   case req
-    Request.ExpectOk(_) -> true
-    Request.ExpectTimeout(_) -> true
-    Request.ExpectCount(_) -> true
-    Request.ExpectRows(_) -> true
-    Request.ExpectLast(_) -> true
-    Request.ExpectPrefix(_) -> true
-    Request.ExpectExact(_) -> true
-    Request.ExpectMentions(_) -> true
-    Request.ExpectHides(_) -> true
-    Request.ExpectKind(_) -> true
-    _ -> false
+    Request.Expect(expectation) -> act_expecting(state, expectation)
+    _ ->
+      reply = "the previous statement failed with #{message.inspect}, and no step checked it"
+      Handled(state: state, reply: reply)
   end
 end
 
@@ -339,10 +330,11 @@ def act(state: State, req: Request) -> Handled
     Request.FileSize(a) -> file_size(state, a)
     Request.PoolShortCallsAtMost(a) -> short_calls_at_most(pool_short_calls(state), a.most)
     Request.TransactionWhileLocked(a) -> transaction_while_locked(state, a)
-    Request.InTransaction(_) -> check_connection(state, "in_transaction")
-    Request.NotInTransaction(_) -> check_connection(state, "not_in_transaction")
-    Request.Healthy(_) -> check_connection(state, "healthy")
-    Request.NotHealthy(_) -> check_connection(state, "not_healthy")
+    Request.InTransaction(_) -> check_connection(state, "in_transaction") do |conn| Db.in_transaction?(conn) end
+    Request.NotInTransaction(_) ->
+      check_connection(state, "not_in_transaction") do |conn| not Db.in_transaction?(conn) end
+    Request.Healthy(_) -> check_connection(state, "healthy") do |conn| Db.healthy?(conn) end
+    Request.NotHealthy(_) -> check_connection(state, "not_healthy") do |conn| not Db.healthy?(conn) end
     Request.Transaction(a) -> reply_ok(transaction(state, a))
     Request.OrmQuery(a) -> reply_ok(with_params(state, a.sql, a.params, &orm_query))
     Request.OrmPartialQuery(a) -> reply_ok(with_params(state, a.sql, a.params, &partial_query))
@@ -394,25 +386,32 @@ def act(state: State, req: Request) -> Handled
     Request.KeepRunning(a) -> keep_running(state, a.sql, a.gap_ms)
     Request.LeaveOpen(a) -> leave_open(state, a.limit_ms)
     Request.NoneRunning(a) -> none_running(state, a.marker, a.limit_ms)
-    Request.ExpectOk(_) -> expect(state, judge_ok(state.last))
-    Request.ExpectTimeout(_) ->
+    Request.Expect(expectation) -> act_expecting(state, expectation)
+    Request.OrmDecodeTagged(a) -> reply_ok(orm_decode_tagged(state, a.sql))
+  end
+end
+
+def act_expecting(state: State, expectation: Expectation) -> Handled
+  case expectation
+    Expectation.ExpectOk(_) -> expect(state, judge_ok(state.last))
+    Expectation.ExpectTimeout(_) ->
       expect(state, judge_failure(state.last, "that is a timeout", "") do |message| Db.timeout?(message) end)
-    Request.ExpectCount(a) -> expect(state, judge_count(state.last, a.count))
-    Request.ExpectRows(a) -> expect(state, judge_rows(state.last, a.rows))
-    Request.ExpectLast(a) -> expect(state, judge_last(state.last, a.count, a.rows))
-    Request.ExpectPrefix(a) ->
+    Expectation.ExpectCount(a) -> expect(state, judge_count(state.last, a.count))
+    Expectation.ExpectRows(a) -> expect(state, judge_rows(state.last, a.rows))
+    Expectation.ExpectLast(a) -> expect(state, judge_last(state.last, a.count, a.rows))
+    Expectation.ExpectPrefix(a) ->
       wanted = Cells.expand(a.text)
       expect(state, judge_failure(state.last, "starting with", wanted) do |message| message.start_with?(wanted) end)
-    Request.ExpectExact(a) ->
+    Expectation.ExpectExact(a) ->
       wanted = Cells.expand(a.text)
       expect(state, judge_failure(state.last, "exactly", wanted) do |message| message == wanted end)
-    Request.ExpectMentions(a) ->
+    Expectation.ExpectMentions(a) ->
       wanted = Cells.expand(a.text)
       expect(state, judge_failure(state.last, "mentioning", wanted) do |message| message.include?(wanted) end)
-    Request.ExpectHides(a) ->
+    Expectation.ExpectHides(a) ->
       wanted = Cells.expand(a.text)
       expect(state, judge_failure(state.last, "never showing", wanted) do |message| not message.include?(wanted) end)
-    Request.ExpectKind(a) -> expect(state, judge_kind(state.last, Cells.expand(a.kind)))
+    Expectation.ExpectKind(a) -> expect(state, judge_kind(state.last, Cells.expand(a.kind)))
   end
 end
 
@@ -548,8 +547,8 @@ def with_pool(state: State, run: Fn[DbPool.Pool, State]) -> State
   run.call(state.pools[0])
 end
 
-# One block of the pool runs the statement, and the pool checks the connection in after it. The `number` of the request
-# is the `timeout_ms` of the call (`CONNECTION_DEFAULT` for none).
+# One block of the pool runs the statement, and the pool checks the connection in after it. The `timeout_ms` of the
+# request is the one of the call (`CONNECTION_DEFAULT` for none).
 def pool_query(state: State, req: Protocol.PoolQuery) -> State
   with_pool(state) do |pool|
     sql = sql_of(state, req.sql)
@@ -700,7 +699,8 @@ def pool_query_while_held(state: State, req: Protocol.PoolQueryWhileHeld) -> Sta
 end
 
 # The statements of the table (the header row is skipped) run in one transaction in one block of the pool. With a
-# `number` above 0, a ticker task runs meanwhile, and the outcome is a failure when the scheduler stopped for that many
+# `stop_ms` above 0, a ticker task runs meanwhile, and the outcome is a failure when the scheduler stopped for
+# that many
 # milliseconds or more: a write that runs long must not run in a short call.
 def pool_transaction(state: State, req: Protocol.PoolTransaction) -> State
   with_pool(state) do |pool|
@@ -931,7 +931,7 @@ end
 
 # Runs `Migrate.up` with the rows of the table (`version`, `name`, `sql`; the header row is skipped). The sql cell
 # holds statements separated by `;` (no `;` inside a literal), or `code:` and one statement that a function migration
-# runs. The outcome is the versions applied, one row each, so a re-run shows no row. `text` is the history table, or
+# runs. The outcome is the versions applied, one row each, so a re-run shows no row. `history` is the history table, or
 # empty for the default.
 def migrate(state: State, req: Protocol.MigrateRun) -> State
   with_conn(state) do |conn|
@@ -1047,23 +1047,14 @@ def query_within(state: State, sql: String, params: List[Db.Value], timeout_ms: 
   end
 end
 
-# The answer of `Db.in_transaction?` or `Db.healthy?` is the one the op names. A closed connection is still the
-# connection of the state, which is how a step asks about it.
-def check_connection(state: State, op: String) -> Handled
+# The answer of `Db.in_transaction?` or `Db.healthy?`, as `answer` reads it, must be true. A closed connection is still
+# the connection of the state, which is how a step asks about it.
+def check_connection(state: State, name: String, answer: Fn[Db.Connection, Bool]) -> Handled
   return Handled(state: state, reply: NO_DATABASE) if state.conns.empty?
 
-  return reply_ok(state) if connection_answer(state.conns[0], op)
+  return reply_ok(state) if answer.call(state.conns[0])
 
-  Handled(state: state, reply: "the connection did not answer for #{op}")
-end
-
-def connection_answer(conn: Db.Connection, op: String) -> Bool
-  case op
-    "in_transaction" -> Db.in_transaction?(conn)
-    "not_in_transaction" -> not Db.in_transaction?(conn)
-    "healthy" -> Db.healthy?(conn)
-    _ -> not Db.healthy?(conn)
-  end
+  Handled(state: state, reply: "the connection did not answer for #{name}")
 end
 
 # The query of the table of steps (the header row is skipped), then its end: the rows of the persons read, or the
@@ -1217,6 +1208,17 @@ def orm_decode(state: State, sql: String) -> State
     case found
       error(message) -> return failed(state, message.message)
       ok(persons) -> return recorded(state, Outcome.Rows(persons.map do |person| person_row(person) end))
+    end
+  end
+end
+
+# Decodes into a struct that no column can hold: it fails before any column is read.
+def orm_decode_tagged(state: State, sql: String) -> State
+  with_conn(state) do |conn|
+    found = Orm.query_as(conn, sql, []) do |row| Orm.decode_row(row, Tagged.codec) end
+    case found
+      error(message) -> return failed(state, message.message)
+      ok(_) -> return recorded(state, Outcome.Done)
     end
   end
 end
@@ -1628,8 +1630,8 @@ end
 
 # The query runs in a task on a connection of its own while this connection, which holds a read lock, commits after
 # `req.commit_after_ms` milliseconds: the query waits for the lock, then its rows or its failure are the outcome.
-# A statement
-# that writes in autocommit mode is rolled back by SQLite while it waits, so no lock shows that the task waits; the
+# A statement that writes in autocommit mode is rolled back by SQLite while it waits, so no lock shows that the task
+# waits; the
 # times do: the task must have started before the commit (by a tenth of the delay, so a slow start does not fail the
 # step) and have ended after it, and nothing but the lock of this connection keeps a statement that long.
 def query_until_commit(state: State, req: Protocol.QueryUntilCommit) -> Handled

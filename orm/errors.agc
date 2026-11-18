@@ -1,5 +1,5 @@
 ## The kinds of failure of the Orm. A `Result` carries its error as a text, so the Orm writes the kind into the text
-## (`orm error <code>: <table>: <message>`, as an adapter writes its code into `<adapter> error <code>: <message>`),
+## (`orm error <code>: <table>: <message>`, or `orm error decode: <message>` for one row, as an adapter writes its code into `<adapter> error <code>: <message>`),
 ## and `classify` reads it back, together with the codes of the databases for a unique or foreign-key violation.
 
 ## The codes written in the text of a failure of the Orm.
@@ -21,7 +21,7 @@ enum Failure
   Database(String)
 end
 
-## The text of a failure of the Orm: `orm error <code>: <table>: <message>`.
+## The text of a failure of the Orm: `orm error <code>: <table>: <message>`; a decode of one row has no table: `orm error decode: <field>: ...`.
 def text(code: String, table: String, message: String) -> String = "orm error #{code}: #{table}: #{message}"
 
 ## The kind of the failure a text describes. A text that is no failure of the Orm and no conflict is `Database`: a
