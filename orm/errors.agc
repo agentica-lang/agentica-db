@@ -8,6 +8,9 @@ SCHEMA = "schema"
 DECODE = "decode"
 DATABASE = "database"
 
+## The start of a failure of a decode that has no table: `orm error decode: <message>`.
+DECODE_PREFIX = "orm error #{DECODE}: "
+
 ## What went wrong, for a handler to `case` on. The text is the message for a log: `<table>: <message>` for a
 ## failure of the Orm, the message of the database as it is for the others.
 enum Failure

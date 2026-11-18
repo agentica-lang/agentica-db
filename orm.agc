@@ -102,6 +102,22 @@ def query_as[R](
   ok(found)
 end
 
+## Reads one `Db.Row` into a `T` by column name, with the codec of the struct: `Orm.decode_row(row, User.codec)`. It is
+## for rows that no schema describes, such as a join or a select with aliased columns, inside the block of `query_as`.
+## The rules are those of `query`: a NULL is `none` for an `Optional` field, a column the struct lacks is ignored, and
+## a field with no column, or of another type, is `error("orm error decode: <field>: <what is wrong>")`
+## (`classify` gives `NotDecodable`).
+def decode_row[T](row: Db.Row, codec: Codec[T]) -> Result[T]
+  case RowCodec.to_json(codec.members, row)
+    error(message) -> error(Errors.DECODE_PREFIX + message.message)
+    ok(object) ->
+      case codec.decode(object)
+        ok(value) -> ok(value)
+        error(message) -> error(Errors.DECODE_PREFIX + message.message)
+      end
+  end
+end
+
 ## The row whose key is `id`: `some(row)`, or `none` when there is no such row (a 404, not a 500). The `id` must be
 ## the kind of the key field (`Db.Value.Int` for an Int key), else it is an error.
 def find[T](conn: Db.Connection, schema: Schema[T], id: Db.Value) -> Result[Optional[T]]
