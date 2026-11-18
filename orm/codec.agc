@@ -118,7 +118,7 @@ end
 def exact(member: StructMember, n: Int) -> Result[JSON.Value] = ok(JSON.from(try exact_float(member, n)))
 
 def exact_float(member: StructMember, n: Int) -> Result[Float]
-  return error("#{member.name}: #{n} does not fit a Float exactly") if n > MAX_EXACT or n < 0 - MAX_EXACT
+  return error("#{member.name}: an Int too large for a Float") if n > MAX_EXACT or n < 0 - MAX_EXACT
 
   ok(n.to_f)
 end

@@ -112,7 +112,7 @@ Feature: Orm writes
     When I patch the person 1 with "{\"age\": \"old\"}"
     Then it fails with exactly "orm error bad_request: people: age: expected Int"
     When I patch the person 1 with "{\"score\": 9007199254740993}"
-    Then it fails with exactly "orm error bad_request: people: score: 9007199254740993 does not fit a Float exactly"
+    Then it fails with exactly "orm error bad_request: people: score: an Int too large for a Float"
     When I patch the person 1 with "[1]"
     Then it fails with exactly "orm error bad_request: people: the changes are not a JSON object"
     When I patch the person 1 with "{}"

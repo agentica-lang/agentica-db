@@ -334,6 +334,8 @@ def act(state: State, req: Request) -> Handled
     "orm_query" if req.partial -> reply_ok(with_params(state, req, &partial_query))
     "orm_query" -> reply_ok(with_params(state, req, &orm_query))
     "orm_query_as" -> reply_ok(orm_query_as(state, Cells.expand(req.text)))
+    "orm_decode" -> reply_ok(orm_decode(state, req.text))
+    "orm_decode_tagged" -> reply_ok(orm_decode_tagged(state, req.text))
     "orm_check" -> reply_ok(orm_check(state, req.text))
     "orm_insert" -> reply_ok(orm_insert(state, req))
     "orm_builder" -> reply_ok(orm_builder(state, req.text, req.table))
@@ -1171,6 +1173,28 @@ def orm_query_as(state: State, sql: String) -> State
     case found
       error(message) -> return failed(state, message.message)
       ok(names) -> return recorded(state, Outcome.Rows(names.map do |name| {"name": Db.Value.Text(name)} end))
+    end
+  end
+end
+
+# Decodes with `Orm.decode_row`: the Person of each row.
+def orm_decode(state: State, sql: String) -> State
+  with_conn(state) do |conn|
+    found = Orm.query_as(conn, sql, []) do |row| Orm.decode_row(row, Person.codec) end
+    case found
+      error(message) -> return failed(state, message.message)
+      ok(persons) -> return recorded(state, Outcome.Rows(persons.map do |person| person_row(person) end))
+    end
+  end
+end
+
+# Decodes into a struct that no column can hold: it fails before any column is read.
+def orm_decode_tagged(state: State, sql: String) -> State
+  with_conn(state) do |conn|
+    found = Orm.query_as(conn, sql, []) do |row| Orm.decode_row(row, Tagged.codec) end
+    case found
+      error(message) -> return failed(state, message.message)
+      ok(_) -> return recorded(state, Outcome.Done)
     end
   end
 end

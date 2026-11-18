@@ -5,7 +5,7 @@
 ## A schema ties a struct to a table: `Orm.schema("users", User.codec)`. Every function takes
 ## the `Db.Connection`, so a transaction body or a pooled connection passes its own. `query`, `find` and the writes
 ## take it first; the steps and the ends of a query take the query first, so that they chain with `|>`. The
-## functions give values and never change one. An error is `error("orm error <code>: <table>: <message>")`, and
+## functions give values and never change one. An error is `error("orm error <code>: <table>: <message>")` (`decode_row` has no table: `orm error decode: <field>: ...`), and
 ## `classify` gives its kind (`BadRequest`, `NotDecodable`, `Schema`...); an error of the database is the one of `Db`,
 ## and `classify` tells a unique or foreign-key violation (`Conflict`) from the others.
 ##
@@ -100,6 +100,22 @@ def query_as[R](
   end
 
   ok(found)
+end
+
+## Reads one `Db.Row` into a `T` by column name, with the codec of the struct: `Orm.decode_row(row, User.codec)`. It is
+## for rows that no schema describes, such as a join or a select with aliased columns, inside the block of `query_as`.
+## The rules are those of `query`: a NULL is `none` for an `Optional` field, a column the struct lacks is ignored, and
+## a field with no column, of another type, or that no column can hold is `error("orm error decode: <field>: <what is
+## wrong>")`, with no table (`classify` gives `NotDecodable`).
+def decode_row[T](row: Db.Row, codec: Codec[T]) -> Result[T]
+  for member in codec.members
+    return error("#{Errors.DECODE_PREFIX}#{member.name}: not a column type") if not RowCodec.column_type?(member.type)
+  end
+
+  case decode_members(codec.members, codec, row)
+    ok(value) -> ok(value)
+    error(message) -> error(Errors.DECODE_PREFIX + message.message)
+  end
 end
 
 ## The row whose key is `id`: `some(row)`, or `none` when there is no such row (a 404, not a 500). The `id` must be
@@ -493,14 +509,18 @@ def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: JSON.Value) 
 end
 
 def read[T](schema: Schema[T], row: Db.Row) -> Result[T]
-  json = RowCodec.to_json(schema.members, row)
-  case json
+  case decode_members(schema.members, schema.codec, row)
+    ok(value) -> ok(value)
     error(message) -> undecodable(schema, message.message)
-    ok(object) ->
-      case schema.codec.decode(object)
-        ok(value) -> ok(value)
-        error(message) -> undecodable(schema, message.message)
-      end
+  end
+end
+
+# The row as the JSON.Value of the fields, then the struct; the error is the message of the field, with no table.
+def decode_members[T](members: List[StructMember], codec: Codec[T], row: Db.Row) -> Result[T]
+  object = try RowCodec.to_json(members, row)
+  case codec.decode(object)
+    ok(value) -> ok(value)
+    error(message) -> error(message.message)
   end
 end
 

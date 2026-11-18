@@ -68,7 +68,7 @@ Feature: Orm
       | id    | name     | age    | admin     | score     |
       | Int 1 | Text ana | Int 31 | Bool true | Float 2.0 |
     When I read people with "select id, name, age, admin, 9007199254740993 as score from people"
-    Then it fails with exactly "orm error decode: people: score: 9007199254740993 does not fit a Float exactly"
+    Then it fails with exactly "orm error decode: people: score: an Int too large for a Float"
 
     Examples:
       | adapter  |
@@ -87,6 +87,33 @@ Feature: Orm
       | Text bob |
     When I read the names with "select id from people"
     Then it fails with exactly "no name in the row"
+
+    Examples:
+      | adapter  |
+      | sqlite   |
+      | postgres |
+      | mysql    |
+
+  Scenario Outline: decode_row reads a join with aliased columns into structs, and names the column that fails on <adapter>
+    Given a "<adapter>" database
+    And I execute "create temporary table people (id integer not null, name varchar(50) not null, age integer, admin boolean not null, score double precision not null)"
+    And I execute "create temporary table teams (person_id integer not null, name varchar(50) not null)"
+    And I execute "insert into people (id, name, age, admin, score) values (1, 'ana', 31, true, 1.5), (2, 'bob', null, false, 2.0)"
+    And I execute "insert into teams (person_id, name) values (1, 'red'), (2, 'blue')"
+    When I decode people with "select p.id as id, t.name as name, p.age as age, p.admin as admin, p.score as score, t.name as team from people p join teams t on t.person_id = p.id order by p.id"
+    Then the result is:
+      | id    | name      | age    | admin      | score     |
+      | Int 1 | Text red  | Int 31 | Bool true  | Float 1.5 |
+      | Int 2 | Text blue | Null   | Bool false | Float 2.0 |
+    When I decode people with "select id, name, age, admin from people"
+    Then it fails with exactly "orm error decode: score: missing column"
+    When I decode people with "select id, null as name, age, admin, score from people"
+    Then it fails with exactly "orm error decode: name: NULL in a field that is not Optional or JsonField"
+    When I decode people with "select id, name, age, admin, 'x' as score from people"
+    Then it fails with "orm error decode: score: "
+    And the failure is a "NotDecodable" error
+    When I decode tagged people with "select id, name from people"
+    Then it fails with exactly "orm error decode: tags: not a column type"
 
     Examples:
       | adapter  |
