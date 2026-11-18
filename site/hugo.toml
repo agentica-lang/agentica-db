@@ -18,9 +18,3 @@ enableGitInfo = true
   tagline = "a database package for Agentica"
   repo = "https://github.com/agentica-lang/agentica-db"
   repoPublic = true
-
-# No llms.txt or llms-full.txt: every page is still published as Markdown for the page actions, and search stays.
-[outputs]
-  home = ["html", "markdown", "search"]
-  section = ["html", "markdown"]
-  page = ["html", "markdown"]
