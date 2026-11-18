@@ -6,7 +6,7 @@ aliases:
   - /guide/orm-errors/
 ---
 
-A failure is an `Error` of Agentica, and its `message` is the text: a failure of the Orm is `orm error <code>: <table>: <message>`, and `Orm.classify(e.message)` gives its kind to `case` on, so a handler never matches message text.
+A failure is an `Error` of Agentica, and its `message` is the text: a failure of the Orm is `orm error <code>: <table>: <message>` (`Orm.decode_row` has no table: `orm error decode: <field>: ...`), and `Orm.classify(e.message)` gives its kind to `case` on, so a handler never matches message text.
 
 | Kind | Means | Suggested status |
 |---|---|---|
@@ -72,7 +72,7 @@ done
 
 ## Helpers
 
-`Orm.kind(error)` gives the name of the kind as a text (`"Conflict"`), for logs and tests. `Orm.message(error)` gives the message for a log: `<table>: <message>` for a failure of the Orm, and the text of the database as it is for the others.
+`Orm.kind(error)` gives the name of the kind as a text (`"Conflict"`), for logs and tests. `Orm.message(error)` gives the message for a log: `<table>: <message>` for a failure of the Orm (`<field>: <message>` for `Orm.decode_row`), and the text of the database as it is for the others.
 
 A text that no rule knows, such as a `db error: ...`, is `Database`. A failure that the database itself reports (not an Orm failure) keeps the text of `Db`: see [connecting](/basics/connecting/) for its shapes.
 

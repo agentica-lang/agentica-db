@@ -235,6 +235,7 @@ def main() -> Void
     end,
     text_step("I read the names with {string}", "orm_query_as"),
     text_step("I decode people with {string}", "orm_decode"),
+    text_step("I decode tagged people with {string}", "orm_decode_tagged"),
     text_step("I check the {string} schema", "orm_check"),
     BDD.step("I insert the person:") do |ctx, _args| send(ctx, Request(op: "orm_insert", table: BDD.table(ctx))) end,
     BDD.step("I insert the partial person:") do |ctx, _args|
