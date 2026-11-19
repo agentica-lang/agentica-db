@@ -26,8 +26,8 @@ jobs:
     uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@ed805750db83fb8ee7c6b8eb645d179b2dbc55a7
     with:
       module: db_sqlite
-      # agentica master with `agentica native source` (agentica#1786); a release once 0.34.0 ships.
-      agentica-commit: 45e6c4a8d0b71954da19c9c03b49fadc46fedc02
+      agentica-version: 0.35.0
+      agentica-sha256: 379b0494b84c89b121d089fab9b21879e939a4dd7e89661f6be34e70f13f6322
       prepare: $PYTHON -I tools/sqlite_amalgamation.py build/sqlite
       extra-args: -DDB_SQLITE_STATIC -Ibuild/sqlite native/sqlite_static.c -lm
       dry-run: true
@@ -39,6 +39,7 @@ jobs:
     uses: agentica-lang/packages/.github/workflows/native-prebuilt.yml@ed805750db83fb8ee7c6b8eb645d179b2dbc55a7
     with:
       module: db_sqlite
-      agentica-commit: 45e6c4a8d0b71954da19c9c03b49fadc46fedc02
+      agentica-version: 0.35.0
+      agentica-sha256: 379b0494b84c89b121d089fab9b21879e939a4dd7e89661f6be34e70f13f6322
       prepare: $PYTHON -I tools/sqlite_amalgamation.py build/sqlite
       extra-args: -DDB_SQLITE_STATIC -Ibuild/sqlite native/sqlite_static.c -lm

@@ -1,4 +1,5 @@
 name = "db"
+agentica = "0.35.0"
 
 # db_pool.agc is a pool of connections on the generic pool, the `pool` package of agentica-lang/packages (its own tag,
 # `pool-X.Y.Z`; its releases are in that repository).

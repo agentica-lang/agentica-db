@@ -377,11 +377,6 @@ def or_fail[T](schema: Schema[T], found: Result[JSON.Value], message: String) ->
   end
 end
 
-# The text of a `JSON.Value`. It relies on `JSON.encode` writing the keys of a parsed object in sorted order (and the
-# parse of the encode gives a parsed object), so two objects with the same entries have the same text, whatever
-# order their keys came in.
-def canonical(json: JSON.Value) -> Result[String] = ok(JSON.encode(try JSON.parse(JSON.encode(json))))
-
 # Runs `update` with the `sets` (`"name = ?"`) over the row whose key is the last of the params.
 def update_by_key[T](conn: Db.Connection, schema: Schema[T], sets: List[String], params: List[Db.Value]) -> Result[Int]
   table = try quoted(conn, schema, schema.table)
@@ -499,9 +494,7 @@ def change_sets[T](conn: Db.Connection, schema: Schema[T], changes: JSON.Value) 
   end
 
   # JSON.Value has no list of keys: an object with only the known keys is the same object when no key was unknown.
-  if try canonical(JSON.object(known)) != try canonical(changes)
-    return refuse(schema, "the changes have a key that is not a column")
-  end
+  return refuse(schema, "the changes have a key that is not a column") if JSON.object(known) != changes
 
   return refuse(schema, "no column to change") if sets.empty?
 

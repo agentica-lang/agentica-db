@@ -4,7 +4,7 @@ Database package for [Agentica](https://github.com/agentica-lang/agentica): one 
 MariaDB, and a small typed ORM on top. Each database goes through its system client library by the C FFI; SQLite and
 PostgreSQL also have a native driver (a statement cache, many rows per call), the default; MySQL's runs on Linux.
 
-agentica-db 0.13.0 needs Agentica 0.31.0 or later (0.9.0 needs 0.30.0). Where a program that imports its SQLite,
+agentica-db 0.13.0 needs Agentica 0.31.0 or later (0.9.0 needs 0.30.0; the code after 0.13.0 needs 0.35.0). Where a program that imports its SQLite,
 PostgreSQL or MySQL driver first runs or is compiled, Agentica builds the native module of each driver the program
 imports into its package cache with the C compiler (`cc`, or `CC`; on Debian `gcc` and `libc6-dev`). Without a
 compiler it prints a warning and the program runs the FFI drivers.
@@ -74,7 +74,7 @@ make check
 agentica test --jobs 4
 ```
 
-Developing the package needs 0.31.0 or later; using it needs the version above.
+Developing the package needs 0.35.0 or later; using it needs the version above.
 
 The PostgreSQL and MySQL scenarios need a server; see [Testing][testing] and
 `AGENTS.md`. CI runs the SQLite suite on Linux, macOS and Windows, and the whole suite on Linux.

@@ -4,10 +4,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Needs Agentica 0.35.0 or later (`agentica = "0.35.0"` in `agentica.toml`); CI runs it on Agentica 0.35.0.
+
 ### Added
 
 - `Orm.decode_row(row, T.codec)` reads one `Db.Row` into a `T` by column name (NULL is `none` for an `Optional`), for a join or a select with aliased columns, and names the column that is missing or of the wrong type.
 - `db_sqlite` also builds with SQLite 3.54.1 linked in (`-DDB_SQLITE_STATIC` and `native/sqlite_static.c`), on the five targets by `.github/workflows/native-prebuilt.yml`, for prebuilt files; a build from source still opens the system SQLite. The linked SQLite is thread-safe and has FTS3, FTS4 and FTS5, R*Tree, `dbstat`, the column metadata and math functions, and up to 250000 parameters, but cannot load extensions.
+
+### Changed
+
+- **Breaking:** the package needs Agentica 0.35.0 or later: the check of the keys of an `Orm.patch` compares `JSON.Value`s with `!=`, which ignores key order since 0.35.0. On 0.35 `JSON.parse` and `JSON.encode` keep the key order, so the old check, which re-encoded both sides and counted on sorted keys, refused valid changes whose keys were not in the order of the schema.
 
 ## [0.13.0] - 2026-11-16
 
